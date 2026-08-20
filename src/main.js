@@ -1,0 +1,193 @@
+// Application entry point: builds the palette, wires the toolbar/topbar,
+// creates the canvas and panels, and runs the compute-on-change loop.
+
+import { Store, seedDemo } from "./state.js";
+import { CanvasView } from "./ui/canvas.js";
+import { Panels } from "./ui/panels.js";
+import { componentsByCategory, CATEGORIES } from "./standards/components.js";
+import { computeAll } from "./calc/network.js";
+import { showConfirm } from "./ui/modal.js";
+import { round } from "./units.js";
+
+const $ = (sel) => document.querySelector(sel);
+
+const store = new Store();
+if (!store.load()) seedDemo(store);
+
+const canvas = new CanvasView($("#canvas"), store, (t) => ($("#hint").textContent = t));
+const panels = new Panels(store, {
+  properties: $("#tab-properties"),
+  results: $("#tab-results"),
+  settings: $("#tab-settings"),
+});
+
+// ---- palette ----
+function buildPalette() {
+  const groups = componentsByCategory();
+  const el = $("#palette");
+  el.innerHTML = "";
+  for (const [catKey, label] of Object.entries(CATEGORIES)) {
+    const title = document.createElement("div");
+    title.className = "palette-group-title";
+    title.textContent = label;
+    el.appendChild(title);
+    for (const def of groups[catKey] || []) {
+      const btn = document.createElement("button");
+      btn.className = "palette-btn";
+      btn.dataset.kind = def.kind;
+      btn.innerHTML = `<span class="palette-sym" style="background:${def.color}">${def.symbol}</span><span>${def.label}</span>`;
+      btn.addEventListener("click", () => store.setTool("component", def.kind));
+      el.appendChild(btn);
+    }
+  }
+}
+buildPalette();
+
+// ---- toolbar tools ----
+document.querySelectorAll(".tool").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.tool === "delete") {
+      if (store.selection) store.deleteSelection();
+      store.setTool("select");
+      return;
+    }
+    store.setTool(btn.dataset.tool);
+    canvas.endDraft();
+  });
+});
+
+// ---- mode / system toggles ----
+document.querySelectorAll("[data-mode]").forEach((b) =>
+  b.addEventListener("click", () => { store.snapshot(); store.project.mode = b.dataset.mode; store.commit(); })
+);
+document.querySelectorAll("[data-system]").forEach((b) =>
+  b.addEventListener("click", () => { store.activeSystem = b.dataset.system; store.emit(); })
+);
+
+// ---- topbar buttons ----
+$("#projectName").addEventListener("change", (e) => { store.snapshot(); store.project.meta.name = e.target.value; store.commit(); });
+$("#btnUndo").addEventListener("click", () => store.undo());
+$("#btnRedo").addEventListener("click", () => store.redo());
+$("#btnDemo").addEventListener("click", async () => {
+  if (await showConfirm({ title: "Load demo project?", message: "This replaces the current project with a worked example.", okText: "Load demo" })) {
+    seedDemo(store); canvas.fit();
+  }
+});
+$("#btnNew").addEventListener("click", async () => {
+  if (await showConfirm({ title: "New project?", message: "This clears the current project.", okText: "New project" })) {
+    store.reset(); canvas.fit();
+  }
+});
+$("#btnExport").addEventListener("click", () => {
+  const blob = new Blob([store.exportJSON()], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(store.project.meta.name || "duct-project").replace(/\s+/g, "-").toLowerCase()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+$("#btnImport").addEventListener("click", () => $("#fileImport").click());
+$("#fileImport").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { try { store.importJSON(reader.result); canvas.fit(); } catch (err) { alert("Invalid project file"); } };
+  reader.readAsText(file);
+  e.target.value = "";
+});
+
+// ---- canvas toolbar ----
+$("#fileBackground").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      store.snapshot();
+      const maxW = 1200;
+      const scale = img.width > maxW ? maxW / img.width : 1;
+      store.project.background = { dataUrl: reader.result, width: img.width * scale, height: img.height * scale, x: 0, y: 0, opacity: 0.85 };
+      store.project.mode = "drawing";
+      store.commit();
+      canvas.fit();
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = "";
+});
+$("#btnClearBg").addEventListener("click", () => { store.snapshot(); store.project.background = null; store.commit(); });
+$("#btnZoomIn").addEventListener("click", () => canvas.setZoom(canvas.view.zoom * 1.2));
+$("#btnZoomOut").addEventListener("click", () => canvas.setZoom(canvas.view.zoom / 1.2));
+$("#btnZoomFit").addEventListener("click", () => canvas.fit());
+
+// ---- panel tabs ----
+document.querySelectorAll(".panel-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".panel-tab").forEach((t) => t.classList.toggle("active", t === tab));
+    document.querySelectorAll(".tab-pane").forEach((p) => p.classList.toggle("active", p.id === `tab-${tab.dataset.tab}`));
+  });
+});
+
+// ---- keyboard ----
+window.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, textarea, select")) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? store.redo() : store.undo(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); store.redo(); return; }
+  const map = { v: "select", h: "pan", s: "scale", r: "room", d: "duct" };
+  if (map[e.key.toLowerCase()]) { store.setTool(map[e.key.toLowerCase()]); canvas.endDraft(); }
+  if (e.key === "Delete" || e.key === "Backspace") { if (store.selection) store.deleteSelection(); }
+  if (e.key === "Escape") { canvas.endDraft(); store.select(null); }
+  if (e.key === "Enter") { canvas.endDraft(); }
+});
+
+window.addEventListener("resize", () => canvas.resize());
+
+// ---- render loop on state change ----
+function renderChrome() {
+  const p = store.project;
+  if ($("#projectName").value !== p.meta.name) $("#projectName").value = p.meta.name;
+  document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("active", b.dataset.mode === p.mode));
+  document.querySelectorAll("[data-system]").forEach((b) => b.classList.toggle("active", b.dataset.system === store.activeSystem));
+  document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === store.tool));
+  document.querySelectorAll(".palette-btn").forEach((b) => b.classList.toggle("active", store.tool === "component" && b.dataset.kind === store.newComponentKind));
+  $("#zoomLabel").textContent = `${Math.round(p.view.zoom * 100)}%`;
+  $("#scaleLabel").textContent = p.scale.pxPerMeter ? `Scale: ${round(p.scale.pxPerMeter, 1)} px/m` : `Scale: concept (${p.settings.conceptPxPerMeter} px/m)`;
+  $("#btnUndo").disabled = store.undoStack.length === 0;
+  $("#btnRedo").disabled = store.redoStack.length === 0;
+  canvas.updateHint();
+}
+
+function renderStatus(results) {
+  const s = results.supply, x = results.extract;
+  $("#statusbar").innerHTML =
+    `<span>Supply: <b>${round(s.totalFlowM3s * 1000, 0)} l/s</b> · ESP <b>${round(s.indexStaticPa, 0)} Pa</b> · vmax ${round(s.maxVelocity, 1)} m/s</span>` +
+    `<span>Extract: <b>${round(x.totalFlowM3s * 1000, 0)} l/s</b> · ESP <b>${round(x.indexStaticPa, 0)} Pa</b> · vmax ${round(x.maxVelocity, 1)} m/s</span>` +
+    `<span>${store.project.mode === "drawing" ? "Drawing mode" : "Concept mode"}</span>`;
+}
+
+let scheduled = false;
+store.subscribe(() => {
+  renderChrome();
+  if (scheduled) return;
+  scheduled = true;
+  requestAnimationFrame(() => {
+    scheduled = false;
+    const results = computeAll(store.project);
+    canvas.setResults(results);
+    panels.setResults(results);
+    panels.renderAll();
+    renderStatus(results);
+    canvas.draw();
+  });
+});
+
+// initial paint
+const initial = computeAll(store.project);
+canvas.setResults(initial);
+panels.setResults(initial);
+panels.renderAll();
+renderChrome();
+renderStatus(initial);
+canvas.fit();

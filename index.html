@@ -3,31 +3,97 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Duct Trace AHU</title>
+    <title>Duct Trace AHU — HVAC ductwork design (DW144 / CIBSE)</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="page">
-      <header class="hero">
-        <h1>Duct Trace AHU</h1>
-        <p class="tagline">Air handling unit duct tracing — project scaffold.</p>
-      </header>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">DT</span>
+        <div>
+          <div class="brand-name">Duct Trace <span>AHU</span></div>
+          <div class="brand-sub">Commercial ductwork tracing &amp; sizing · DW144 / CIBSE</div>
+        </div>
+      </div>
 
-      <section class="card">
-        <h2>Environment check</h2>
-        <p>
-          This starter page confirms the static development server is serving
-          HTML, CSS, and JavaScript correctly.
-        </p>
-        <button id="traceBtn" type="button">Trace a duct segment</button>
-        <p id="status" class="status" role="status">No segments traced yet.</p>
-      </section>
+      <div class="topbar-group">
+        <input id="projectName" class="project-name" type="text" aria-label="Project name" />
+      </div>
 
-      <footer class="footer">
-        <span id="year"></span> &middot; Duct Trace AHU
-      </footer>
-    </main>
+      <div class="topbar-group segmented" role="group" aria-label="Mode">
+        <button data-mode="concept" class="seg-btn">Concept</button>
+        <button data-mode="drawing" class="seg-btn">Drawing</button>
+      </div>
 
-    <script src="app.js"></script>
+      <div class="topbar-group segmented" role="group" aria-label="Active system">
+        <button data-system="supply" class="seg-btn sys-supply">Supply</button>
+        <button data-system="extract" class="seg-btn sys-extract">Extract</button>
+      </div>
+
+      <div class="topbar-group grow"></div>
+
+      <div class="topbar-group">
+        <button id="btnUndo" class="btn ghost" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="btnRedo" class="btn ghost" title="Redo (Ctrl+Y)">Redo</button>
+        <button id="btnDemo" class="btn">Load demo</button>
+        <button id="btnNew" class="btn ghost">New</button>
+        <button id="btnImport" class="btn ghost">Import</button>
+        <button id="btnExport" class="btn primary">Export</button>
+        <input id="fileImport" type="file" accept="application/json" hidden />
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="toolbar" id="toolbar">
+        <div class="tool-group">
+          <button class="tool" data-tool="select" title="Select / move (V)">▹<span>Select</span></button>
+          <button class="tool" data-tool="pan" title="Pan (Space/H)">✋<span>Pan</span></button>
+          <button class="tool" data-tool="scale" title="Set scale from drawing">⟺<span>Scale</span></button>
+          <button class="tool" data-tool="room" title="Draw a room">▱<span>Room</span></button>
+          <button class="tool" data-tool="duct" title="Trace ducts">╱<span>Duct</span></button>
+          <button class="tool" data-tool="delete" title="Delete selected (Del)">🗑<span>Delete</span></button>
+        </div>
+        <div class="palette" id="palette"></div>
+      </aside>
+
+      <main class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <div class="canvas-hud">
+          <div id="hint" class="hint"></div>
+        </div>
+        <div class="canvas-toolbar">
+          <label class="upload-btn" title="Upload a background drawing">
+            Upload drawing
+            <input id="fileBackground" type="file" accept="image/*" hidden />
+          </label>
+          <button id="btnClearBg" class="btn ghost tiny">Clear</button>
+          <span class="sep"></span>
+          <button id="btnZoomOut" class="btn ghost tiny">−</button>
+          <span id="zoomLabel" class="zoom-label">100%</span>
+          <button id="btnZoomIn" class="btn ghost tiny">+</button>
+          <button id="btnZoomFit" class="btn ghost tiny">Fit</button>
+          <span class="sep"></span>
+          <span id="scaleLabel" class="scale-label">Scale: not set</span>
+        </div>
+        <div id="statusbar" class="statusbar"></div>
+      </main>
+
+      <aside class="panel">
+        <div class="panel-tabs" role="tablist">
+          <button class="panel-tab active" data-tab="properties">Properties</button>
+          <button class="panel-tab" data-tab="results">Results</button>
+          <button class="panel-tab" data-tab="settings">Settings</button>
+        </div>
+        <div class="panel-body">
+          <section id="tab-properties" class="tab-pane active"></section>
+          <section id="tab-results" class="tab-pane"></section>
+          <section id="tab-settings" class="tab-pane"></section>
+        </div>
+      </aside>
+    </div>
+
+    <div id="modal-root"></div>
+
+    <script type="module" src="src/main.js"></script>
   </body>
 </html>
