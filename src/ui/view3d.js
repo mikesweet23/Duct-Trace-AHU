@@ -3,7 +3,7 @@
 
 import { isVerticalRiser } from "../geom.js";
 import { componentDef } from "../standards/components.js";
-import { componentFoot, pxPerMeterOf } from "../layout.js";
+import { componentFoot, pxPerMeterOf, segmentEndPoint } from "../layout.js";
 import { round } from "../units.js";
 import { findSegResult } from "../calc/network.js";
 
@@ -109,18 +109,21 @@ export class View3D {
       items.push({ t: "line", pts: [this.toXYZ(W, { x: W.cx - half * W.s, y: W.cy + g * W.s }, 0), this.toXYZ(W, { x: W.cx + half * W.s, y: W.cy + g * W.s }, 0)], c: major ? "#334155" : "#1e293b", w: major ? 1.2 : 0.7, ground: true });
     }
 
+    const px = pxPerMeterOf(p);
     for (const s of p.segments) {
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
+      const pa = segmentEndPoint(p, a, b, s.aOff, px);
+      const pb = segmentEndPoint(p, b, a, s.bOff, px);
       const res = this.segRes(s.id);
       const col = s.system === "extract" ? "#d97706" : "#3b82f6";
       const za = a.z || 0, zb = b.z || 0;
-      const poly = [this.toXYZ(W, a, za)];
+      const poly = [this.toXYZ(W, pa, za)];
       if (Math.abs(za - zb) > 0.02 && !isVerticalRiser(a, b, W.s)) {
-        poly.push(this.toXYZ(W, b, za));
+        poly.push(this.toXYZ(W, pb, za));
       }
-      poly.push(this.toXYZ(W, b, zb));
+      poly.push(this.toXYZ(W, pb, zb));
       const mm = res?.section?.diameterMm || res?.section?.widthMm || 200;
       items.push({ t: "line", pts: poly, c: col, w: Math.max(3.5, Math.min(16, mm / 36)), riser: isVerticalRiser(a, b, W.s), dash: s.ductKind === "sock" });
     }

@@ -15,6 +15,7 @@ import {
   handlesOf,
   hitHandle,
   pxPerMeterOf,
+  segmentEndPoint,
   HANDLE_PX,
 } from "../layout.js";
 
@@ -67,12 +68,30 @@ export class CanvasView {
   pxPerMeter() { return pxPerMeterOf(this.store.project); }
 
   snapOpts() {
+    const last = this.ductLastNodeId
+      ? this.store.project.nodes.find((n) => n.id === this.ductLastNodeId)
+      : null;
     return {
       zoom: this.view.zoom,
       skipNodeId: this.ductLastNodeId,
       system: this.store.activeSystem,
       alt: this.store.overrideKey,
       snapPoints: this.store.project.settings.snapPoints !== false,
+      from: last ? { x: last.x, y: last.y } : null,
+    };
+  }
+
+  segEnds(s) {
+    const p = this.store.project;
+    const a = p.nodes.find((n) => n.id === s.a);
+    const b = p.nodes.find((n) => n.id === s.b);
+    if (!a || !b) return null;
+    const px = this.pxPerMeter();
+    return {
+      a,
+      b,
+      pa: segmentEndPoint(p, a, b, s.aOff, px),
+      pb: segmentEndPoint(p, b, a, s.bOff, px),
     };
   }
 
@@ -169,9 +188,9 @@ export class CanvasView {
       if (dist(n, world) <= 8 / z) return { type: "node", id: n.id };
     }
     for (const s of p.segments) {
-      const a = p.nodes.find((x) => x.id === s.a);
-      const b = p.nodes.find((x) => x.id === s.b);
-      if (!a || !b) continue;
+      const ends = this.segEnds(s);
+      if (!ends) continue;
+      const a = ends.pa, b = ends.pb;
       const res = this.segResult(s.id);
       const width = this.ductWidthWorld(res, s) / 2 + 6 / z;
       const r = (world.x - a.x) * (b.x - a.x) + (world.y - a.y) * (b.y - a.y);
@@ -210,7 +229,7 @@ export class CanvasView {
       pan: "Pan: drag to move the view · scroll to zoom",
       scale: `Scale: click two points a known distance apart${this.scalePts.length === 1 ? " · click the second point" : ""}`,
       room: "Room: click to add corners · double-click or Enter to finish",
-      duct: `Duct (${this.store.activeSystem}) at ${round(h, 2)} m AFFL: snap to an outlet or AHU · [ ] change height · Alt cuts a T-piece`,
+      duct: `Duct (${this.store.activeSystem}) at ${round(h, 2)} m AFFL: snap to the edge of an outlet or AHU · [ ] change height · Alt cuts a T-piece`,
       sock: `Air sock (${this.store.activeSystem}) at ${round(h, 2)} m AFFL: trace the fabric run · enter the manufacturer spec in Properties`,
       tee: "T-piece: click a duct to cut a branch joint · then trace a new run off it",
       component: `Place ${componentDef(this.store.newComponentKind)?.label || "component"} (${this.store.activeSystem}): click to drop · drag corners later to size it`,
@@ -591,9 +610,9 @@ export class CanvasView {
     const scale = this.overlayScale();
     const unit = normalizeFlowUnit(p.settings.flowUnit);
     for (const s of p.segments) {
-      const a = p.nodes.find((n) => n.id === s.a);
-      const b = p.nodes.find((n) => n.id === s.b);
-      if (!a || !b) continue;
+      const ends = this.segEnds(s);
+      if (!ends) continue;
+      const { a, b, pa, pb } = ends;
       const res = this.segResult(s.id);
       const selected = sel?.type === "segment" && sel.id === s.id;
       const tint = overlay !== "none" ? overlayColor(overlay, res, p.settings, scale) : null;
@@ -602,12 +621,12 @@ export class CanvasView {
       const shape = (res?.section?.shape) || s.shapeOverride || p.settings.ductType || "round";
 
       if (isVerticalRiser(a, b, px)) {
-        this.drawRiserMarker(ctx, a, b, s, selected);
+        this.drawRiserMarker(ctx, pa, pb, s, selected);
         continue;
       }
 
       const width = this.ductWidthWorld(res, s);
-      this.drawDuctBody(ctx, a, b, width, shape, base, {
+      this.drawDuctBody(ctx, pa, pb, width, shape, base, {
         selected,
         index: this.isIndexSeg(s.id),
         noFlow,
@@ -617,7 +636,7 @@ export class CanvasView {
       });
 
       if (Math.abs((a.z || 0) - (b.z || 0)) > 0.05) {
-        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
         ctx.fillStyle = "rgba(10,15,28,0.82)";
         ctx.font = `${10 / z}px system-ui`;
         ctx.textAlign = "center";
@@ -625,7 +644,7 @@ export class CanvasView {
         ctx.fillText(txt, mx, my + 18 / z);
       }
 
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
       ctx.font = `${11 / z}px system-ui`;
       ctx.textAlign = "center";
       if (res && res.flowM3s > 0) {

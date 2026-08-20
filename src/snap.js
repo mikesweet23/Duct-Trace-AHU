@@ -10,17 +10,20 @@
 //   Hold Alt (or use the T-piece tool) to cut a joint exactly where the
 //   cursor is.
 //
-//   Outlets use the *drawn* (grown) box plus a screen-space magnet so a
-//   click on the visible grille wins over a nearby junction, a 45° ortho
-//   ghost, or the far end of a parallel run.
+//   Outlets use the *drawn* (grown) box plus a magnet around the casing
+//   so a click on or toward the visible grille wins over a nearby
+//   junction or a 45° ghost. The landing is the outside of the part,
+//   not the centre.
 
 import { dist, pointSegment, toLocal } from "./geom.js";
 import { componentDef } from "./standards/components.js";
 import {
+  approachHitsComponent,
   componentBox,
-  connPoint,
+  distToComponentBox,
   preferredPort,
   pxPerMeterOf,
+  snapOnComponent,
 } from "./layout.js";
 
 export const SNAP_PX = 14;
@@ -74,17 +77,15 @@ function systemOk(c, system) {
   return c.system === system || c.system === "both";
 }
 
-export function componentTarget(project, c, system) {
+export function componentTarget(project, c, system, p = null, from = null) {
   const px = pxPerMeterOf(project);
   const port = preferredPort(c, system);
   const node = nodeOf(project, port.nodeId) || nodeOf(project, c.nodeId);
-  const dual = c.kind === "ahu" && c.system === "both" && port.off;
-  const at = dual
-    ? connPoint(c, port.off, px)
-    : node
-      ? { x: node.x, y: node.y }
-      : { x: c.x, y: c.y };
-  return { node, at, off: dual ? port.off : null };
+  const dual = c.kind === "ahu" && c.system === "both";
+  const side = dual ? (system === "extract" ? "extract" : "supply") : null;
+  const aim = p || from || (node ? { x: node.x, y: node.y } : { x: c.x, y: c.y });
+  const snap = snapOnComponent(c, aim, px, { from, side });
+  return { node, at: snap.at, off: snap.off };
 }
 
 // Equipment hit: the visible (grown) icon, or a screen-space magnet around
@@ -96,6 +97,7 @@ export function hitComponentAt(project, p, opts = {}) {
   const system = opts.system || null;
   const magnet = (opts.magnetPx ?? EQUIP_HIT_PX) / zoom;
   const px = pxPerMeterOf(project);
+  const from = opts.from || null;
   const hits = [];
 
   for (const c of project.components) {
@@ -103,24 +105,26 @@ export function hitComponentAt(project, p, opts = {}) {
     if (!n) continue;
     if (n.id === skipId) continue;
     if (c.returnNodeId && c.returnNodeId === skipId) continue;
-    const tgt = componentTarget(project, c, system);
-    if (!tgt.node) continue;
     const drawn = componentBox(c, px, zoom);
     const onIcon = insideBox(c, p, drawn);
-    const d = dist(p, tgt.at);
-    if (!onIcon && d > magnet) continue;
+    const boxDist = distToComponentBox(c, p, px);
+    const approach = from && boxDist <= (SNAP_PULL_PX * 2) / zoom && approachHitsComponent(c, from, p, px);
+    if (!onIcon && boxDist > magnet && !approach) continue;
     // Magnet hits must match the active system so a supply diffuser does not
     // steal an extract run. A click on the visible icon always wins.
     if (!onIcon && !systemOk(c, system)) continue;
+    const tgt = componentTarget(project, c, system, p, from);
+    if (!tgt.node) continue;
     hits.push({
       kind: "component",
       component: c,
       node: tgt.node,
       at: tgt.at,
       off: tgt.off,
-      d,
+      d: dist(p, tgt.at),
+      boxDist,
       onIcon,
-      what: componentWord(c) + (tgt.off ? " edge" : ""),
+      what: componentWord(c) + " edge",
       name: c.label || "",
     });
   }

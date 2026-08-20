@@ -2,9 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Store, seedDemo, migrateProject, newProject } from "../src/state.js";
 import { snapAt, hitComponentAt } from "../src/snap.js";
+import { componentBoxTrue, segmentEndPoint } from "../src/layout.js";
 import { CanvasView } from "../src/ui/canvas.js";
 import { routeLengthM, isVerticalRiser, offsetPoly, orthoPoint } from "../src/geom.js";
 import { computeAll } from "../src/calc/network.js";
+
+function onPerimeter(c, at, px = 50) {
+  const box = componentBoxTrue(c, px);
+  const dx = Math.abs(at.x - c.x);
+  const dy = Math.abs(at.y - c.y);
+  const onX = Math.abs(dx - box.w / 2) < 1.5 && dy <= box.d / 2 + 1.5;
+  const onY = Math.abs(dy - box.d / 2) < 1.5 && dx <= box.w / 2 + 1.5;
+  return onX || onY;
+}
 
 function emptyStore() {
   const store = new Store();
@@ -47,7 +57,8 @@ test("clicking the last extract outlet is not stolen by a nearby junction", () =
   assert.equal(sn.kind, "component");
   assert.equal(sn.component.id, g.id);
   assert.equal(sn.node.id, g.nodeId);
-  assert.ok(Math.abs(sn.at.x - g.x) < 1e-6 && Math.abs(sn.at.y - g.y) < 1e-6);
+  assert.ok(onPerimeter(g, sn.at), `edge ${sn.at.x},${sn.at.y}`);
+  assert.ok(Math.hypot(sn.at.x - g.x, sn.at.y - g.y) > 3, "must not land on the centre");
 });
 
 test("extract tracing does not snap onto a nearby supply diffuser", () => {
@@ -74,7 +85,8 @@ test("a click on the last extract is not turned into a 45° ghost corner", () =>
   const prev = canvas.previewPoint({ x: 396, y: 226 });
   assert.equal(prev.snap?.kind, "component");
   assert.equal(prev.snap.component.id, g.id);
-  assert.ok(Math.abs(prev.x - g.x) < 1e-6 && Math.abs(prev.y - g.y) < 1e-6);
+  assert.ok(onPerimeter(g, { x: prev.x, y: prev.y }), `edge ${prev.x},${prev.y}`);
+  assert.ok(Math.hypot(prev.x - g.x, prev.y - g.y) > 3, "must not jump to the centre");
 });
 
 test("placing the last extract click adds one straight run to that outlet", () => {
@@ -167,6 +179,43 @@ test("a combined AHU is plant for both supply and extract", () => {
   assert.ok(Math.abs(all.extract.totalFlowM3s - 0.09) < 1e-9);
   assert.equal(all.supply.rootNode, ahu.nodeId);
   assert.equal(all.extract.rootNode, ahu.returnNodeId);
+});
+
+test("snap lands on the outside of a diffuser, not the centre", () => {
+  const store = emptyStore();
+  const d = store.addComponentAt({ x: 200, y: 200 }, "diffuser", "supply");
+  const box = componentBoxTrue(d, 50);
+  const fromLeft = snapAt(store.project, { x: 160, y: 200 }, { zoom: 1, system: "supply", from: { x: 80, y: 200 } });
+  assert.equal(fromLeft.kind, "component");
+  assert.ok(Math.abs(fromLeft.at.x - (d.x - box.w / 2)) < 1e-6, `left=${fromLeft.at.x}`);
+  assert.ok(Math.abs(fromLeft.at.y - d.y) < 1e-6);
+  const fromAbove = snapAt(store.project, { x: 200, y: 150 }, { zoom: 1, system: "supply", from: { x: 200, y: 40 } });
+  assert.ok(Math.abs(fromAbove.at.y - (d.y - box.d / 2)) < 1e-6, `top=${fromAbove.at.y}`);
+  assert.ok(Math.abs(fromAbove.at.x - d.x) < 1e-6);
+});
+
+test("a click just outside a large AHU snaps to that face", () => {
+  const store = emptyStore();
+  const ahu = store.addComponentAt({ x: 0, y: 0 }, "ahu", "supply");
+  ahu.widthM = 2.4;
+  ahu.depthM = 1.4;
+  store.syncComponentPorts(ahu);
+  const box = componentBoxTrue(ahu, 50);
+  const click = { x: box.w / 2 + 8, y: 10 };
+  const sn = snapAt(store.project, click, { zoom: 1, system: "supply" });
+  assert.equal(sn.kind, "component");
+  assert.ok(Math.abs(sn.at.x - box.w / 2) < 1e-6);
+  assert.ok(Math.abs(sn.at.x) > 20, "outside the centre");
+});
+
+test("inferred duct ends stop at the casing when no offset is stored", () => {
+  const store = emptyStore();
+  const d = store.addComponentAt({ x: 200, y: 0 }, "diffuser", "supply");
+  const a = store.findOrCreateNode({ x: 0, y: 0 }, 2.7);
+  const end = segmentEndPoint(store.project, store.project.nodes.find((n) => n.id === d.nodeId), a, null, 50);
+  const box = componentBoxTrue(d, 50);
+  assert.ok(Math.abs(end.x - (d.x - box.w / 2)) < 1e-6);
+  assert.equal(end.y, d.y);
 });
 
 test("dual AHU snap lands supply and extract on opposite sides", () => {
