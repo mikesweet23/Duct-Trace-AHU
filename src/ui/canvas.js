@@ -415,37 +415,51 @@ export class CanvasView {
       const res = this.segResult(s.id);
       const selected = sel?.type === "segment" && sel.id === s.id;
       const base = s.system === "extract" ? "#d97706" : "#2563eb";
+      const noFlow = !res || res.flowM3s <= 0;
       // width proportional to duct size (fallback fixed)
       let widthPx = 6;
-      if (res?.section) {
+      if (res?.section && !noFlow) {
         const dmm = res.section.diameterMm || res.section.equivDiameterMm || 200;
-        widthPx = Math.max(3, Math.min(22, dmm / 40));
+        widthPx = Math.max(4, Math.min(22, dmm / 40));
+      } else {
+        widthPx = 5;
       }
       ctx.lineCap = "round";
       // outline
       ctx.lineWidth = (widthPx + 3) / z;
       ctx.strokeStyle = selected ? "#38bdf8" : this.isIndexSeg(s.id) ? "#f43f5e" : "rgba(0,0,0,0.35)";
+      ctx.setLineDash(noFlow ? [10 / z, 7 / z] : []);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       // fill
       let color = base;
-      if (res && !res.withinVelocity) color = "#ef4444";
+      if (noFlow) color = s.system === "extract" ? "rgba(217,119,6,0.55)" : "rgba(37,99,235,0.55)";
+      else if (res && !res.withinVelocity) color = "#ef4444";
       ctx.lineWidth = widthPx / z;
       ctx.strokeStyle = color;
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.setLineDash([]);
 
       // label
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      ctx.font = `${11 / z}px system-ui`;
+      ctx.textAlign = "center";
       if (res && res.flowM3s > 0) {
-        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
         const label = res.section.shape === "rect"
           ? `${res.section.widthMm}×${res.section.heightMm}`
           : `⌀${res.section.diameterMm}`;
-        ctx.font = `${11 / z}px system-ui`;
-        ctx.textAlign = "center";
         const txt = `${label}  ${round(res.velocity, 1)} m/s`;
         const w = ctx.measureText(txt).width + 8 / z;
         ctx.fillStyle = "rgba(10,15,28,0.82)";
         ctx.fillRect(mx - w / 2, my - 16 / z, w, 14 / z);
         ctx.fillStyle = res.withinVelocity ? "#e6edf7" : "#fca5a5";
+        ctx.fillText(txt, mx, my - 5 / z);
+      } else {
+        // Unconnected / no-flow duct: make it obvious rather than a faint line.
+        const txt = "no flow · connect to plant";
+        const w = ctx.measureText(txt).width + 8 / z;
+        ctx.fillStyle = "rgba(10,15,28,0.82)";
+        ctx.fillRect(mx - w / 2, my - 16 / z, w, 14 / z);
+        ctx.fillStyle = "#fcd34d";
         ctx.fillText(txt, mx, my - 5 / z);
       }
     }
