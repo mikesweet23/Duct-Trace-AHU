@@ -9,6 +9,7 @@ import { airDensity, airViscosity, round } from "../units.js";
 import {
   CIRCULAR_DIAMETERS,
   RECTANGULAR_SIDES,
+  SQUARE_SIDES,
   nearestCircularUp,
   nearestRectSideUp,
 } from "./dw144.js";
@@ -128,6 +129,10 @@ export function sizeRectangular(flowM3s, opts = {}) {
   const maxAspect = opts.maxAspect ?? 4;
   const warnings = [];
 
+  if (opts.square || opts.shape === "square") {
+    return sizeSquare(flowM3s, opts);
+  }
+
   const heightStart = nearestRectSideUp(opts.rectHeight ?? 250);
   const heightOptions = RECTANGULAR_SIDES.filter((h) => h >= heightStart);
 
@@ -177,13 +182,64 @@ export function sizeRectangular(flowM3s, opts = {}) {
   };
 }
 
+// Square section: width = height, picked from the DW144 / EN 1505 side list.
+export function sizeSquare(flowM3s, opts = {}) {
+  const method = opts.method ?? "friction";
+  const maxVelocity = opts.maxVelocity ?? 7;
+  const target = opts.targetGradient ?? 1.0;
+  const warnings = [];
+  const start = nearestRectSideUp(opts.rectHeight ?? opts.squareSide ?? 250);
+  const sides = SQUARE_SIDES.filter((s) => s >= start);
+
+  for (const side of sides) {
+    const fr = rectangularFriction(flowM3s, side, side, opts);
+    const velOk = fr.velocity <= maxVelocity;
+    const fricOk = fr.gradient <= target;
+    if (method === "velocity" ? velOk : velOk && fricOk) {
+      return {
+        shape: "square",
+        widthMm: side,
+        heightMm: side,
+        areaM2: fr.area,
+        velocity: fr.velocity,
+        gradient: fr.gradient,
+        reynolds: fr.reynolds,
+        equivDiameterMm: fr.equivDiameterMm,
+        aspect: 1,
+        warnings,
+      };
+    }
+  }
+
+  const side = sides[sides.length - 1] || SQUARE_SIDES[SQUARE_SIDES.length - 1];
+  const fr = rectangularFriction(flowM3s, side, side, opts);
+  warnings.push("Could not meet constraints within standard square sizes.");
+  return {
+    shape: "square",
+    widthMm: side,
+    heightMm: side,
+    areaM2: fr.area,
+    velocity: fr.velocity,
+    gradient: fr.gradient,
+    reynolds: fr.reynolds,
+    equivDiameterMm: fr.equivDiameterMm,
+    aspect: 1,
+    warnings,
+  };
+}
+
+function isRectLike(shape) {
+  return shape === "rect" || shape === "square";
+}
+
 export function sizeDuct(flowM3s, opts = {}) {
+  const shape = opts.shape === "square" ? "square" : opts.shape === "rect" ? "rect" : "round";
   if (flowM3s <= 0) {
     return {
-      shape: opts.shape === "rect" ? "rect" : "round",
-      diameterMm: opts.shape === "rect" ? undefined : 0,
-      widthMm: opts.shape === "rect" ? 0 : undefined,
-      heightMm: opts.shape === "rect" ? 0 : undefined,
+      shape,
+      diameterMm: isRectLike(shape) ? undefined : 0,
+      widthMm: isRectLike(shape) ? 0 : undefined,
+      heightMm: isRectLike(shape) ? 0 : undefined,
       areaM2: 0,
       velocity: 0,
       gradient: 0,
@@ -192,14 +248,14 @@ export function sizeDuct(flowM3s, opts = {}) {
       warnings: ["No flow assigned."],
     };
   }
-  return opts.shape === "rect"
-    ? sizeRectangular(flowM3s, opts)
-    : sizeCircular(flowM3s, opts);
+  if (shape === "square") return sizeSquare(flowM3s, opts);
+  if (shape === "rect") return sizeRectangular(flowM3s, opts);
+  return sizeCircular(flowM3s, opts);
 }
 
 // Friction for an already-fixed section (used when a size is overridden).
 export function frictionForSection(flowM3s, section, opts = {}) {
-  if (section.shape === "rect") {
+  if (section.shape === "rect" || section.shape === "square") {
     return rectangularFriction(flowM3s, section.widthMm, section.heightMm, opts);
   }
   return circularFriction(flowM3s, section.diameterMm, opts);

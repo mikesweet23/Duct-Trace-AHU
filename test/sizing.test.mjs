@@ -5,9 +5,11 @@ import {
   equivalentDiameterMm,
   sizeCircular,
   sizeRectangular,
+  sizeSquare,
   frictionFactor,
 } from "../src/standards/sizing.js";
 import { airDensity } from "../src/units.js";
+import { CIRCULAR_DIAMETERS, RECTANGULAR_SIDES, RECOMMENDED_VELOCITY } from "../src/standards/dw144.js";
 
 test("air density falls with temperature", () => {
   assert.ok(Math.abs(airDensity(20) - 1.2) < 1e-9);
@@ -60,6 +62,26 @@ test("sizeRectangular keeps aspect ratio within limit and meets velocity cap", (
   assert.equal(r.shape, "rect");
   assert.ok(r.velocity <= 6 + 1e-9, `v=${r.velocity}`);
   assert.ok(r.aspect <= 4 + 1e-9, `aspect=${r.aspect}`);
+});
+
+test("standard size lists cover the full spiral and rect / square range", () => {
+  assert.ok(CIRCULAR_DIAMETERS.includes(63));
+  assert.ok(CIRCULAR_DIAMETERS.includes(1800));
+  assert.ok(CIRCULAR_DIAMETERS.includes(2000));
+  assert.ok(RECTANGULAR_SIDES.includes(650));
+  assert.ok(RECTANGULAR_SIDES.includes(1250));
+  assert.ok(RECTANGULAR_SIDES.includes(3000));
+  assert.ok(RECOMMENDED_VELOCITY.riser.max > RECOMMENDED_VELOCITY.branch.max);
+  assert.ok(RECOMMENDED_VELOCITY.riser.min > RECOMMENDED_VELOCITY.branch.min);
+  assert.ok(RECOMMENDED_VELOCITY.riser.max <= 10); // DW144 Class A
+});
+
+test("square ducts pick equal DW144 sides", () => {
+  const r = sizeSquare(0.4, { method: "velocity", maxVelocity: 6 });
+  assert.equal(r.shape, "square");
+  assert.equal(r.widthMm, r.heightMm);
+  assert.ok(r.velocity <= 6 + 1e-9);
+  assert.ok(RECTANGULAR_SIDES.includes(r.widthMm));
 });
 
 test("larger flow selects a larger circular duct", () => {

@@ -22,8 +22,10 @@ export const COMPONENTS = {
     color: "#2563eb",
     foot: { w: 2.0, d: 1.2, t: 1.3 },
     props: {
-      availableStaticPa: 250,
-      designFlow: 0, // set by system total
+      availableStaticPa: 250, // supply ESP
+      extractStaticPa: 250,
+      designFlow_ls: 0, // supply duty; 0 = follow connected outlets
+      extractFlow_ls: 0, // extract duty; 0 = follow connected inlets
       supplyTempC: 18,
       returnTempC: 22,
       note: "",
@@ -37,7 +39,7 @@ export const COMPONENTS = {
     symbol: "FAN",
     color: "#2563eb",
     foot: { w: 0.9, d: 0.7, t: 0.8 },
-    props: { availableStaticPa: 400, designFlow: 0, note: "" },
+    props: { availableStaticPa: 400, designFlow_ls: 0, note: "" },
   },
   fan_axial: {
     kind: "fan_axial",
@@ -47,7 +49,7 @@ export const COMPONENTS = {
     symbol: "AXF",
     color: "#2563eb",
     foot: { w: 0.7, d: 0.7, t: 0.5 },
-    props: { availableStaticPa: 200, designFlow: 0, note: "" },
+    props: { availableStaticPa: 200, designFlow_ls: 0, note: "" },
   },
   fan_plug: {
     kind: "fan_plug",
@@ -57,7 +59,7 @@ export const COMPONENTS = {
     symbol: "ECP",
     color: "#2563eb",
     foot: { w: 0.8, d: 0.6, t: 0.7 },
-    props: { availableStaticPa: 350, designFlow: 0, note: "" },
+    props: { availableStaticPa: 350, designFlow_ls: 0, note: "" },
   },
   diffuser: {
     kind: "diffuser",

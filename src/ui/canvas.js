@@ -4,7 +4,8 @@
 import { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVerticalRiser, clamp } from "../geom.js";
 import { componentDef } from "../standards/components.js";
 import { showPrompt } from "./modal.js";
-import { round } from "../units.js";
+import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
+import { findSegResult, isIndexSegment } from "../calc/network.js";
 import { snapAt, hitJointAt } from "../snap.js";
 import {
   componentBox,
@@ -534,24 +535,19 @@ export class CanvasView {
       ctx.fillStyle = "#93a4c3";
       ctx.font = `${11 / this.view.zoom}px system-ui`;
       const parts = [];
-      if (r.supplyFlow_ls) parts.push(`S ${r.supplyFlow_ls} l/s`);
-      if (r.extractFlow_ls) parts.push(`E ${r.extractFlow_ls} l/s`);
+      const unit = normalizeFlowUnit(p.settings.flowUnit);
+      if (r.supplyFlow_ls) parts.push(`S ${formatFlowLs(r.supplyFlow_ls, unit)}`);
+      if (r.extractFlow_ls) parts.push(`E ${formatFlowLs(r.extractFlow_ls, unit)}`);
       if (parts.length) ctx.fillText(parts.join("  ·  "), c.x, c.y + 12 / this.view.zoom);
     }
   }
 
   segResult(id) {
-    if (!this.results) return null;
-    return (
-      this.results.supply.segments.find((s) => s.id === id) ||
-      this.results.extract.segments.find((s) => s.id === id) ||
-      null
-    );
+    return findSegResult(this.results, id);
   }
 
   isIndexSeg(id) {
-    if (!this.results) return false;
-    return this.results.supply.indexPath.includes(id) || this.results.extract.indexPath.includes(id);
+    return isIndexSegment(this.results, id);
   }
 
   ductWidthWorld(res, seg) {
@@ -561,7 +557,7 @@ export class CanvasView {
     const section = res?.section;
     let mm = 200;
     if (section) {
-      if (section.shape === "rect") mm = section.widthMm || section.heightMm || 200;
+      if (section.shape === "rect" || section.shape === "square") mm = section.widthMm || section.heightMm || 200;
       else mm = section.diameterMm || section.equivDiameterMm || 200;
     }
     const real = (mm / 1000) * px;
@@ -610,7 +606,7 @@ export class CanvasView {
       ctx.font = `${11 / z}px system-ui`;
       ctx.textAlign = "center";
       if (res && res.flowM3s > 0) {
-        const label = res.section.shape === "rect"
+        const label = (res.section.shape === "rect" || res.section.shape === "square")
           ? `${res.section.widthMm}×${res.section.heightMm}`
           : `⌀${res.section.diameterMm}`;
         const txt = `${label}  ${round(res.velocity, 1)} m/s`;

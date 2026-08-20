@@ -2,15 +2,24 @@
 
 import { componentDef, COMPONENTS } from "../standards/components.js";
 import { FITTINGS } from "../standards/fittings.js";
-import { formatFlow, round } from "../units.js";
+import { CIRCULAR_DIAMETERS, RECTANGULAR_SIDES, VELOCITY_GUIDANCE, VELOCITY_ROLES } from "../standards/dw144.js";
+import { formatFlow, formatFlowLs, lsToDisplay, displayToLs, flowUnitLabel, normalizeFlowUnit, plantDutyLs, plantStaticPa, round } from "../units.js";
+import { sectionSizeLabel, sectionShapeLabel, roleLabel } from "../format.js";
+import { allComputedSystems, findSegResult } from "../calc/network.js";
 import { polygonArea, pointInPolygon, routeLengthM, isVerticalRiser, dist } from "../geom.js";
 import { showPrompt } from "./modal.js";
 import { pxPerMeterOf } from "../layout.js";
 
+const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
+const SKIP_GENERIC = new Set(["designFlow", "designFlow_ls", "extractFlow_ls", "supplyFlow_ls", "availableStaticPa", "extractStaticPa", "supplyStaticPa"]);
+
 const PROP_LABELS = {
   availableStaticPa: "Available static (Pa)",
-  designFlow: "Design flow (m³/s)",
-  designFlow_ls: "Design flow (l/s)",
+  extractStaticPa: "Extract available static (Pa)",
+  supplyStaticPa: "Supply available static (Pa)",
+  designFlow_ls: "Design flow",
+  extractFlow_ls: "Extract design flow",
+  supplyFlow_ls: "Supply design flow",
   terminalLossPa: "Terminal loss (Pa)",
   lossPa: "Pressure loss (Pa)",
   k: "Loss coefficient K",
@@ -28,11 +37,16 @@ function num(v, dp = 2) {
   return round(Number(v) || 0, dp);
 }
 
+function unitOf(store) {
+  return normalizeFlowUnit(store.project.settings.flowUnit);
+}
+
 export class Panels {
   constructor(store, els) {
     this.store = store;
-    this.els = els; // { properties, results, settings }
+    this.els = els;
     this.results = null;
+    this.onExportPdf = null;
   }
 
   setResults(r) { this.results = r; }
@@ -62,8 +76,10 @@ export class Panels {
 
   propertiesEmpty() {
     const p = this.store.project;
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
     const rooms = p.rooms
-      .map((r) => `<div class="field"><label>${r.name}</label><span class="badge">S ${r.supplyFlow_ls || 0} · E ${r.extractFlow_ls || 0} l/s</span></div>`)
+      .map((r) => `<div class="field"><label>${r.name}</label><span class="badge">S ${lsToDisplay(r.supplyFlow_ls, unit)} · E ${lsToDisplay(r.extractFlow_ls, unit)} ${ul}</span></div>`)
       .join("");
     return h`
       <p class="empty-hint">
@@ -79,18 +95,17 @@ export class Panels {
 
   propSegment(s) {
     const res = this.segResult(s.id);
-    const fittings = (s.fittings || [])
-      .map((f, i) => this.fittingRow(f, i))
-      .join("");
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
+    const fittings = (s.fittings || []).map((f, i) => this.fittingRow(f, i)).join("");
     const fittingOptions = Object.entries(FITTINGS)
       .map(([k, v]) => `<option value="${k}">${v.label} (K=${v.k})</option>`)
       .join("");
     const shape = s.shapeOverride || this.store.project.settings.ductType;
-    const sizeInfo = res && res.section
-      ? (res.section.shape === "rect"
-        ? `${res.section.widthMm} × ${res.section.heightMm} mm`
-        : `⌀ ${res.section.diameterMm} mm`)
-      : "—";
+    const sizeInfo = sectionSizeLabel(res?.section);
+    const flowDisp = s.flowOverride == null || s.flowOverride === "" ? "" : lsToDisplay(s.flowOverride, unit);
+    const circOpts = CIRCULAR_DIAMETERS.map((d) => `<option value="${d}" ${Number(s.sizeOverride?.diameterMm) === d ? "selected" : ""}>${d}</option>`).join("");
+    const rectOpts = (v) => RECTANGULAR_SIDES.map((d) => `<option value="${d}" ${Number(v) === d ? "selected" : ""}>${d}</option>`).join("");
     return h`
       <div class="section-title">Duct segment <span class="pill ${s.system}">${s.system}</span></div>
       <div class="field"><label>System</label>
@@ -100,27 +115,31 @@ export class Panels {
         </select></div>
       <div class="field"><label>Role</label>
         <select data-k="roleOverride">
-          <option value="">Auto (${res?.role || "main"})</option>
+          <option value="">Auto (${roleLabel(res?.role || "main")})</option>
           <option value="main" ${s.roleOverride === "main" ? "selected" : ""}>Main</option>
+          <option value="riser" ${s.roleOverride === "riser" ? "selected" : ""}>Riser</option>
           <option value="branch" ${s.roleOverride === "branch" ? "selected" : ""}>Branch</option>
           <option value="runout" ${s.roleOverride === "runout" ? "selected" : ""}>Run-out</option>
         </select></div>
       <div class="field"><label>Shape</label>
         <select data-k="shapeOverride">
-          <option value="">Default (${this.store.project.settings.ductType})</option>
-          <option value="round" ${s.shapeOverride === "round" ? "selected" : ""}>Round / spiral</option>
+          <option value="">Default (${sectionShapeLabel(this.store.project.settings.ductType)})</option>
+          <option value="round" ${s.shapeOverride === "round" ? "selected" : ""}>Spiral / circular</option>
+          <option value="square" ${s.shapeOverride === "square" ? "selected" : ""}>Square</option>
           <option value="rect" ${s.shapeOverride === "rect" ? "selected" : ""}>Rectangular</option>
         </select></div>
-      <div class="field"><label>Flow override (l/s)</label>
-        <input type="number" data-k="flowOverride" value="${s.flowOverride ?? ""}" placeholder="auto" /></div>
+      <div class="field"><label>Flow override (${ul})</label>
+        <input type="number" step="any" data-flow-k="flowOverride" value="${flowDisp}" placeholder="auto" /></div>
 
-      <div class="section-title">Manual size (optional)</div>
-      ${shape === "rect"
-        ? `<div class="field"><label>Width × Height (mm)</label>
-             <span><input type="number" style="width:64px" data-size="widthMm" value="${s.sizeOverride?.widthMm ?? ""}" placeholder="w"/>
-             <input type="number" style="width:64px" data-size="heightMm" value="${s.sizeOverride?.heightMm ?? ""}" placeholder="h"/></span></div>`
+      <div class="section-title">Manual size (DW144 / EN 1506)</div>
+      ${shape === "rect" || shape === "square"
+        ? `<div class="field"><label>${shape === "square" ? "Side (mm)" : "Width × Height (mm)"}</label>
+             <span>
+             <select data-size="widthMm"><option value="">auto</option>${rectOpts(s.sizeOverride?.widthMm)}</select>
+             ${shape === "square" ? "" : `<select data-size="heightMm"><option value="">auto</option>${rectOpts(s.sizeOverride?.heightMm)}</select>`}
+             </span></div>`
         : `<div class="field"><label>Diameter (mm)</label>
-             <input type="number" data-size="diameterMm" value="${s.sizeOverride?.diameterMm ?? ""}" placeholder="auto"/></div>`}
+             <select data-size="diameterMm"><option value="">auto</option>${circOpts}</select></div>`}
       <button class="link-btn" data-act="clearSize">Clear manual size (use auto)</button>
 
       <div class="section-title">Fittings</div>
@@ -133,14 +152,15 @@ export class Panels {
       ${this.segHeights(s)}
       <div class="section-title">Calculated</div>
       <div class="metric-grid">
-        <div class="metric"><div class="m-val">${sizeInfo}</div><div class="m-label">Size (DW144)</div></div>
+        <div class="metric"><div class="m-val">${sizeInfo} <small>mm</small></div><div class="m-label">Size (${sectionShapeLabel(res?.section?.shape || shape)})</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.velocity, 2) : "—"} <small>m/s</small></div><div class="m-label">Velocity</div></div>
-        <div class="metric"><div class="m-val">${res ? num(res.flowM3s * 1000, 0) : 0} <small>l/s</small></div><div class="m-label">Flow</div></div>
+        <div class="metric"><div class="m-val">${res ? formatFlow(res.flowM3s, unit) : formatFlow(0, unit)}</div><div class="m-label">Flow</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.lengthM, 2) : 0} <small>m</small></div><div class="m-label">Route (plan + rise)</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.gradient, 2) : 0} <small>Pa/m</small></div><div class="m-label">Gradient</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.dpPa, 1) : 0} <small>Pa</small></div><div class="m-label">Segment Δp</div></div>
       </div>
-      ${res && !res.withinVelocity ? `<ul class="warn-list"><li>Velocity ${num(res.velocity,1)} m/s exceeds the ${num(res.maxVelocity,1)} m/s cap for ${res.role}.</li></ul>` : ""}
+      ${res && !res.withinMax ? `<ul class="warn-list"><li>Velocity ${num(res.velocity, 1)} m/s exceeds the ${num(res.maxVelocity, 1)} m/s cap for ${roleLabel(res.role)}.</li></ul>` : ""}
+      ${res && !res.withinMin ? `<ul class="warn-list"><li>Velocity ${num(res.velocity, 1)} m/s is below the ${num(res.minVelocity, 1)} m/s minimum for ${roleLabel(res.role)}.</li></ul>` : ""}
       ${res && res.warnings?.length ? `<ul class="warn-list">${res.warnings.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
       <div class="row-actions"><button class="btn ghost tiny" data-act="delete">Delete segment</button></div>
     `;
@@ -161,7 +181,7 @@ export class Panels {
       <div class="field"><label>Start (m AFFL)</label><input type="number" step="0.05" data-nodez="${a.id}" value="${num(a.z, 2)}"/></div>
       <div class="field"><label>End (m AFFL)</label><input type="number" step="0.05" data-nodez="${b.id}" value="${num(b.z, 2)}"/></div>
       <div class="field"><label>Plan / rise / route</label><span class="badge">${num(plan, 2)} · ${num(rise, 2)} · ${num(route, 2)} m</span></div>
-      ${riser ? `<p class="small-note">This is a <b>riser</b> — it does not draw as a run on the plan. Open the 3D view to see it.</p>` : `<p class="small-note">A height change along a run is a sloping duct. To make a vertical riser, change the trace height and click the same point again.</p>`}
+      ${riser ? `<p class="small-note">This is a <b>riser</b> — it does not draw as a run on the plan. Open the 3D view to see it. CIBSE Guide B Table 2.18 allows a higher velocity band than a branch in an occupied space.</p>` : `<p class="small-note">A height change along a run is a sloping duct. To make a vertical riser, change the trace height and click the same point again.</p>`}
     `;
   }
 
@@ -176,13 +196,55 @@ export class Panels {
     </div>`;
   }
 
+  plantFields(c, def) {
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
+    const dual = c.kind === "ahu" && c.system === "both";
+    const supplyFlow = lsToDisplay(plantDutyLs(c.props, "supply"), unit);
+    const extractFlow = lsToDisplay(plantDutyLs(c.props, "extract") || (c.props?.extractFlow_ls || 0), unit);
+    const supplyPa = plantStaticPa(c.props, "supply");
+    const extractPa = Number(c.props?.extractStaticPa) || plantStaticPa(c.props, "extract");
+    const res = this.results;
+    const warnings = [];
+    if (res) {
+      for (const sys of allComputedSystems(res)) {
+        if (sys.plant?.id !== c.id) continue;
+        warnings.push(...(sys.warnings || []));
+      }
+      warnings.push(...(res.projectWarnings || []).filter((w) => w.includes(c.label || def.label) || w.includes("AHU")));
+    }
+    const uniq = [...new Set(warnings)];
+    return h`
+      <div class="section-title">${dual ? "Supply & extract duty" : "Fan / plant duty"}</div>
+      <div class="field"><label>${dual ? "Supply flow" : "Design flow"} (${ul})</label>
+        <input type="number" step="any" data-flow-prop="designFlow_ls" value="${c.props?.designFlow_ls ? supplyFlow : ""}" placeholder="auto from outlets"/></div>
+      <div class="field"><label>${dual ? "Supply available static" : "Available static"} (Pa)</label>
+        <input type="number" step="any" data-prop="availableStaticPa" value="${supplyPa}"/></div>
+      ${dual ? `
+      <div class="field"><label>Extract flow (${ul})</label>
+        <input type="number" step="any" data-flow-prop="extractFlow_ls" value="${c.props?.extractFlow_ls ? extractFlow : ""}" placeholder="auto from inlets"/></div>
+      <div class="field"><label>Extract available static (Pa)</label>
+        <input type="number" step="any" data-prop="extractStaticPa" value="${extractPa}"/></div>
+      <p class="small-note">Set different supply and extract flow and Pa on a combined AHU. Leave a flow blank to follow the connected terminals. A warning appears if duty does not match inlets / outlets.</p>
+      ` : `<p class="small-note">Leave flow blank to follow the connected terminals. A warning appears if the set duty does not match those terminals.</p>`}
+      ${uniq.length ? `<ul class="warn-list">${uniq.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
+    `;
+  }
+
   propComponent(c) {
     const def = componentDef(c.kind);
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
+    const isPlant = def.role === "plant";
     const props = Object.entries(c.props || {})
+      .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)))
       .map(([k, v]) => {
         const label = PROP_LABELS[k] || k;
         if (k === "note") {
           return `<div class="field full"><label>${label}</label><textarea data-prop="${k}" rows="2">${v || ""}</textarea></div>`;
+        }
+        if (FLOW_PROP_KEYS.has(k)) {
+          return `<div class="field"><label>${label} (${ul})</label><input type="number" step="any" data-flow-prop="${k}" value="${lsToDisplay(v, unit)}"/></div>`;
         }
         return `<div class="field"><label>${label}</label><input type="number" step="any" data-prop="${k}" value="${v}"/></div>`;
       })
@@ -208,6 +270,7 @@ export class Panels {
       <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-k="rot" value="${c.rot || 0}"/></div>
       <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
       <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>
+      ${isPlant ? this.plantFields(c, def) : ""}
       <div class="section-title">Parameters</div>
       ${props}
       <button class="link-btn" data-act="addParam">+ Add custom parameter</button>
@@ -220,9 +283,10 @@ export class Panels {
 
   propRoom(r) {
     const p = this.store.project;
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
     const pxm = p.scale.pxPerMeter || p.settings.conceptPxPerMeter || 50;
     const areaM2 = polygonArea(r.points) / (pxm * pxm);
-    // assigned terminals inside the room
     let assignedS = 0, assignedE = 0;
     for (const c of p.components) {
       const def = componentDef(c.kind);
@@ -236,13 +300,13 @@ export class Panels {
     const bal = (target, assigned) => {
       const diff = assigned - target;
       const cls = target === 0 ? "" : Math.abs(diff) < 1e-6 ? "ok" : "warn";
-      return `<span class="pill ${cls}">${assigned} / ${target || 0} l/s</span>`;
+      return `<span class="pill ${cls}">${lsToDisplay(assigned, unit)} / ${lsToDisplay(target || 0, unit)} ${ul}</span>`;
     };
     return h`
       <div class="section-title">Room</div>
       <div class="field"><label>Name</label><input type="text" data-k="name" value="${r.name}"/></div>
-      <div class="field"><label>Supply target (l/s)</label><input type="number" data-k="supplyFlow_ls" value="${r.supplyFlow_ls || 0}"/></div>
-      <div class="field"><label>Extract target (l/s)</label><input type="number" data-k="extractFlow_ls" value="${r.extractFlow_ls || 0}"/></div>
+      <div class="field"><label>Supply target (${ul})</label><input type="number" step="any" data-flow-k="supplyFlow_ls" value="${lsToDisplay(r.supplyFlow_ls, unit)}"/></div>
+      <div class="field"><label>Extract target (${ul})</label><input type="number" step="any" data-flow-k="extractFlow_ls" value="${lsToDisplay(r.extractFlow_ls, unit)}"/></div>
       <div class="section-title">Balance</div>
       <div class="field"><label>Floor area</label><span class="badge">${num(areaM2, 1)} m²</span></div>
       <div class="field"><label>Supply assigned</label>${bal(r.supplyFlow_ls, assignedS)}</div>
@@ -271,7 +335,7 @@ export class Panels {
   bindProperty(el, sel, obj) {
     const store = this.store;
     const commit = () => store.commit();
-    // generic key inputs
+    const unit = unitOf(store);
     el.querySelectorAll("[data-k]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
@@ -293,6 +357,22 @@ export class Panels {
         commit();
       });
     });
+    el.querySelectorAll("[data-flow-k]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        const key = input.dataset.flowK;
+        obj[key] = input.value === "" ? null : displayToLs(input.value, unit);
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-flow-prop]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        obj.props = obj.props || {};
+        obj.props[input.dataset.flowProp] = input.value === "" ? 0 : displayToLs(input.value, unit);
+        commit();
+      });
+    });
     el.querySelectorAll("[data-nodez]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
@@ -301,7 +381,6 @@ export class Panels {
         commit();
       });
     });
-    // component props
     el.querySelectorAll("[data-prop]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
@@ -310,18 +389,17 @@ export class Panels {
         commit();
       });
     });
-    // size overrides
     el.querySelectorAll("[data-size]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
         obj.sizeOverride = obj.sizeOverride || {};
         const key = input.dataset.size;
         obj.sizeOverride[key] = input.value === "" ? undefined : Number(input.value);
+        if (obj.shapeOverride === "square" && key === "widthMm") obj.sizeOverride.heightMm = obj.sizeOverride.widthMm;
         if (!obj.sizeOverride.diameterMm && !obj.sizeOverride.widthMm) obj.sizeOverride = null;
         commit();
       });
     });
-    // fittings
     el.querySelectorAll("[data-fitting]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
@@ -338,7 +416,6 @@ export class Panels {
         commit();
       });
     });
-    // actions
     el.querySelectorAll("[data-act]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const act = btn.dataset.act;
@@ -350,7 +427,7 @@ export class Panels {
           commit();
         } else if (act === "clearSize") {
           store.snapshot(); obj.sizeOverride = null; commit();
-        }         else if (act === "addParam") {
+        } else if (act === "addParam") {
           const name = await showPrompt({ title: "Add custom parameter", label: "Parameter name", value: "" });
           if (name) { store.snapshot(); obj.props[name] = 0; commit(); }
         } else if (act === "duplicate") {
@@ -367,17 +444,20 @@ export class Panels {
     });
   }
 
-  bindRooms(el) {
-    // no interactions on empty view besides project stats
-  }
+  bindRooms() {}
 
   // ---------------- Results ----------------
   renderResults() {
     const el = this.els.results;
     if (!this.results) { el.innerHTML = `<p class="empty-hint">No calculation yet.</p>`; return; }
+    const systems = allComputedSystems(this.results);
+    const projectWarn = (this.results.projectWarnings || []).map((w) => `<li>${w}</li>`).join("");
     el.innerHTML = `<div class="result-cards">
-      ${this.systemCard(this.results.supply)}
-      ${this.systemCard(this.results.extract)}
+      ${projectWarn ? `<ul class="warn-list">${projectWarn}</ul>` : ""}
+      ${systems.length ? systems.map((s) => this.systemCard(s)).join("") : `<p class="empty-hint">Trace ducts and add a fan/AHU + terminals to size a system.</p>`}
+      <div class="row-actions">
+        <button class="btn primary tiny" data-pdf>Export PDF report</button>
+      </div>
     </div>`;
     el.querySelectorAll("[data-export]").forEach((btn) => {
       btn.addEventListener("click", () => this.exportCsv(btn.dataset.export));
@@ -385,22 +465,31 @@ export class Panels {
     el.querySelectorAll("[data-selseg]").forEach((row) => {
       row.addEventListener("click", () => this.store.select("segment", row.dataset.selseg));
     });
+    el.querySelectorAll("[data-pdf]").forEach((btn) => {
+      btn.addEventListener("click", () => this.onExportPdf && this.onExportPdf());
+    });
   }
 
   systemCard(sys) {
-    const unit = this.store.project.settings.flowUnit || "l/s";
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
     const hasNet = sys.segments.length > 0;
     const marginPill = sys.plant
       ? (sys.marginPa >= 0
           ? `<span class="pill ok">+${num(sys.marginPa, 0)} Pa spare</span>`
           : `<span class="pill bad">${num(sys.marginPa, 0)} Pa short</span>`)
       : `<span class="pill warn">no plant</span>`;
+    const matchPill = sys.balance && sys.balance.plantDutyLs > 0
+      ? (sys.balance.matched
+          ? `<span class="pill ok">duty matches terminals</span>`
+          : `<span class="pill bad">duty ≠ terminals</span>`)
+      : "";
     const rows = sys.segments.map((s) => {
-      const size = s.section.shape === "rect" ? `${s.section.widthMm}×${s.section.heightMm}` : `⌀${s.section.diameterMm}`;
+      const size = sectionSizeLabel(s.section);
       const idx = sys.indexPath.includes(s.id);
       return `<tr class="${idx ? "index-row" : ""} ${s.withinVelocity ? "" : "over-vel"}" data-selseg="${s.id}" style="cursor:pointer">
         <td>${size}</td>
-        <td>${num(s.flowM3s * 1000, 0)}</td>
+        <td>${formatFlow(s.flowM3s, unit).replace(` ${ul}`, "")}</td>
         <td>${num(s.velocity, 2)}</td>
         <td>${num(s.lengthM, 1)}</td>
         <td>${num(s.gradient, 2)}</td>
@@ -410,48 +499,51 @@ export class Panels {
 
     return h`
       <div class="rcard ${sys.systemType}">
-        <h3>${sys.systemType === "supply" ? "Supply" : "Extract"} system
+        <h3>${sys.name}
           <span class="pill ${sys.systemType}">${sys.pressureClassInfo ? "Class " + sys.pressureClass : ""}</span>
           ${marginPill}
+          ${matchPill}
         </h3>
         <div class="metric-grid">
-          <div class="metric"><div class="m-val">${formatFlow(sys.totalFlowM3s, unit)}</div><div class="m-label">Total design flow</div></div>
-          <div class="metric"><div class="m-val">${num(sys.indexStaticPa, 0)} <small>Pa</small></div><div class="m-label">Index static (ESP)</div><div class="m-sub">${sys.plant ? "avail " + num(sys.availableStaticPa,0) + " Pa" : "add fan/AHU"}</div></div>
+          <div class="metric"><div class="m-val">${formatFlow(sys.totalFlowM3s, unit)}</div><div class="m-label">Terminal total</div></div>
+          <div class="metric"><div class="m-val">${num(sys.indexStaticPa, 0)} <small>Pa</small></div><div class="m-label">Index static (ESP)</div><div class="m-sub">${sys.plant ? "avail " + num(sys.availableStaticPa, 0) + " Pa" : "add fan/AHU"}</div></div>
           <div class="metric"><div class="m-val">${num(sys.maxVelocity, 2)} <small>m/s</small></div><div class="m-label">Max velocity</div></div>
           <div class="metric"><div class="m-val">${num(sys.minVelocity, 2)} <small>m/s</small></div><div class="m-label">Min velocity</div></div>
         </div>
         ${sys.warnings.length ? `<ul class="warn-list">${sys.warnings.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
         ${hasNet ? `
         <table class="schedule">
-          <thead><tr><th>Size (mm)</th><th>l/s</th><th>m/s</th><th>Len m</th><th>Pa/m</th><th>Δp Pa</th></tr></thead>
+          <thead><tr><th>Size (mm)</th><th>${ul}</th><th>m/s</th><th>Len m</th><th>Pa/m</th><th>Δp Pa</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
         <p class="small-note">Highlighted row = index run (governs fan duty). Click a row to select the duct.</p>
-        <div class="row-actions"><button class="btn ghost tiny" data-export="${sys.systemType}">Export schedule (CSV)</button></div>
+        <div class="row-actions"><button class="btn ghost tiny" data-export="${sys.id}">Export schedule (CSV)</button></div>
         ` : `<p class="small-note">Trace ${sys.systemType} ducts and add a fan/AHU + terminals to size this system.</p>`}
       </div>`;
   }
 
-  exportCsv(systemType) {
-    const sys = this.results[systemType];
-    const header = ["Size(mm)", "Shape", "Flow(l/s)", "Velocity(m/s)", "Length(m)", "Gradient(Pa/m)", "Friction(Pa)", "Fittings(Pa)", "Inline(Pa)", "SegmentDp(Pa)", "Role", "IndexRun"].join(",");
+  exportCsv(systemId) {
+    const sys = allComputedSystems(this.results).find((s) => s.id === systemId) || this.results[systemId];
+    if (!sys) return;
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
+    const header = ["Size(mm)", "Shape", `Flow(${ul})`, "Velocity(m/s)", "Length(m)", "Gradient(Pa/m)", "Friction(Pa)", "Fittings(Pa)", "Inline(Pa)", "SegmentDp(Pa)", "Role", "IndexRun"].join(",");
     const lines = sys.segments.map((s) => {
-      const size = s.section.shape === "rect" ? `${s.section.widthMm}x${s.section.heightMm}` : `${s.section.diameterMm}`;
-      return [size, s.section.shape, num(s.flowM3s * 1000, 0), num(s.velocity, 2), num(s.lengthM, 2), num(s.gradient, 3), num(s.frictionPa, 2), num(s.fittingPa, 2), num(s.inlinePa, 2), num(s.dpPa, 2), s.role, sys.indexPath.includes(s.id) ? "yes" : ""].join(",");
+      const size = sectionSizeLabel(s.section).replace(/×/g, "x");
+      return [size, s.section.shape, formatFlow(s.flowM3s, unit).replace(` ${ul}`, ""), num(s.velocity, 2), num(s.lengthM, 2), num(s.gradient, 3), num(s.frictionPa, 2), num(s.fittingPa, 2), num(s.inlinePa, 2), num(s.dpPa, 2), s.role, sys.indexPath.includes(s.id) ? "yes" : ""].join(",");
     });
-    const summary = `\nSystem,${systemType}\nTotal flow (l/s),${num(sys.totalFlowM3s * 1000, 0)}\nIndex static (Pa),${num(sys.indexStaticPa, 0)}\nPressure class,${sys.pressureClass}\nMax velocity (m/s),${num(sys.maxVelocity, 2)}\n`;
+    const summary = `\nSystem,${sys.name}\nTotal flow (${ul}),${formatFlow(sys.totalFlowM3s, unit).replace(` ${ul}`, "")}\nIndex static (Pa),${num(sys.indexStaticPa, 0)}\nPressure class,${sys.pressureClass}\nMax velocity (m/s),${num(sys.maxVelocity, 2)}\n`;
     const csv = header + "\n" + lines.join("\n") + "\n" + summary;
     const blob = new Blob([csv], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `duct-schedule-${systemType}.csv`;
+    a.download = `duct-schedule-${(sys.name || sys.systemType).replace(/\s+/g, "-").toLowerCase()}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
 
   segResult(id) {
-    if (!this.results) return null;
-    return this.results.supply.segments.find((s) => s.id === id) || this.results.extract.segments.find((s) => s.id === id) || null;
+    return findSegResult(this.results, id);
   }
 
   // ---------------- Settings ----------------
@@ -460,6 +552,14 @@ export class Panels {
     const s = this.store.project.settings;
     const p = this.store.project;
     const scaleTxt = p.scale.pxPerMeter ? `${round(p.scale.pxPerMeter, 1)} px/m` : "not set (using concept scale)";
+    const velRows = VELOCITY_ROLES.map((role) => {
+      const cap = s.velocityCaps[role];
+      const min = s.velocityMins[role];
+      const label = role === "runout" ? "Run-outs" : role[0].toUpperCase() + role.slice(1);
+      return `<div class="field"><label>${label} min / max</label>
+        <span><input type="number" step="0.5" style="width:64px" data-vmin="${role}" value="${min}"/>
+        <input type="number" step="0.5" style="width:64px" data-vmax="${role}" value="${cap}"/></span></div>`;
+    }).join("");
     el.innerHTML = h`
       <div class="section-title">Sizing method</div>
       <div class="field"><label>Method</label>
@@ -470,17 +570,18 @@ export class Panels {
       <div class="field"><label>Target gradient (Pa/m)</label><input type="number" step="0.1" data-s="targetGradient" value="${s.targetGradient}"/></div>
       <div class="field"><label>Default duct shape</label>
         <select data-s="ductType">
-          <option value="round" ${s.ductType === "round" ? "selected" : ""}>Round / spiral</option>
+          <option value="round" ${s.ductType === "round" ? "selected" : ""}>Spiral / circular</option>
+          <option value="square" ${s.ductType === "square" ? "selected" : ""}>Square</option>
           <option value="rect" ${s.ductType === "rect" ? "selected" : ""}>Rectangular</option>
         </select></div>
-      <div class="field"><label>Rect. duct height (mm)</label><input type="number" data-s="rectHeight" value="${s.rectHeight}"/></div>
+      <div class="field"><label>Rect. / square start (mm)</label><input type="number" data-s="rectHeight" value="${s.rectHeight}"/></div>
       <div class="field"><label>Max aspect ratio</label><input type="number" step="0.5" data-s="maxAspect" value="${s.maxAspect}"/></div>
       <div class="field"><label>Roughness (mm)</label><input type="number" step="0.01" data-s="roughnessMm" value="${s.roughnessMm}"/></div>
+      <p class="small-note">Spiral sizes follow EN 1506 / DW144 (63–2000 mm). Square and rectangular sides follow EN 1505 / DW144 (100–3000 mm).</p>
 
       <div class="section-title">Velocity limits (m/s)</div>
-      <div class="field"><label>Main ducts</label><input type="number" step="0.5" data-cap="main" value="${s.velocityCaps.main}"/></div>
-      <div class="field"><label>Branches</label><input type="number" step="0.5" data-cap="branch" value="${s.velocityCaps.branch}"/></div>
-      <div class="field"><label>Run-outs / terminals</label><input type="number" step="0.5" data-cap="runout" value="${s.velocityCaps.runout}"/></div>
+      ${velRows}
+      <p class="small-note">${VELOCITY_GUIDANCE.join(" ")}</p>
 
       <div class="section-title">Air conditions</div>
       <div class="field"><label>Supply temp (°C)</label><input type="number" data-s="supplyTempC" value="${s.supplyTempC}"/></div>
@@ -489,8 +590,6 @@ export class Panels {
         <select data-s="flowUnit">
           <option value="l/s" ${s.flowUnit === "l/s" ? "selected" : ""}>l/s</option>
           <option value="m3/h" ${s.flowUnit === "m3/h" ? "selected" : ""}>m³/h</option>
-          <option value="m3/s" ${s.flowUnit === "m3/s" ? "selected" : ""}>m³/s</option>
-          <option value="cfm" ${s.flowUnit === "cfm" ? "selected" : ""}>cfm</option>
         </select></div>
 
       <div class="section-title">Tracing</div>
@@ -535,14 +634,21 @@ export class Panels {
         if (input.type === "number") s[key] = Number(input.value);
         else if (input.value === "true") s[key] = true;
         else if (input.value === "false") s[key] = false;
-        else s[key] = input.value;
+        else s[key] = key === "flowUnit" ? normalizeFlowUnit(input.value) : input.value;
         store.commit();
       });
     });
-    el.querySelectorAll("[data-cap]").forEach((input) => {
+    el.querySelectorAll("[data-vmax]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
-        s.velocityCaps[input.dataset.cap] = Number(input.value);
+        s.velocityCaps[input.dataset.vmax] = Number(input.value);
+        store.commit();
+      });
+    });
+    el.querySelectorAll("[data-vmin]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        s.velocityMins[input.dataset.vmin] = Number(input.value);
         store.commit();
       });
     });
