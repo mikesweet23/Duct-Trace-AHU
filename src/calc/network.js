@@ -3,22 +3,99 @@
 // the plant, sizes every segment, and finds the index run (the path of
 // greatest total pressure loss), which sets the required system static.
 
-import { routeLengthM } from "../geom.js";
-import { flowToM3s } from "../units.js";
+import { routeLengthM, isVerticalRiser } from "../geom.js";
+import { flowToM3s, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { airDensity, airViscosity } from "../units.js";
 import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizing.js";
 import { totalFittingK } from "../standards/fittings.js";
 import { componentDef, inlineLossPa } from "../standards/components.js";
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
 
-function velocityCap(role, settings) {
+const FLOW_MATCH_ABS_LS = 2;
+const FLOW_MATCH_REL = 0.02;
+
+function velocityLimits(role, settings) {
   const caps = settings.velocityCaps || {};
-  if (role === "runout") return caps.runout ?? RECOMMENDED_VELOCITY.runout.max;
-  if (role === "branch") return caps.branch ?? RECOMMENDED_VELOCITY.branch.max;
-  return caps.main ?? RECOMMENDED_VELOCITY.main.max;
+  const mins = settings.velocityMins || {};
+  const rec = RECOMMENDED_VELOCITY[role] || RECOMMENDED_VELOCITY.main;
+  return {
+    min: mins[role] ?? rec.min ?? 0,
+    max: caps[role] ?? rec.max ?? 7,
+  };
 }
 
-export function computeSystem(project, systemType) {
+function plantServes(c, systemType) {
+  return c.system === systemType || c.system === "both";
+}
+
+function plantsFor(project, systemType) {
+  return (project.components || []).filter((c) => {
+    const def = componentDef(c.kind);
+    return def?.role === "plant" && plantServes(c, systemType);
+  });
+}
+
+function plantRoot(plant, systemType) {
+  if (!plant) return null;
+  return plant.system === "both" && systemType === "extract" && plant.returnNodeId
+    ? plant.returnNodeId
+    : plant.nodeId;
+}
+
+function flowMatchTolLs(a, b) {
+  return Math.max(FLOW_MATCH_ABS_LS, FLOW_MATCH_REL * Math.max(Math.abs(a), Math.abs(b), 1));
+}
+
+function flowsMatch(a, b) {
+  return Math.abs(a - b) <= flowMatchTolLs(a, b);
+}
+
+function inferRole(s, a, b, px, parentNode, terminalNodes, adj, segFlow) {
+  if (s.roleOverride) return s.roleOverride;
+  if (a && b && isVerticalRiser(a, b, px)) return "riser";
+
+  const childNode = parentNode.get(s.b) === s.a ? s.b : parentNode.get(s.a) === s.b ? s.a : null;
+  if (childNode != null && terminalNodes.has(childNode)) return "runout";
+
+  if (childNode != null) {
+    const parent = parentNode.get(childNode);
+    const outgoing = (adj.get(parent) || []).filter(({ other }) => parentNode.get(other) === parent);
+    if (outgoing.length >= 2) {
+      const thisF = segFlow.get(s.id) || 0;
+      const maxF = Math.max(...outgoing.map(({ seg }) => segFlow.get(seg.id) || 0));
+      if (thisF < maxF - 1e-9) return "branch";
+    }
+  }
+  return "main";
+}
+
+function emptySystem(systemType, extra = {}) {
+  return {
+    id: extra.id || systemType,
+    name: extra.name || (systemType === "supply" ? "Supply" : "Extract"),
+    systemType,
+    tempC: extra.tempC ?? (systemType === "extract" ? 22 : 18),
+    density: extra.density ?? airDensity(extra.tempC),
+    plant: extra.plant || null,
+    rootNode: extra.rootNode ?? null,
+    totalFlowM3s: 0,
+    indexStaticPa: 0,
+    indexTerminal: null,
+    indexPath: [],
+    availableStaticPa: 0,
+    marginPa: extra.plant ? 0 : null,
+    pressureClass: "A",
+    pressureClassInfo: PRESSURE_CLASSES.A,
+    minVelocity: 0,
+    maxVelocity: 0,
+    segments: [],
+    terminals: [],
+    warnings: extra.warnings || [],
+    balance: extra.balance || null,
+  };
+}
+
+export function computeSystem(project, systemType, plantFilter = undefined) {
   const settings = project.settings || {};
   const pxPerMeter = (project.scale && project.scale.pxPerMeter) || settings.conceptPxPerMeter || 50;
   const tempC = systemType === "extract" ? settings.extractTempC ?? 22 : settings.supplyTempC ?? 18;
@@ -39,15 +116,13 @@ export function computeSystem(project, systemType) {
   const segs = project.segments.filter((s) => s.system === systemType);
   const comps = (project.components || []).filter((c) => {
     if (!c.nodeId) return false;
-    return c.system === systemType || c.system === "both";
+    return plantServes(c, systemType);
   });
 
-  // Terminal demand and inline loss and plant per node.
   const demand = new Map(); // node id -> m3/s
   const inlineNodes = new Map(); // node id -> [components]
   const terminalNodes = new Map(); // node id -> [components]
-  let plant = null;
-  let rootNode = null;
+  const plants = [];
   for (const c of comps) {
     const def = componentDef(c.kind);
     if (!def) continue;
@@ -60,17 +135,18 @@ export function computeSystem(project, systemType) {
       if (!inlineNodes.has(c.nodeId)) inlineNodes.set(c.nodeId, []);
       inlineNodes.get(c.nodeId).push(c);
     } else if (def.role === "plant") {
-      if (c.system !== systemType && c.system !== "both") continue;
-      if (!plant) {
-        plant = c;
-        rootNode = (c.system === "both" && systemType === "extract" && c.returnNodeId)
-          ? c.returnNodeId
-          : c.nodeId;
-      }
+      plants.push(c);
     }
   }
 
-  // Adjacency for this system.
+  let plant = null;
+  if (plantFilter) {
+    plant = plants.find((c) => c.id === plantFilter.id) || plantFilter;
+  } else if (plants.length) {
+    plant = plants[0];
+  }
+  const rootNode = plantRoot(plant, systemType);
+
   const adj = new Map();
   for (const s of segs) {
     if (!adj.has(s.a)) adj.set(s.a, []);
@@ -83,7 +159,8 @@ export function computeSystem(project, systemType) {
   const segFlow = new Map(); // seg id -> m3/s
   const parentSeg = new Map(); // node -> seg used to reach it
   const parentNode = new Map();
-  const order = []; // BFS order from root
+  const order = [];
+  const reachableSegs = new Set();
 
   if (rootNode != null && adj.has(rootNode)) {
     const visited = new Set([rootNode]);
@@ -96,34 +173,35 @@ export function computeSystem(project, systemType) {
           visited.add(other);
           parentSeg.set(other, seg);
           parentNode.set(other, n);
+          reachableSegs.add(seg.id);
           queue.push(other);
         }
       }
     }
-    // Post-order accumulation of subtree demand.
     const subtree = new Map();
     for (let i = order.length - 1; i >= 0; i--) {
       const n = order[i];
       let sum = demand.get(n) || 0;
-      for (const { seg, other } of adj.get(n) || []) {
+      for (const { other } of adj.get(n) || []) {
         if (parentNode.get(other) === n) sum += subtree.get(other) || 0;
       }
       subtree.set(n, sum);
       const ps = parentSeg.get(n);
       if (ps) segFlow.set(ps.id, subtree.get(n));
     }
-    if (order.length < new Set([...adj.keys()]).size) {
+    if (!plantFilter && order.length < new Set([...adj.keys()]).size) {
       warnings.push("Some ducts are not connected to the plant and were ignored in flow accumulation.");
     }
   } else if (segs.length) {
     warnings.push(`No plant (fan/AHU) placed on the ${systemType} system — flows use per-segment overrides only.`);
   }
 
-  // Size each segment and compute pressure losses.
+  const segsToSize = plantFilter ? segs.filter((s) => reachableSegs.has(s.id) || s.flowOverride != null) : segs;
+
   const segResults = [];
   let minV = Infinity;
   let maxV = 0;
-  for (const s of segs) {
+  for (const s of segsToSize) {
     let flow = segFlow.get(s.id) ?? 0;
     if (s.flowOverride != null && s.flowOverride !== "") {
       flow = flowToM3s(Number(s.flowOverride), "l/s");
@@ -132,13 +210,10 @@ export function computeSystem(project, systemType) {
     const b = nodesById.get(s.b);
     const lengthM = a && b ? routeLengthM(a, b, pxPerMeter) : 0;
 
-    // Role: leaf segment feeding a terminal node = runout.
-    let role = s.roleOverride || "main";
-    if (!s.roleOverride) {
-      const childNode = parentNode.get(s.b) === s.a ? s.b : parentNode.get(s.a) === s.b ? s.a : null;
-      if (childNode != null && terminalNodes.has(childNode)) role = "runout";
-    }
-    const maxVelocity = velocityCap(role, settings);
+    const role = inferRole(s, a, b, pxPerMeter, parentNode, terminalNodes, adj, segFlow);
+    const limits = velocityLimits(role, settings);
+    const maxVelocity = limits.max;
+    const minVelocity = limits.min;
 
     const shape = s.shapeOverride || settings.ductType || "round";
     let section;
@@ -160,7 +235,6 @@ export function computeSystem(project, systemType) {
     const kTotal = totalFittingK(s.fittings || []);
     const fittingPa = kTotal * dp;
     const inlineList = inlineNodes.get(s.b) || [];
-    // Attribute in-line device losses to the segment on the plant side of the node.
     let inlinePa = 0;
     if (parentSeg.get(s.b)?.id === s.id) {
       for (const c of inlineList) inlinePa += inlineLossPa(c.props, dp);
@@ -170,6 +244,17 @@ export function computeSystem(project, systemType) {
     if (flow > 0) {
       minV = Math.min(minV, velocity);
       maxV = Math.max(maxV, velocity);
+    }
+
+    const withinMax = velocity <= maxVelocity + 1e-6;
+    const withinMin = flow <= 0 || velocity + 1e-6 >= minVelocity;
+    const rec = RECOMMENDED_VELOCITY[role] || RECOMMENDED_VELOCITY.main;
+    const segWarnings = [...(section.warnings || [])];
+    if (flow > 0 && !withinMax) {
+      segWarnings.push(`Velocity ${round(velocity, 1)} m/s exceeds the ${round(maxVelocity, 1)} m/s ${role} cap (${rec.source}).`);
+    }
+    if (flow > 0 && !withinMin) {
+      segWarnings.push(`Velocity ${round(velocity, 1)} m/s is below the ${round(minVelocity, 1)} m/s ${role} minimum (${rec.source}).`);
     }
 
     segResults.push({
@@ -186,22 +271,26 @@ export function computeSystem(project, systemType) {
       inlinePa,
       dpPa: segDp,
       kTotal,
-      withinVelocity: velocity <= maxVelocity + 1e-6,
+      fittings: (s.fittings || []).map((f) => ({ ...f })),
+      withinVelocity: withinMax && withinMin,
+      withinMax,
+      withinMin,
       maxVelocity,
-      warnings: section.warnings || [],
+      minVelocity,
+      warnings: segWarnings,
     });
   }
 
   const segResById = new Map(segResults.map((r) => [r.id, r]));
 
-  // Index run: for each terminal node, cumulative loss from root along parents.
   let indexStaticPa = 0;
   let indexTerminal = null;
   let indexPath = [];
   const terminals = [];
+  const reached = new Set(order);
   if (rootNode != null) {
     for (const [nodeId, list] of terminalNodes) {
-      // Walk up to root.
+      if (plantFilter && !reached.has(nodeId) && nodeId !== rootNode) continue;
       let cur = nodeId;
       let cum = 0;
       const path = [];
@@ -220,7 +309,8 @@ export function computeSystem(project, systemType) {
       const node = nodesById.get(nodeId);
       terminals.push({
         nodeId,
-        name: list.map((c) => componentDef(c.kind)?.label).join(", "),
+        components: list,
+        name: list.map((c) => c.label || componentDef(c.kind)?.label).join(", "),
         totalPa: cum,
         terminalLossPa: termLoss,
         flowM3s: demand.get(nodeId) || 0,
@@ -235,14 +325,43 @@ export function computeSystem(project, systemType) {
     }
   }
 
-  const totalFlowM3s = [...demand.values()].reduce((a, b) => a + b, 0);
-  const availableStaticPa = plant ? Number(plant.props?.availableStaticPa) || 0 : 0;
+  const totalFlowM3s = terminals.reduce((a, t) => a + t.flowM3s, 0);
+  const availableStaticPa = plant ? plantStaticPa(plant.props, systemType) : 0;
+  const dutyLs = plant ? plantDutyLs(plant.props, systemType) : 0;
+  const terminalLs = totalFlowM3s * 1000;
+  const balance = {
+    plantDutyLs: dutyLs,
+    terminalLs,
+    matched: dutyLs <= 0 || flowsMatch(dutyLs, terminalLs),
+    deltaLs: dutyLs > 0 ? terminalLs - dutyLs : 0,
+  };
+  if (plant && dutyLs > 0 && !balance.matched) {
+    const def = componentDef(plant.kind);
+    const label = plant.label || def?.label || "Plant";
+    warnings.push(
+      `${label} duty (${round(dutyLs, 0)} l/s) does not match connected ${systemType} terminals (${round(terminalLs, 0)} l/s).`
+    );
+  }
+
+  const plantClass = pressureClassFor(indexStaticPa);
+  for (const r of segResults) {
+    const classMax = PRESSURE_CLASSES[plantClass]?.maxVelocity;
+    if (r.flowM3s > 0 && classMax && r.velocity > classMax + 1e-6) {
+      r.warnings.push(`Velocity ${round(r.velocity, 1)} m/s exceeds DW144 Class ${plantClass} limit of ${classMax} m/s.`);
+      r.withinVelocity = false;
+    }
+  }
+
+  const plantLabel = plant ? (plant.label || componentDef(plant.kind)?.label || "Plant") : null;
 
   return {
+    id: plant ? `${systemType}-${plant.id}` : systemType,
+    name: systemType === "supply" ? "Supply" : "Extract",
     systemType,
     tempC,
     density,
     plant,
+    plantLabel,
     rootNode,
     totalFlowM3s,
     indexStaticPa,
@@ -250,19 +369,85 @@ export function computeSystem(project, systemType) {
     indexPath,
     availableStaticPa,
     marginPa: plant ? availableStaticPa - indexStaticPa : null,
-    pressureClass: pressureClassFor(indexStaticPa),
-    pressureClassInfo: PRESSURE_CLASSES[pressureClassFor(indexStaticPa)],
+    pressureClass: plantClass,
+    pressureClassInfo: PRESSURE_CLASSES[plantClass],
     minVelocity: isFinite(minV) ? minV : 0,
     maxVelocity: maxV,
     segments: segResults,
     terminals,
     warnings,
+    balance,
   };
 }
 
-export function computeAll(project) {
-  return {
-    supply: computeSystem(project, "supply"),
-    extract: computeSystem(project, "extract"),
-  };
+function nameSystems(systems) {
+  const counts = new Map();
+  for (const sys of systems) counts.set(sys.systemType, (counts.get(sys.systemType) || 0) + 1);
+  const seen = new Map();
+  for (const sys of systems) {
+    const n = counts.get(sys.systemType) || 1;
+    const i = (seen.get(sys.systemType) || 0) + 1;
+    seen.set(sys.systemType, i);
+    const side = sys.systemType === "supply" ? "Supply" : "Extract";
+    if (n === 1) sys.name = sys.plantLabel ? `${side} — ${sys.plantLabel}` : side;
+    else sys.name = `${side} ${i}${sys.plantLabel ? ` — ${sys.plantLabel}` : ""}`;
+  }
 }
+
+function dualAhuWarnings(project, systems) {
+  const warnings = [];
+  for (const c of project.components || []) {
+    if (c.kind !== "ahu" || c.system !== "both") continue;
+    const supply = systems.find((s) => s.systemType === "supply" && s.plant?.id === c.id);
+    const extract = systems.find((s) => s.systemType === "extract" && s.plant?.id === c.id);
+    if (!supply || !extract) continue;
+    const sLs = supply.totalFlowM3s * 1000;
+    const eLs = extract.totalFlowM3s * 1000;
+    if ((sLs > 0 || eLs > 0) && !flowsMatch(sLs, eLs)) {
+      const label = c.label || componentDef(c.kind)?.label || "AHU";
+      warnings.push(
+        `${label}: supply outlets (${round(sLs, 0)} l/s) do not match extract inlets (${round(eLs, 0)} l/s).`
+      );
+      supply.warnings.push(warnings[warnings.length - 1]);
+      extract.warnings.push(warnings[warnings.length - 1]);
+    }
+  }
+  return warnings;
+}
+
+export function computeAll(project) {
+  const systems = [];
+  for (const systemType of ["supply", "extract"]) {
+    const plants = plantsFor(project, systemType);
+    if (!plants.length) {
+      const sys = computeSystem(project, systemType);
+      if (sys.segments.length || sys.terminals.length) systems.push(sys);
+    } else {
+      for (const plant of plants) systems.push(computeSystem(project, systemType, plant));
+    }
+  }
+  nameSystems(systems);
+  const projectWarnings = dualAhuWarnings(project, systems);
+  const supply = systems.find((s) => s.systemType === "supply") || emptySystem("supply");
+  const extract = systems.find((s) => s.systemType === "extract") || emptySystem("extract");
+  return { supply, extract, systems, projectWarnings };
+}
+
+export function allComputedSystems(results) {
+  if (results?.systems?.length) return results.systems;
+  return [results?.supply, results?.extract].filter(Boolean);
+}
+
+export function findSegResult(results, id) {
+  for (const sys of allComputedSystems(results)) {
+    const s = sys.segments.find((x) => x.id === id);
+    if (s) return s;
+  }
+  return null;
+}
+
+export function isIndexSegment(results, id) {
+  return allComputedSystems(results).some((sys) => sys.indexPath?.includes(id));
+}
+
+export { flowsMatch, flowMatchTolLs, plantsFor };

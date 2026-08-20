@@ -6,9 +6,10 @@ import { CanvasView } from "./ui/canvas.js";
 import { View3D } from "./ui/view3d.js";
 import { Panels } from "./ui/panels.js";
 import { componentsByCategory, CATEGORIES, componentDef } from "./standards/components.js";
-import { computeAll } from "./calc/network.js";
+import { computeAll, allComputedSystems } from "./calc/network.js";
 import { showConfirm } from "./ui/modal.js";
-import { round } from "./units.js";
+import { formatFlow, normalizeFlowUnit, round } from "./units.js";
+import { buildProjectPdf, downloadBlob } from "./export/pdf.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -22,6 +23,7 @@ const panels = new Panels(store, {
   results: $("#tab-results"),
   settings: $("#tab-settings"),
 });
+panels.onExportPdf = exportPdfReport;
 
 // ---- palette ----
 function buildPalette() {
@@ -73,6 +75,13 @@ document.querySelectorAll("[data-view]").forEach((b) =>
     store.emit();
   })
 );
+document.querySelectorAll("[data-flowunit]").forEach((b) =>
+  b.addEventListener("click", () => {
+    store.snapshot();
+    store.project.settings.flowUnit = normalizeFlowUnit(b.dataset.flowunit);
+    store.commit();
+  })
+);
 
 $("#traceHeight").addEventListener("change", (e) => store.setTraceHeight(e.target.value));
 $("#traceHeight").addEventListener("wheel", (e) => { e.target.blur(); }, { passive: true });
@@ -99,6 +108,58 @@ $("#btnExport").addEventListener("click", () => {
   a.click();
   URL.revokeObjectURL(a.href);
 });
+$("#btnPdf").addEventListener("click", () => exportPdfReport());
+
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+async function captureViews() {
+  const workspace = document.querySelector(".workspace");
+  const saved = store.viewMode;
+  const savedView = { ...store.project.view };
+
+  store.viewMode = "plan";
+  workspace.classList.remove("view-3d");
+  canvas.fit();
+  canvas.resize();
+  canvas.draw();
+  await nextFrame();
+  const planJpeg = canvas.canvas.toDataURL("image/jpeg", 0.92);
+
+  store.viewMode = "3d";
+  workspace.classList.add("view-3d");
+  view3d.resize();
+  view3d.draw();
+  await nextFrame();
+  const isoJpeg = view3d.canvas.toDataURL("image/jpeg", 0.92);
+
+  store.viewMode = saved;
+  workspace.classList.toggle("view-3d", saved === "3d");
+  Object.assign(store.project.view, savedView);
+  if (saved === "3d") view3d.resize();
+  else canvas.resize();
+  return { planJpeg, isoJpeg };
+}
+
+async function exportPdfReport() {
+  const btn = $("#btnPdf");
+  const prev = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = "PDF…"; }
+  try {
+    const results = computeAll(store.project);
+    const { planJpeg, isoJpeg } = await captureViews();
+    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg });
+    const name = `${(store.project.meta.name || "duct-project").replace(/\s+/g, "-").toLowerCase()}-report.pdf`;
+    downloadBlob(blob, name);
+  } catch (err) {
+    console.error(err);
+    alert("Could not build the PDF report.");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = prev || "PDF"; }
+    store.emit();
+  }
+}
 $("#btnImport").addEventListener("click", () => $("#fileImport").click());
 $("#fileImport").addEventListener("change", (e) => {
   const file = e.target.files[0];
@@ -183,6 +244,8 @@ function renderChrome() {
   document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("active", b.dataset.mode === p.mode));
   document.querySelectorAll("[data-system]").forEach((b) => b.classList.toggle("active", b.dataset.system === store.activeSystem));
   document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === store.viewMode));
+  const unit = normalizeFlowUnit(p.settings.flowUnit);
+  document.querySelectorAll("[data-flowunit]").forEach((b) => b.classList.toggle("active", b.dataset.flowunit === unit));
   document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === store.tool));
   if (Number($("#traceHeight").value) !== store.traceHeight) $("#traceHeight").value = round(store.traceHeight, 2);
   document.querySelectorAll(".palette-btn").forEach((b) => b.classList.toggle("active", store.tool === "component" && b.dataset.kind === store.newComponentKind));
@@ -194,11 +257,20 @@ function renderChrome() {
 }
 
 function renderStatus(results) {
-  const s = results.supply, x = results.extract;
-  $("#statusbar").innerHTML =
-    `<span>Supply: <b>${round(s.totalFlowM3s * 1000, 0)} l/s</b> · ESP <b>${round(s.indexStaticPa, 0)} Pa</b> · vmax ${round(s.maxVelocity, 1)} m/s</span>` +
-    `<span>Extract: <b>${round(x.totalFlowM3s * 1000, 0)} l/s</b> · ESP <b>${round(x.indexStaticPa, 0)} Pa</b> · vmax ${round(x.maxVelocity, 1)} m/s</span>` +
-    `<span>${store.project.mode === "drawing" ? "Drawing mode" : "Concept mode"}</span>`;
+  const unit = normalizeFlowUnit(store.project.settings.flowUnit);
+  const systems = allComputedSystems(results);
+  const bits = systems.map((sys) => {
+    const side = sys.systemType === "supply" ? "Supply" : "Extract";
+    return `<span>${sys.name || side}: <b>${formatFlow(sys.totalFlowM3s, unit)}</b> · ESP <b>${round(sys.indexStaticPa, 0)} Pa</b> · vmax ${round(sys.maxVelocity, 1)} m/s</span>`;
+  });
+  const warns = [
+    ...(results.projectWarnings || []),
+    ...systems.flatMap((s) => s.warnings || []),
+  ];
+  const mismatch = warns.find((w) => /does not match|do not match/i.test(w));
+  if (mismatch) bits.push(`<span class="status-warn">${mismatch}</span>`);
+  bits.push(`<span>${store.project.mode === "drawing" ? "Drawing mode" : "Concept mode"}</span>`);
+  $("#statusbar").innerHTML = bits.join("");
 }
 
 let scheduled = false;

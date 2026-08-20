@@ -5,6 +5,7 @@ import { isVerticalRiser } from "../geom.js";
 import { componentDef } from "../standards/components.js";
 import { componentFoot, pxPerMeterOf } from "../layout.js";
 import { round } from "../units.js";
+import { findSegResult } from "../calc/network.js";
 
 export class View3D {
   constructor(canvas, store) {
@@ -222,8 +223,7 @@ export class View3D {
   }
 
   segRes(id) {
-    if (!this.results) return null;
-    return this.results.supply.segments.find((s) => s.id === id) || this.results.extract.segments.find((s) => s.id === id) || null;
+    return findSegResult(this.results, id);
   }
 }
 

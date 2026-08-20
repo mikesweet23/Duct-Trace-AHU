@@ -26,21 +26,29 @@ no build step) as ES modules on a static server.
   diffusers/grilles/valves/louvres, fire dampers, VCDs, attenuators, plenums,
   heaters and filters. Every parameter is editable and you can add custom
   parameters or custom outlets.
-- **Automatic sizing** — round/spiral and rectangular ducts sized to the nearest
-  DW144 standard size, by equal-friction (target Pa/m) or velocity method, with
-  per-role velocity caps (main / branch / run-out).
+- **Automatic sizing** — spiral/circular, **square** and rectangular ducts sized
+  to the full DW144 / EN 1506 / EN 1505 range, by equal-friction (target Pa/m)
+  or velocity method, with per-role **min and max** velocities (main / **riser** /
+  branch / run-out) from CIBSE Guide B Tables 2.16–2.18, capped by DW144 class.
+- **AHU duty** — a combined AHU can take **different supply and extract flow**
+  and **different available static (Pa)**. A warning is raised if plant duty
+  does not match the connected inlets and outlets.
+- **Flow units** — toggle **l/s ↔ m³/h** everywhere (AHUs, inlets, outlets,
+  rooms, schedules, status). Internal calc stays SI (m³/s).
 - **Pressure & velocity** — per-segment velocity, friction gradient and pressure
   drop; min/max velocity; **index run** and total **system static pressure (ESP)**
-  for supply and extract, DW144 pressure class, and fan-duty margin.
-- **Schedules** — full duct schedule per system, CSV export, and JSON project
-  save / load (auto-saved to the browser).
+  for each supply / extract system, DW144 pressure class, and fan-duty margin.
+- **Schedules & PDF** — duct schedule per system, CSV, JSON save / load, and a
+  **PDF report** with AHU/fan details, fittings, each system listed separately,
+  plus plan and 3D layout figures.
 
 ## Engineering basis
 
 - Duct friction: Darcy–Weisbach with the Colebrook–White friction factor
   (Swamee–Jain explicit form); rectangular ducts use the Huebscher circular
   equivalent diameter. See `src/standards/sizing.js`.
-- Standard sizes, pressure/velocity classes and leakage: `src/standards/dw144.js`.
+- Standard sizes, pressure/velocity classes, leakage and CIBSE velocity bands:
+  `src/standards/dw144.js`.
 - Network solve (flow accumulation, index run, ESP): `src/calc/network.js`.
 
 > These calculations follow standard published methods and sensible defaults;

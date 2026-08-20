@@ -5,6 +5,8 @@ import { dist } from "./geom.js";
 import { defaultProps, componentDef } from "./standards/components.js";
 import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf } from "./layout.js";
 import { heightAlong } from "./snap.js";
+import { normalizeFlowUnit } from "./units.js";
+import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
 
 const STORAGE_KEY = "duct-trace-ahu:project";
 const NODE_MERGE_TOL = 8; // px in world space — tight, so close parallel ducts stay apart
@@ -19,13 +21,24 @@ export function defaultSettings() {
   return {
     sizingMethod: "friction", // "friction" | "velocity"
     targetGradient: 1.0, // Pa/m
-    ductType: "round", // "round" | "rect"
+    ductType: "round", // "round" | "rect" | "square"
     rectHeight: 300, // mm
     maxAspect: 4,
     roughnessMm: 0.15,
     supplyTempC: 18,
     extractTempC: 22,
-    velocityCaps: { main: 7.0, branch: 5.0, runout: 3.5 },
+    velocityCaps: {
+      main: RECOMMENDED_VELOCITY.main.max,
+      riser: RECOMMENDED_VELOCITY.riser.max,
+      branch: RECOMMENDED_VELOCITY.branch.max,
+      runout: RECOMMENDED_VELOCITY.runout.max,
+    },
+    velocityMins: {
+      main: RECOMMENDED_VELOCITY.main.min,
+      riser: RECOMMENDED_VELOCITY.riser.min,
+      branch: RECOMMENDED_VELOCITY.branch.min,
+      runout: RECOMMENDED_VELOCITY.runout.min,
+    },
     conceptPxPerMeter: 50,
     flowUnit: "l/s",
     snapPoints: true,
@@ -56,10 +69,31 @@ function serveSystem(c, systemType) {
   return c.system === systemType || c.system === "both";
 }
 
+function migratePlantFlow(props) {
+  if (!props || typeof props !== "object") return props;
+  const next = { ...props };
+  if (next.designFlow_ls == null && next.designFlow != null) {
+    const v = Number(next.designFlow);
+    if (v > 0) next.designFlow_ls = Math.round(v * 1000);
+    else next.designFlow_ls = 0;
+  }
+  delete next.designFlow;
+  if (next.extractFlow_ls == null) next.extractFlow_ls = 0;
+  if (next.extractStaticPa == null) {
+    const supplyPa = Number(next.availableStaticPa) || Number(next.supplyStaticPa) || 0;
+    next.extractStaticPa = supplyPa;
+  }
+  return next;
+}
+
 export function migrateProject(raw) {
   const p = { ...newProject(), ...raw };
-  p.settings = { ...defaultSettings(), ...(p.settings || {}) };
-  p.meta = { ...p.meta, version: 2 };
+  const defaults = defaultSettings();
+  p.settings = { ...defaults, ...(p.settings || {}) };
+  p.settings.velocityCaps = { ...defaults.velocityCaps, ...(p.settings.velocityCaps || {}) };
+  p.settings.velocityMins = { ...defaults.velocityMins, ...(p.settings.velocityMins || {}) };
+  p.settings.flowUnit = normalizeFlowUnit(p.settings.flowUnit);
+  p.meta = { ...p.meta, version: 3 };
   const settings = p.settings;
   for (const n of p.nodes) {
     if (!Number.isFinite(Number(n.z))) n.z = settings.defaultDuctHeight;
@@ -72,6 +106,7 @@ export function migrateProject(raw) {
     if (!Number.isFinite(Number(c.heightM))) c.heightM = defaultHeightM(c.kind, settings);
     const n = p.nodes.find((x) => x.id === c.nodeId);
     if (n && !Number.isFinite(Number(n.z))) n.z = c.heightM;
+    if (componentDef(c.kind)?.role === "plant") c.props = migratePlantFlow(c.props);
     if (c.system === "both" && c.kind === "ahu" && !c.returnNodeId) {
       const off = portOffset("extract");
       const at = connPoint(c, off, pxPerMeterOf(p));
@@ -543,7 +578,13 @@ export function seedDemo(store) {
     };
   };
   p.components = [
-    comp("cAHU", "ahu", "nAHU", "both", 120, 380, { availableStaticPa: 350, supplyTempC: 18 }, { returnNodeId: "nAHUr", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
+    comp("cAHU", "ahu", "nAHU", "both", 120, 380, {
+      availableStaticPa: 350,
+      extractStaticPa: 280,
+      designFlow_ls: 480,
+      extractFlow_ls: 420,
+      supplyTempC: 18,
+    }, { returnNodeId: "nAHUr", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
     comp("cFD", "fire_damper", "nT1", "supply", 320, 380, { lossPa: 15 }, { heightM: 3.2 }),
     comp("cD1", "diffuser", "nB1", "supply", 320, 200, { designFlow_ls: 120, terminalLossPa: 25 }, { heightM: 2.7 }),
     comp("cD2", "diffuser", "nB2", "supply", 560, 200, { designFlow_ls: 120, terminalLossPa: 25 }, { heightM: 2.7 }),

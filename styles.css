@@ -74,6 +74,9 @@ body {
 .seg-btn.active { background: var(--panel-2); color: var(--text); }
 .seg-btn.sys-supply.active { background: var(--supply); color: #fff; }
 .seg-btn.sys-extract.active { background: var(--extract); color: #fff; }
+.seg-btn[data-flowunit].active { background: var(--accent); color: #04212f; }
+
+.status-warn { color: #fcd34d; }
 
 .btn {
   background: var(--panel); border: 1px solid var(--line); color: var(--text);

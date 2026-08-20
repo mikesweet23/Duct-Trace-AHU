@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Store, seedDemo, migrateProject, newProject } from "../src/state.js";
-import { snapAt } from "../src/snap.js";
+import { snapAt, hitComponentAt } from "../src/snap.js";
+import { CanvasView } from "../src/ui/canvas.js";
 import { routeLengthM, isVerticalRiser, offsetPoly, orthoPoint } from "../src/geom.js";
 import { computeAll } from "../src/calc/network.js";
 
@@ -34,6 +35,73 @@ test("a click on a close parallel run does not yank to the far end", () => {
   assert.equal(sn, null, "must not snap to the mid-run of a nearby duct");
   const atEnd = snapAt(store.project, { x: 6, y: 4 }, { zoom: 1 });
   assert.ok(atEnd && atEnd.node.id === a.id);
+});
+
+test("clicking the last extract outlet is not stolen by a nearby junction", () => {
+  const store = emptyStore();
+  const g = store.addComponentAt({ x: 400, y: 200 }, "grille_extract", "extract");
+  store.findOrCreateNode({ x: 386, y: 206 }, 3.2); // leftover corner next to the grille
+  const last = store.findOrCreateNode({ x: 260, y: 200 }, 3.2);
+  const click = { x: 402, y: 198 };
+  const sn = snapAt(store.project, click, { zoom: 1, system: "extract", skipNodeId: last.id });
+  assert.equal(sn.kind, "component");
+  assert.equal(sn.component.id, g.id);
+  assert.equal(sn.node.id, g.nodeId);
+  assert.ok(Math.abs(sn.at.x - g.x) < 1e-6 && Math.abs(sn.at.y - g.y) < 1e-6);
+});
+
+test("extract tracing does not snap onto a nearby supply diffuser", () => {
+  const store = emptyStore();
+  const extract = store.addComponentAt({ x: 400, y: 200 }, "grille_extract", "extract");
+  store.addComponentAt({ x: 408, y: 200 }, "diffuser", "supply");
+  const sn = snapAt(store.project, { x: 400, y: 200 }, { zoom: 1, system: "extract" });
+  assert.equal(sn.kind, "component");
+  assert.equal(sn.component.id, extract.id);
+});
+
+test("a click on the last extract is not turned into a 45° ghost corner", () => {
+  const store = emptyStore();
+  const g = store.addComponentAt({ x: 400, y: 230 }, "grille_extract", "extract");
+  const last = store.findOrCreateNode({ x: 300, y: 200 }, 3.2);
+  store.addSegment(store.findOrCreateNode({ x: 100, y: 200 }, 3.2), last, "extract");
+  const canvas = Object.create(CanvasView.prototype);
+  canvas.store = store;
+  canvas.ductLastNodeId = last.id;
+  canvas.ductLastOff = null;
+  store.overrideKey = false;
+  store.activeSystem = "extract";
+  store.project.view.zoom = 1;
+  const prev = canvas.previewPoint({ x: 396, y: 226 });
+  assert.equal(prev.snap?.kind, "component");
+  assert.equal(prev.snap.component.id, g.id);
+  assert.ok(Math.abs(prev.x - g.x) < 1e-6 && Math.abs(prev.y - g.y) < 1e-6);
+});
+
+test("placing the last extract click adds one straight run to that outlet", () => {
+  const store = emptyStore();
+  const g = store.addComponentAt({ x: 400, y: 230 }, "grille_extract", "extract");
+  const last = store.findOrCreateNode({ x: 300, y: 200 }, 3.2);
+  store.addSegment(store.findOrCreateNode({ x: 100, y: 200 }, 3.2), last, "extract");
+  const before = store.project.segments.length;
+  const canvas = Object.create(CanvasView.prototype);
+  canvas.store = store;
+  canvas.ductLastNodeId = last.id;
+  canvas.ductLastOff = null;
+  store.activeSystem = "extract";
+  canvas.placeDuctPoint({ x: 396, y: 226 });
+  assert.equal(store.project.segments.length, before + 1);
+  const added = store.project.segments[store.project.segments.length - 1];
+  const ends = [added.a, added.b];
+  assert.ok(ends.includes(last.id) && ends.includes(g.nodeId));
+});
+
+test("equipment magnet still reports a hit when the click is on the grown icon", () => {
+  const store = emptyStore();
+  const g = store.addComponentAt({ x: 0, y: 0 }, "valve_extract", "extract");
+  // Tiny valve (0.2 m) — click sits on the drawn 32 px icon, outside the true 10 px box.
+  const sn = hitComponentAt(store.project, { x: 12, y: 0 }, { zoom: 1, system: "extract" });
+  assert.ok(sn);
+  assert.equal(sn.component.id, g.id);
 });
 
 test("Alt (or snapPoints off) cuts a T-piece on the run", () => {
