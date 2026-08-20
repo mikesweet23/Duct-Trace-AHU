@@ -20,6 +20,7 @@ export const COMPONENTS = {
     role: "plant",
     symbol: "AHU",
     color: "#2563eb",
+    foot: { w: 2.0, d: 1.2, t: 1.3 },
     props: {
       availableStaticPa: 250,
       designFlow: 0, // set by system total
@@ -35,6 +36,7 @@ export const COMPONENTS = {
     role: "plant",
     symbol: "FAN",
     color: "#2563eb",
+    foot: { w: 0.9, d: 0.7, t: 0.8 },
     props: { availableStaticPa: 400, designFlow: 0, note: "" },
   },
   fan_axial: {
@@ -44,6 +46,7 @@ export const COMPONENTS = {
     role: "plant",
     symbol: "AXF",
     color: "#2563eb",
+    foot: { w: 0.7, d: 0.7, t: 0.5 },
     props: { availableStaticPa: 200, designFlow: 0, note: "" },
   },
   fan_plug: {
@@ -53,6 +56,7 @@ export const COMPONENTS = {
     role: "plant",
     symbol: "ECP",
     color: "#2563eb",
+    foot: { w: 0.8, d: 0.6, t: 0.7 },
     props: { availableStaticPa: 350, designFlow: 0, note: "" },
   },
   diffuser: {
@@ -62,6 +66,7 @@ export const COMPONENTS = {
     role: "terminal",
     symbol: "◇",
     color: "#059669",
+    foot: { w: 0.6, d: 0.6, t: 0.15 },
     props: { designFlow_ls: 40, terminalLossPa: 25, throw_m: 0, note: "" },
   },
   grille_supply: {
@@ -71,6 +76,7 @@ export const COMPONENTS = {
     role: "terminal",
     symbol: "▷",
     color: "#059669",
+    foot: { w: 0.4, d: 0.2, t: 0.12 },
     props: { designFlow_ls: 40, terminalLossPa: 20, note: "" },
   },
   grille_extract: {
@@ -80,6 +86,7 @@ export const COMPONENTS = {
     role: "terminal",
     symbol: "◁",
     color: "#d97706",
+    foot: { w: 0.4, d: 0.2, t: 0.12 },
     props: { designFlow_ls: 40, terminalLossPa: 20, note: "" },
   },
   valve_extract: {
@@ -89,6 +96,7 @@ export const COMPONENTS = {
     role: "terminal",
     symbol: "⊗",
     color: "#d97706",
+    foot: { w: 0.2, d: 0.2, t: 0.1 },
     props: { designFlow_ls: 15, terminalLossPa: 30, note: "" },
   },
   louvre: {
@@ -98,6 +106,7 @@ export const COMPONENTS = {
     role: "terminal",
     symbol: "☰",
     color: "#059669",
+    foot: { w: 0.6, d: 0.3, t: 0.2 },
     props: { designFlow_ls: 100, terminalLossPa: 15, note: "" },
   },
   fire_damper: {
@@ -107,6 +116,7 @@ export const COMPONENTS = {
     role: "inline",
     symbol: "FD",
     color: "#dc2626",
+    foot: { w: 0.35, d: 0.2, t: 0.2 },
     props: { lossPa: 15, k: 0, note: "" },
   },
   vcd: {
@@ -116,6 +126,7 @@ export const COMPONENTS = {
     role: "inline",
     symbol: "VCD",
     color: "#7c3aed",
+    foot: { w: 0.3, d: 0.18, t: 0.18 },
     props: { lossPa: 10, k: 0, note: "" },
   },
   attenuator: {
@@ -125,6 +136,7 @@ export const COMPONENTS = {
     role: "inline",
     symbol: "ATT",
     color: "#0891b2",
+    foot: { w: 0.9, d: 0.35, t: 0.35 },
     props: { lossPa: 30, k: 0, note: "" },
   },
   plenum: {
@@ -134,6 +146,7 @@ export const COMPONENTS = {
     role: "inline",
     symbol: "PL",
     color: "#475569",
+    foot: { w: 0.6, d: 0.4, t: 0.3 },
     props: { lossPa: 10, k: 0, note: "" },
   },
   heater: {
@@ -143,6 +156,7 @@ export const COMPONENTS = {
     role: "inline",
     symbol: "HTR",
     color: "#ea580c",
+    foot: { w: 0.5, d: 0.3, t: 0.3 },
     props: { lossPa: 40, k: 0, note: "" },
   },
   filter: {
@@ -152,6 +166,7 @@ export const COMPONENTS = {
     role: "inline",
     symbol: "FLT",
     color: "#64748b",
+    foot: { w: 0.5, d: 0.3, t: 0.35 },
     props: { lossPa: 60, k: 0, note: "" },
   },
 };

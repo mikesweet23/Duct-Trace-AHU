@@ -124,12 +124,36 @@ body {
 .canvas-wrap { flex: 1; position: relative; min-width: 0; background: #0a0f1c; }
 #canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
 
-.canvas-hud { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); pointer-events: none; }
+.canvas-hud {
+  position: absolute; top: 10px; left: 12px; right: 12px;
+  display: flex; justify-content: center; align-items: flex-start; gap: 10px;
+  pointer-events: none; flex-wrap: wrap;
+}
 .hint {
   background: rgba(10, 15, 28, 0.85); border: 1px solid var(--line); color: var(--text);
   padding: 6px 12px; border-radius: 20px; font-size: 12px; box-shadow: var(--shadow);
+  max-width: min(720px, 70%);
 }
 .hint:empty { display: none; }
+.height-hud {
+  pointer-events: auto;
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(10, 15, 28, 0.9); border: 1px solid var(--line); color: var(--muted);
+  padding: 5px 10px; border-radius: 20px; font-size: 12px; font-weight: 600;
+}
+.height-hud input {
+  width: 72px; background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  border-radius: 7px; padding: 3px 6px; font-size: 13px;
+}
+.height-hud input:focus { outline: none; border-color: var(--accent); }
+.view3d-canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: none; cursor: grab;
+}
+.workspace.view-3d #canvas { visibility: hidden; }
+.workspace.view-3d .view3d-canvas { display: block; }
+.workspace.view-3d .canvas-toolbar .upload-btn,
+.workspace.view-3d #btnClearBg { display: none; }
+.pill.both { background: linear-gradient(90deg, var(--supply-soft), var(--extract-soft)); color: #e6edf7; }
 
 .canvas-toolbar {
   position: absolute; bottom: 34px; left: 10px; display: flex; align-items: center; gap: 6px;

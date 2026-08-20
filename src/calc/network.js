@@ -3,7 +3,7 @@
 // the plant, sizes every segment, and finds the index run (the path of
 // greatest total pressure loss), which sets the required system static.
 
-import { dist } from "../geom.js";
+import { routeLengthM } from "../geom.js";
 import { flowToM3s } from "../units.js";
 import { airDensity, airViscosity } from "../units.js";
 import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizing.js";
@@ -37,7 +37,10 @@ export function computeSystem(project, systemType) {
 
   const nodesById = new Map(project.nodes.map((n) => [n.id, n]));
   const segs = project.segments.filter((s) => s.system === systemType);
-  const comps = (project.components || []).filter((c) => c.system === systemType && c.nodeId);
+  const comps = (project.components || []).filter((c) => {
+    if (!c.nodeId) return false;
+    return c.system === systemType || c.system === "both";
+  });
 
   // Terminal demand and inline loss and plant per node.
   const demand = new Map(); // node id -> m3/s
@@ -57,9 +60,12 @@ export function computeSystem(project, systemType) {
       if (!inlineNodes.has(c.nodeId)) inlineNodes.set(c.nodeId, []);
       inlineNodes.get(c.nodeId).push(c);
     } else if (def.role === "plant") {
+      if (c.system !== systemType && c.system !== "both") continue;
       if (!plant) {
         plant = c;
-        rootNode = c.nodeId;
+        rootNode = (c.system === "both" && systemType === "extract" && c.returnNodeId)
+          ? c.returnNodeId
+          : c.nodeId;
       }
     }
   }
@@ -124,7 +130,7 @@ export function computeSystem(project, systemType) {
     }
     const a = nodesById.get(s.a);
     const b = nodesById.get(s.b);
-    const lengthM = a && b ? dist(a, b) / pxPerMeter : 0;
+    const lengthM = a && b ? routeLengthM(a, b, pxPerMeter) : 0;
 
     // Role: leaf segment feeding a terminal node = runout.
     let role = s.roleOverride || "main";

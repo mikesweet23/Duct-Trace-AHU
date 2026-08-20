@@ -12,7 +12,16 @@ no build step) as ES modules on a static server.
   known dimension, and trace ductwork over it.
 - **Rooms & airflows** — outline rooms and set supply / extract targets, with a
   live balance against the terminals placed inside them.
-- **Duct tracing** — draw connected supply and extract runs with branches / tees.
+- **Duct tracing** — draw connected supply and extract runs. Ducts snap to
+  nearby outlets and AHUs only (they will not yank a close parallel run).
+  Cut a **T-piece** (J) to branch off a run already traced. Outlets can be
+  **duplicated** (Ctrl+D) and both outlets and AHUs can be **resized** on the
+  plan. An AHU can be **supply, extract, or both**.
+- **Heights & risers** — every point has a height (m AFFL). Changing height
+  and clicking the same point drops a **riser** that does not draw as a run
+  on the plan. Open **3D** to review the whole layout, including risers.
+- **Actual ducts** — once a run is sized it is drawn as a circular or
+  rectangular body at the real DW144 size, not just a centreline.
 - **Components** — AHUs, centrifugal / axial / EC plug fans, supply & extract
   diffusers/grilles/valves/louvres, fire dampers, VCDs, attenuators, plenums,
   heaters and filters. Every parameter is editable and you can add custom
@@ -61,7 +70,8 @@ npm test        # == node --test
 | `index.html`, `styles.css` | App shell and styling |
 | `src/main.js` | Wiring: palette, toolbar, compute-on-change loop |
 | `src/state.js` | Project model, persistence, undo, demo seed |
-| `src/ui/` | Canvas editor, side panels, modals |
+| `src/ui/` | Canvas editor, 3D review, side panels, modals |
+| `src/snap.js`, `src/layout.js` | Nearby-only snap (ac-trace discipline) and equipment footprints |
 | `src/standards/` | DW144 data, sizing engine, fittings, component library |
 | `src/calc/network.js` | System solver (flows, index run, static pressure) |
 | `test/` | Node unit tests for the calculation core |

@@ -1,9 +1,19 @@
 // Canvas editor: rendering + pointer interaction for all drawing tools.
+// Snapping, real duct bodies, T-pieces and resize handles follow ac-trace.
 
-import { dist, pointSegment, pointInPolygon, polygonCentroid } from "../geom.js";
+import { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVerticalRiser, clamp } from "../geom.js";
 import { componentDef } from "../standards/components.js";
 import { showPrompt } from "./modal.js";
 import { round } from "../units.js";
+import { snapAt, hitJointAt } from "../snap.js";
+import {
+  componentBox,
+  componentBoxTrue,
+  handlesOf,
+  hitHandle,
+  pxPerMeterOf,
+  HANDLE_PX,
+} from "../layout.js";
 
 const GRID = 40;
 
@@ -19,12 +29,13 @@ export class CanvasView {
     this._bg = null;
     this._bgUrl = null;
 
-    // interaction state
-    this.pointer = null; // world coords of cursor
-    this.dragging = null; // { kind, id, dx, dy } | { pan }
+    this.pointer = null;
+    this.dragging = null;
     this.ductLastNodeId = null;
+    this.ductLastOff = null;
     this.roomPts = [];
     this.scalePts = [];
+    this.hoverSnap = null;
 
     this._bind();
     this.resize();
@@ -35,7 +46,6 @@ export class CanvasView {
     this.draw();
   }
 
-  // ---- transforms ----
   get view() { return this.store.project.view; }
 
   toScreen(p) {
@@ -49,6 +59,30 @@ export class CanvasView {
   eventWorld(e) {
     const r = this.canvas.getBoundingClientRect();
     return this.toWorld(e.clientX - r.left, e.clientY - r.top);
+  }
+
+  pxPerMeter() { return pxPerMeterOf(this.store.project); }
+
+  snapOpts() {
+    return {
+      zoom: this.view.zoom,
+      skipNodeId: this.ductLastNodeId,
+      system: this.store.activeSystem,
+      alt: this.store.overrideKey,
+      snapPoints: this.store.project.settings.snapPoints !== false,
+    };
+  }
+
+  previewPoint(world) {
+    const sn = snapAt(this.store.project, world, this.snapOpts());
+    if (sn) return { x: sn.at.x, y: sn.at.y, snap: sn };
+    const last = this.ductLastNodeId
+      ? this.store.project.nodes.find((n) => n.id === this.ductLastNodeId)
+      : null;
+    const ortho = this.store.project.settings.ortho !== false;
+    const useOrtho = this.store.overrideKey ? !ortho : ortho;
+    const q = useOrtho ? orthoPoint(last, world) : { x: world.x, y: world.y };
+    return { ...q, snap: null };
   }
 
   resize() {
@@ -74,6 +108,7 @@ export class CanvasView {
     const p = this.store.project;
     const pts = [];
     for (const n of p.nodes) pts.push(n);
+    for (const c of p.components) pts.push(c);
     for (const r of p.rooms) pts.push(...r.points);
     if (p.background) pts.push({ x: p.background.x, y: p.background.y }, { x: p.background.x + p.background.width, y: p.background.y + p.background.height });
     const v = this.view;
@@ -101,21 +136,42 @@ export class CanvasView {
     this._bgUrl = bg.dataUrl;
   }
 
-  // ---- hit testing ----
   hit(world) {
     const p = this.store.project;
-    const tol = 10 / this.view.zoom;
+    const px = this.pxPerMeter();
+    const z = this.view.zoom;
+    const sel = this.store.selection;
+    if (sel?.type === "component") {
+      const c = p.components.find((x) => x.id === sel.id);
+      if (c) {
+        const hh = hitHandle(c, world, px, z);
+        if (hh) return { type: "handle", id: c.id, handle: hh.handle };
+      }
+    }
     for (const c of p.components) {
-      const n = p.nodes.find((x) => x.id === c.nodeId) || c;
-      if (dist(n, world) <= 16 / this.view.zoom) return { type: "component", id: c.id };
+      const box = componentBoxTrue(c, px);
+      const localX = world.x - c.x;
+      const localY = world.y - c.y;
+      const rot = (box.rot * Math.PI) / 180;
+      const lx = localX * Math.cos(-rot) - localY * Math.sin(-rot);
+      const ly = localX * Math.sin(-rot) + localY * Math.cos(-rot);
+      if (Math.abs(lx) <= box.w / 2 && Math.abs(ly) <= box.d / 2) return { type: "component", id: c.id };
     }
     for (const n of p.nodes) {
-      if (dist(n, world) <= 8 / this.view.zoom) return { type: "node", id: n.id };
+      if (dist(n, world) <= 8 / z) return { type: "node", id: n.id };
     }
     for (const s of p.segments) {
       const a = p.nodes.find((x) => x.id === s.a);
       const b = p.nodes.find((x) => x.id === s.b);
-      if (a && b && pointSegment(world, a, b).distance <= tol) return { type: "segment", id: s.id };
+      if (!a || !b) continue;
+      const res = this.segResult(s.id);
+      const width = this.ductWidthWorld(res, s) / 2 + 6 / z;
+      const r = (world.x - a.x) * (b.x - a.x) + (world.y - a.y) * (b.y - a.y);
+      const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+      const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, r / l2));
+      const cx = a.x + t * (b.x - a.x);
+      const cy = a.y + t * (b.y - a.y);
+      if (Math.hypot(world.x - cx, world.y - cy) <= width) return { type: "segment", id: s.id };
     }
     for (let i = p.rooms.length - 1; i >= 0; i--) {
       if (pointInPolygon(world, p.rooms[i].points)) return { type: "room", id: p.rooms[i].id };
@@ -123,7 +179,6 @@ export class CanvasView {
     return null;
   }
 
-  // ---- events ----
   _bind() {
     const c = this.canvas;
     c.addEventListener("pointerdown", (e) => this.onDown(e));
@@ -141,13 +196,15 @@ export class CanvasView {
 
   updateHint() {
     const t = this.store.tool;
+    const h = this.store.traceHeight;
     const map = {
-      select: "Select: click to select · drag to move · Del to delete",
+      select: "Select: click to select · drag to move · corners to resize · Del to delete · Ctrl+D to duplicate an outlet",
       pan: "Pan: drag to move the view · scroll to zoom",
       scale: `Scale: click two points a known distance apart${this.scalePts.length === 1 ? " · click the second point" : ""}`,
       room: "Room: click to add corners · double-click or Enter to finish",
-      duct: `Duct (${this.store.activeSystem}): click to place duct runs · double-click / Esc to finish`,
-      component: `Place ${componentDef(this.store.newComponentKind)?.label || "component"} (${this.store.activeSystem}): click a duct point`,
+      duct: `Duct (${this.store.activeSystem}) at ${round(h, 2)} m AFFL: snap to an outlet or AHU · [ ] change height · Alt cuts a T-piece`,
+      tee: "T-piece: click a duct to cut a branch joint · then trace a new run off it",
+      component: `Place ${componentDef(this.store.newComponentKind)?.label || "component"} (${this.store.activeSystem}): click to drop · drag corners later to size it`,
       delete: "Delete: click an element to remove it",
     };
     this.onHint(map[t] || "");
@@ -166,6 +223,19 @@ export class CanvasView {
     }
     if (tool === "select") {
       const h = this.hit(world);
+      if (h?.type === "handle") {
+        const c = this.store.project.components.find((x) => x.id === h.id);
+        this.store.select("component", h.id);
+        this.dragging = {
+          kind: "handle",
+          id: h.id,
+          handle: h.handle,
+          moved: false,
+          rot0: c.rot || 0,
+          foot0: { w: c.widthM, d: c.depthM },
+        };
+        return;
+      }
       this.store.select(h?.type, h?.id);
       if (h) {
         const p = this.store.project;
@@ -174,8 +244,7 @@ export class CanvasView {
           this.dragging = { kind: "node", id: h.id, dx: world.x - n.x, dy: world.y - n.y, moved: false };
         } else if (h.type === "component") {
           const c = p.components.find((x) => x.id === h.id);
-          const n = p.nodes.find((x) => x.id === c.nodeId);
-          this.dragging = { kind: "node", id: c.nodeId, dx: world.x - n.x, dy: world.y - n.y, moved: false };
+          this.dragging = { kind: "component", id: h.id, dx: world.x - c.x, dy: world.y - c.y, moved: false };
         } else if (h.type === "room") {
           const r = p.rooms.find((x) => x.id === h.id);
           this.dragging = { kind: "room", id: h.id, start: world, orig: r.points.map((pt) => ({ ...pt })), moved: false };
@@ -185,7 +254,11 @@ export class CanvasView {
     }
     if (tool === "delete") {
       const h = this.hit(world);
-      if (h) { this.store.select(h.type, h.id); this.store.deleteSelection(); }
+      if (h && h.type !== "handle") { this.store.select(h.type, h.id); this.store.deleteSelection(); }
+      return;
+    }
+    if (tool === "tee") {
+      this.cutTee(world);
       return;
     }
     if (tool === "scale") {
@@ -219,12 +292,46 @@ export class CanvasView {
       this.draw();
       return;
     }
+    if (this.dragging?.kind === "handle") {
+      const c = this.store.project.components.find((x) => x.id === this.dragging.id);
+      if (!c) return;
+      if (!this.dragging.moved) { this.store.snapshot(); this.dragging.moved = true; }
+      const px = this.pxPerMeter();
+      if (this.dragging.handle.kind === "rot") {
+        const a = Math.atan2(world.y - c.y, world.x - c.x) * 180 / Math.PI + 90;
+        const rot = e.shiftKey ? Math.round(a / 15) * 15 : Math.round(a * 10) / 10;
+        this.store.resizeComponent(c, null, null, rot);
+      } else {
+        const rot = (this.dragging.rot0 * Math.PI) / 180;
+        const lx = (world.x - c.x) * Math.cos(-rot) - (world.y - c.y) * Math.sin(-rot);
+        const ly = (world.x - c.x) * Math.sin(-rot) + (world.y - c.y) * Math.cos(-rot);
+        let w = Math.max(0.08, Math.abs(lx) * 2 / px);
+        let d = Math.max(0.08, Math.abs(ly) * 2 / px);
+        if (e.shiftKey) {
+          const r0 = (this.dragging.foot0.d || 1) / (this.dragging.foot0.w || 1);
+          if (Math.abs(lx) / Math.max(this.dragging.foot0.w, 1e-6) > Math.abs(ly) / Math.max(this.dragging.foot0.d, 1e-6)) d = w * r0;
+          else w = d / r0;
+        }
+        this.store.resizeComponent(c, Math.round(w * 1000) / 1000, Math.round(d * 1000) / 1000, null);
+      }
+      this.draw();
+      return;
+    }
     if (this.dragging?.kind === "node") {
       if (!this.dragging.moved) { this.store.snapshot(); this.dragging.moved = true; }
       const n = this.store.project.nodes.find((x) => x.id === this.dragging.id);
       if (n) { n.x = world.x - this.dragging.dx; n.y = world.y - this.dragging.dy; }
-      const c = this.store.project.components.find((x) => x.nodeId === this.dragging.id);
-      if (c) { c.x = n.x; c.y = n.y; }
+      const c = this.store.project.components.find((x) => x.nodeId === this.dragging.id || x.returnNodeId === this.dragging.id);
+      if (c && c.nodeId === this.dragging.id && !c.returnNodeId) {
+        this.store.moveComponent(c, n.x, n.y);
+      }
+      this.draw();
+      return;
+    }
+    if (this.dragging?.kind === "component") {
+      if (!this.dragging.moved) { this.store.snapshot(); this.dragging.moved = true; }
+      const c = this.store.project.components.find((x) => x.id === this.dragging.id);
+      if (c) this.store.moveComponent(c, world.x - this.dragging.dx, world.y - this.dragging.dy);
       this.draw();
       return;
     }
@@ -237,8 +344,7 @@ export class CanvasView {
       this.draw();
       return;
     }
-    // live preview for chained tools
-    if (this.store.tool === "duct" || this.store.tool === "room" || this.store.tool === "scale") this.draw();
+    if (this.store.tool === "duct" || this.store.tool === "tee" || this.store.tool === "room" || this.store.tool === "scale") this.draw();
   }
 
   onUp() {
@@ -255,33 +361,77 @@ export class CanvasView {
   endDraft() {
     if (this.store.tool === "room" && this.roomPts.length >= 3) this.finishRoom();
     this.ductLastNodeId = null;
+    this.ductLastOff = null;
     this.roomPts = [];
     this.scalePts = [];
     this.updateHint();
     this.draw();
   }
 
+  connectSnap(sn, world) {
+    if (sn?.kind === "run") {
+      this.store.snapshot();
+      const j = this.store.splitSegmentAt(sn.seg, sn.at, sn.z ?? this.store.traceHeight);
+      return { node: j, off: null };
+    }
+    if (sn?.kind === "component" || sn?.kind === "node") {
+      return { node: sn.node, off: sn.off || null };
+    }
+    return { node: this.store.findOrCreateNode(world, this.store.traceHeight), off: null };
+  }
+
   placeDuctPoint(world) {
-    const node = this.store.findOrCreateNode(world);
+    const prev = this.previewPoint(world);
+    const last = this.ductLastNodeId
+      ? this.store.project.nodes.find((n) => n.id === this.ductLastNodeId)
+      : null;
+
+    // Changing height on the same plan point creates a riser that does not
+    // draw as a run — it only appears as a marker, and in 3D.
+    if (last && dist(last, prev) < 6 / this.view.zoom && Math.abs((last.z || 0) - this.store.traceHeight) > 0.05) {
+      this.store.snapshot();
+      const risen = this.store.findOrCreateNode({ x: last.x, y: last.y }, this.store.traceHeight);
+      this.store.addSegment(last, risen);
+      this.ductLastNodeId = risen.id;
+      this.store.commit();
+      return;
+    }
+
+    const { node, off } = this.connectSnap(prev.snap, prev);
     if (this.ductLastNodeId == null) {
       this.store.snapshot();
       this.ductLastNodeId = node.id;
+      this.ductLastOff = off;
+      const anchored = this.store.project.components.some((c) => c.nodeId === node.id || c.returnNodeId === node.id);
+      if (!anchored) node.z = this.store.traceHeight;
     } else if (this.ductLastNodeId !== node.id) {
       const a = this.store.project.nodes.find((n) => n.id === this.ductLastNodeId);
-      this.store.addSegment(a, node);
+      node.z = Number.isFinite(Number(node.z)) ? node.z : this.store.traceHeight;
+      const seg = this.store.addSegment(a, node);
+      if (seg) {
+        seg.aOff = this.ductLastOff;
+        seg.bOff = off;
+      }
       this.ductLastNodeId = node.id;
+      this.ductLastOff = off;
     }
     this.store.commit();
   }
 
-  placeComponent(world) {
-    const h = this.hit(world);
-    let node;
-    if (h?.type === "node") node = this.store.project.nodes.find((n) => n.id === h.id);
-    else if (h?.type === "component") node = this.store.project.nodes.find((n) => n.id === this.store.project.components.find((c) => c.id === h.id).nodeId);
-    else node = this.store.findOrCreateNode(world);
+  cutTee(world) {
+    const hit = hitJointAt(this.store.project, world, this.view.zoom);
+    if (!hit) return;
     this.store.snapshot();
-    const c = this.store.addComponentAtNode(node, this.store.newComponentKind);
+    const j = this.store.splitSegmentAt(hit.seg, hit.r.point);
+    this.store.select("node", j.id);
+    this.store.setTool("duct");
+    this.ductLastNodeId = j.id;
+    this.store.commit();
+  }
+
+  placeComponent(world) {
+    this.store.snapshot();
+    const c = this.store.addComponentAt(world, this.store.newComponentKind);
     this.store.select("component", c.id);
     this.store.commit();
   }
@@ -404,10 +554,26 @@ export class CanvasView {
     return this.results.supply.indexPath.includes(id) || this.results.extract.indexPath.includes(id);
   }
 
+  ductWidthWorld(res, seg) {
+    const px = this.pxPerMeter();
+    const z = this.view.zoom;
+    const show = this.store.project.settings.showActualDucts !== false;
+    const section = res?.section;
+    let mm = 200;
+    if (section) {
+      if (section.shape === "rect") mm = section.widthMm || section.heightMm || 200;
+      else mm = section.diameterMm || section.equivDiameterMm || 200;
+    }
+    const real = (mm / 1000) * px;
+    if (show) return clamp(real, 4 / z, 80 / z);
+    return clamp(real / 2, 4 / z, 22 / z);
+  }
+
   drawSegments(ctx) {
     const p = this.store.project;
     const sel = this.store.selection;
     const z = this.view.zoom;
+    const px = this.pxPerMeter();
     for (const s of p.segments) {
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
@@ -416,30 +582,30 @@ export class CanvasView {
       const selected = sel?.type === "segment" && sel.id === s.id;
       const base = s.system === "extract" ? "#d97706" : "#2563eb";
       const noFlow = !res || res.flowM3s <= 0;
-      // width proportional to duct size (fallback fixed)
-      let widthPx = 6;
-      if (res?.section && !noFlow) {
-        const dmm = res.section.diameterMm || res.section.equivDiameterMm || 200;
-        widthPx = Math.max(4, Math.min(22, dmm / 40));
-      } else {
-        widthPx = 5;
-      }
-      ctx.lineCap = "round";
-      // outline
-      ctx.lineWidth = (widthPx + 3) / z;
-      ctx.strokeStyle = selected ? "#38bdf8" : this.isIndexSeg(s.id) ? "#f43f5e" : "rgba(0,0,0,0.35)";
-      ctx.setLineDash(noFlow ? [10 / z, 7 / z] : []);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-      // fill
-      let color = base;
-      if (noFlow) color = s.system === "extract" ? "rgba(217,119,6,0.55)" : "rgba(37,99,235,0.55)";
-      else if (res && !res.withinVelocity) color = "#ef4444";
-      ctx.lineWidth = widthPx / z;
-      ctx.strokeStyle = color;
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-      ctx.setLineDash([]);
+      const shape = (res?.section?.shape) || s.shapeOverride || p.settings.ductType || "round";
 
-      // label
+      if (isVerticalRiser(a, b, px)) {
+        this.drawRiserMarker(ctx, a, b, s, selected);
+        continue;
+      }
+
+      const width = this.ductWidthWorld(res, s);
+      this.drawDuctBody(ctx, a, b, width, shape, base, {
+        selected,
+        index: this.isIndexSeg(s.id),
+        noFlow,
+        overVel: res && !res.withinVelocity,
+      });
+
+      if (Math.abs((a.z || 0) - (b.z || 0)) > 0.05) {
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        ctx.fillStyle = "rgba(10,15,28,0.82)";
+        ctx.font = `${10 / z}px system-ui`;
+        ctx.textAlign = "center";
+        const txt = `Δh ${round(Math.abs((a.z || 0) - (b.z || 0)), 2)} m`;
+        ctx.fillText(txt, mx, my + 18 / z);
+      }
+
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       ctx.font = `${11 / z}px system-ui`;
       ctx.textAlign = "center";
@@ -454,7 +620,6 @@ export class CanvasView {
         ctx.fillStyle = res.withinVelocity ? "#e6edf7" : "#fca5a5";
         ctx.fillText(txt, mx, my - 5 / z);
       } else {
-        // Unconnected / no-flow duct: make it obvious rather than a faint line.
         const txt = "no flow · connect to plant";
         const w = ctx.measureText(txt).width + 8 / z;
         ctx.fillStyle = "rgba(10,15,28,0.82)";
@@ -465,16 +630,95 @@ export class CanvasView {
     }
   }
 
+  drawDuctBody(ctx, a, b, width, shape, color, flags) {
+    const z = this.view.zoom;
+    const pts = [a, b];
+    const half = width / 2;
+    const left = offsetPoly(pts, half);
+    const right = offsetPoly(pts, -half);
+    ctx.beginPath();
+    ctx.moveTo(left[0].x, left[0].y);
+    ctx.lineTo(left[1].x, left[1].y);
+    ctx.lineTo(right[1].x, right[1].y);
+    ctx.lineTo(right[0].x, right[0].y);
+    ctx.closePath();
+    if (shape === "round") {
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = flags.selected ? "#38bdf8" : flags.index ? "#f43f5e" : "rgba(0,0,0,0.45)";
+      ctx.lineWidth = width + 3 / z;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.strokeStyle = flags.overVel ? "#ef4444" : flags.noFlow ? (color + "99") : color;
+      if (flags.noFlow) ctx.setLineDash([10 / z, 7 / z]);
+      ctx.lineWidth = width;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(255,255,255,0.28)";
+      ctx.lineWidth = Math.max(1 / z, width * 0.12);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    } else {
+      ctx.fillStyle = flags.overVel ? "rgba(239,68,68,0.85)" : flags.noFlow ? "rgba(37,99,235,0.35)" : color;
+      if (color === "#d97706" && flags.noFlow) ctx.fillStyle = "rgba(217,119,6,0.35)";
+      ctx.fill();
+      ctx.lineJoin = "miter";
+      ctx.strokeStyle = flags.selected ? "#38bdf8" : flags.index ? "#f43f5e" : "rgba(255,255,255,0.45)";
+      ctx.lineWidth = (flags.selected ? 2.2 : 1.1) / z;
+      if (flags.noFlow) ctx.setLineDash([8 / z, 5 / z]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  drawRiserMarker(ctx, a, b, seg, selected) {
+    const z = this.view.zoom;
+    const dz = (b.z || 0) - (a.z || 0);
+    const x = a.x, y = a.y;
+    const r = 9 / z;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = selected ? "rgba(56,189,248,0.25)" : "rgba(10,15,28,0.9)";
+    ctx.fill();
+    ctx.lineWidth = 2 / z;
+    ctx.strokeStyle = selected ? "#38bdf8" : (seg.system === "extract" ? "#d97706" : "#2563eb");
+    ctx.stroke();
+    ctx.beginPath();
+    if (dz >= 0) {
+      ctx.moveTo(x, y + 4 / z); ctx.lineTo(x, y - 4 / z);
+      ctx.moveTo(x - 3 / z, y - 1 / z); ctx.lineTo(x, y - 4 / z); ctx.lineTo(x + 3 / z, y - 1 / z);
+    } else {
+      ctx.moveTo(x, y - 4 / z); ctx.lineTo(x, y + 4 / z);
+      ctx.moveTo(x - 3 / z, y + 1 / z); ctx.lineTo(x, y + 4 / z); ctx.lineTo(x + 3 / z, y + 1 / z);
+    }
+    ctx.stroke();
+    ctx.fillStyle = "#e6edf7";
+    ctx.font = `${10 / z}px system-ui`;
+    ctx.textAlign = "center";
+    ctx.fillText(`riser ${round(Math.abs(dz), 2)} m`, x, y + 18 / z);
+  }
+
   drawNodes(ctx) {
     const p = this.store.project;
     const z = this.view.zoom;
+    const sel = this.store.selection;
     for (const n of p.nodes) {
-      const hasComp = p.components.some((c) => c.nodeId === n.id);
+      const hasComp = p.components.some((c) => c.nodeId === n.id || c.returnNodeId === n.id);
       if (hasComp) continue;
+      const selected = sel?.type === "node" && sel.id === n.id;
+      const degree = p.segments.filter((s) => s.a === n.id || s.b === n.id).length;
       ctx.beginPath();
-      ctx.arc(n.x, n.y, 3.5 / z, 0, Math.PI * 2);
-      ctx.fillStyle = "#cbd5e1";
-      ctx.fill();
+      if (n.tee || degree >= 3) {
+        ctx.moveTo(n.x - 6 / z, n.y);
+        ctx.lineTo(n.x + 6 / z, n.y);
+        ctx.moveTo(n.x, n.y);
+        ctx.lineTo(n.x, n.y + 7 / z);
+        ctx.lineWidth = 2.4 / z;
+        ctx.strokeStyle = selected ? "#38bdf8" : "#e2e8f0";
+        ctx.stroke();
+      } else {
+        ctx.arc(n.x, n.y, (selected ? 5 : 3.5) / z, 0, Math.PI * 2);
+        ctx.fillStyle = selected ? "#38bdf8" : "#cbd5e1";
+        ctx.fill();
+      }
     }
   }
 
@@ -482,45 +726,128 @@ export class CanvasView {
     const p = this.store.project;
     const sel = this.store.selection;
     const z = this.view.zoom;
+    const px = this.pxPerMeter();
     for (const c of p.components) {
-      const n = p.nodes.find((x) => x.id === c.nodeId) || c;
       const def = componentDef(c.kind);
       if (!def) continue;
       const selected = sel?.type === "component" && sel.id === c.id;
-      const size = 22 / z;
+      const box = componentBox(c, px, z);
       ctx.save();
-      ctx.translate(n.x, n.y);
+      ctx.translate(c.x, c.y);
+      ctx.rotate((box.rot * Math.PI) / 180);
       ctx.fillStyle = def.color;
-      ctx.strokeStyle = selected ? "#38bdf8" : "rgba(255,255,255,0.5)";
-      ctx.lineWidth = (selected ? 2.5 : 1) / z;
-      if (def.role === "terminal") {
-        ctx.beginPath(); ctx.arc(0, 0, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      } else {
-        this.roundRect(ctx, -size / 2, -size / 2, size, size, 4 / z); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = selected ? "#38bdf8" : "rgba(255,255,255,0.55)";
+      ctx.lineWidth = (selected ? 2.4 : 1.2) / z;
+      this.roundRect(ctx, -box.w / 2, -box.d / 2, box.w, box.d, Math.min(6 / z, Math.min(box.w, box.d) * 0.12));
+      ctx.globalAlpha = 0.92;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.stroke();
+      if (c.kind === "ahu" && c.system === "both") {
+        ctx.fillStyle = "rgba(37,99,235,0.35)";
+        ctx.fillRect(0, -box.d / 2, box.w / 2, box.d);
+        ctx.fillStyle = "rgba(217,119,6,0.35)";
+        ctx.fillRect(-box.w / 2, -box.d / 2, box.w / 2, box.d);
       }
       ctx.fillStyle = "#fff";
-      ctx.font = `${9 / z}px system-ui`;
+      ctx.font = `${clamp(Math.min(box.w, box.d) * 0.22, 9 / z, 16 / z)}px system-ui`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(def.symbol, 0, 0);
-      ctx.textBaseline = "alphabetic";
       ctx.restore();
+
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = `${11 / z}px system-ui`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      const name = c.label || def.label;
+      ctx.fillText(name, c.x, c.y + box.d / 2 + 13 / z);
+      ctx.fillStyle = "#93a4c3";
+      ctx.font = `${10 / z}px system-ui`;
+      const hz = Number.isFinite(Number(c.heightM)) ? c.heightM : 0;
+      ctx.fillText(`${round(hz, 2)} m AFFL`, c.x, c.y + box.d / 2 + 25 / z);
+
+      if (selected) this.drawHandles(ctx, c);
     }
+  }
+
+  drawHandles(ctx, c) {
+    const z = this.view.zoom;
+    const { handles, box } = handlesOf(c, this.pxPerMeter(), z);
+    const rot = handles[handles.length - 1];
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 1.4 / z;
+    ctx.beginPath();
+    ctx.moveTo(rot.arm.x, rot.arm.y);
+    ctx.lineTo(rot.x, rot.y);
+    ctx.stroke();
+    for (const h of handles) {
+      if (h.kind === "rot") {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, HANDLE_PX / z, 0, Math.PI * 2);
+        ctx.fillStyle = "#38bdf8";
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.4 / z;
+        ctx.stroke();
+      } else {
+        const s = (HANDLE_PX * 2) / z;
+        ctx.fillStyle = "#fff";
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 1.6 / z;
+        ctx.fillRect(h.x - s / 2, h.y - s / 2, s, s);
+        ctx.strokeRect(h.x - s / 2, h.y - s / 2, s, s);
+      }
+    }
+    const t = `${round(box.foot.w, 2)} × ${round(box.foot.d, 2)} m${box.rot ? `  ${round(box.rot, 1)}°` : ""}`;
+    ctx.font = `${10 / z}px system-ui`;
+    ctx.textAlign = "center";
+    const w = ctx.measureText(t).width + 10 / z;
+    ctx.fillStyle = "#38bdf8";
+    ctx.fillRect(c.x - w / 2, c.y + box.d / 2 + 30 / z, w, 14 / z);
+    ctx.fillStyle = "#04212f";
+    ctx.fillText(t, c.x, c.y + box.d / 2 + 40 / z);
   }
 
   drawDrafts(ctx) {
     const z = this.view.zoom;
-    // duct chain preview
-    if (this.store.tool === "duct" && this.ductLastNodeId != null && this.pointer) {
-      const a = this.store.project.nodes.find((n) => n.id === this.ductLastNodeId);
-      if (a) {
-        ctx.setLineDash([6 / z, 4 / z]);
-        ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = 2 / z;
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(this.pointer.x, this.pointer.y); ctx.stroke();
-        ctx.setLineDash([]);
+    if (this.store.tool === "duct" && this.pointer) {
+      const prev = this.previewPoint(this.pointer);
+      this.hoverSnap = prev.snap;
+      if (this.ductLastNodeId != null) {
+        const a = this.store.project.nodes.find((n) => n.id === this.ductLastNodeId);
+        if (a) {
+          ctx.setLineDash([6 / z, 4 / z]);
+          ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = 2 / z;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(prev.x, prev.y); ctx.stroke();
+          ctx.setLineDash([]);
+          if (Math.abs((a.z || 0) - this.store.traceHeight) > 0.05 && dist(a, prev) < 8 / z) {
+            ctx.fillStyle = "#38bdf8";
+            ctx.font = `${11 / z}px system-ui`;
+            ctx.textAlign = "left";
+            ctx.fillText(`riser → ${round(this.store.traceHeight, 2)} m`, a.x + 12 / z, a.y - 8 / z);
+          }
+        }
+      }
+      this.drawSnapGhost(ctx, prev.snap);
+    }
+    if (this.store.tool === "tee" && this.pointer) {
+      const hit = hitJointAt(this.store.project, this.pointer, this.view.zoom);
+      if (hit) {
+        ctx.beginPath();
+        ctx.arc(hit.r.point.x, hit.r.point.y, 7 / z, 0, Math.PI * 2);
+        ctx.fillStyle = "#fff";
+        ctx.fill();
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 2.2 / z;
+        ctx.stroke();
+        ctx.fillStyle = "#0a0f1c";
+        ctx.font = `${10 / z}px system-ui`;
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#e6edf7";
+        ctx.fillText("T-piece here", hit.r.point.x + 12 / z, hit.r.point.y + 4 / z);
       }
     }
-    // room preview
     if (this.store.tool === "room" && this.roomPts.length) {
       ctx.beginPath();
       this.roomPts.forEach((pt, i) => (i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y)));
@@ -529,7 +856,6 @@ export class CanvasView {
       ctx.stroke(); ctx.setLineDash([]);
       for (const pt of this.roomPts) { ctx.beginPath(); ctx.arc(pt.x, pt.y, 3 / z, 0, Math.PI * 2); ctx.fillStyle = "#38bdf8"; ctx.fill(); }
     }
-    // scale preview
     if (this.store.tool === "scale") {
       const pts = [...this.scalePts];
       if (pts.length === 1 && this.pointer) pts.push(this.pointer);
@@ -539,12 +865,34 @@ export class CanvasView {
         for (const pt of pts) { ctx.beginPath(); ctx.arc(pt.x, pt.y, 4 / z, 0, Math.PI * 2); ctx.fillStyle = "#22d3ee"; ctx.fill(); }
       }
     }
-    // existing calibration marker
     const cal = this.store.project.scale.calib;
     if (cal && this.store.tool !== "scale") {
       ctx.strokeStyle = "rgba(34,211,238,0.4)"; ctx.lineWidth = 1.5 / z; ctx.setLineDash([4 / z, 3 / z]);
       ctx.beginPath(); ctx.moveTo(cal.a.x, cal.a.y); ctx.lineTo(cal.b.x, cal.b.y); ctx.stroke(); ctx.setLineDash([]);
     }
+  }
+
+  drawSnapGhost(ctx, sn) {
+    if (!sn) return;
+    const z = this.view.zoom;
+    ctx.beginPath();
+    ctx.arc(sn.at.x, sn.at.y, 10 / z, 0, Math.PI * 2);
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2 / z;
+    ctx.stroke();
+    if (sn.pulled && this.pointer) {
+      ctx.setLineDash([3 / z, 3 / z]);
+      ctx.beginPath(); ctx.moveTo(this.pointer.x, this.pointer.y); ctx.lineTo(sn.at.x, sn.at.y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const t = sn.what + (sn.name ? `  ${sn.name}` : "");
+    ctx.font = `${10 / z}px system-ui`;
+    const w = ctx.measureText(t).width + 10 / z;
+    ctx.fillStyle = "rgba(10,15,28,0.92)";
+    ctx.fillRect(sn.at.x + 13 / z, sn.at.y - 8 / z, w, 16 / z);
+    ctx.fillStyle = "#e6edf7";
+    ctx.textAlign = "left";
+    ctx.fillText(t, sn.at.x + 18 / z, sn.at.y + 4 / z);
   }
 
   roundRect(ctx, x, y, w, h, r) {
