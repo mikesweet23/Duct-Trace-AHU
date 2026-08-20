@@ -121,7 +121,7 @@ export class View3D {
       }
       poly.push(this.toXYZ(W, b, zb));
       const mm = res?.section?.diameterMm || res?.section?.widthMm || 200;
-      items.push({ t: "line", pts: poly, c: col, w: Math.max(2, Math.min(10, Math.sqrt(mm) / 4)), riser: isVerticalRiser(a, b, W.s) });
+      items.push({ t: "line", pts: poly, c: col, w: Math.max(3.5, Math.min(16, mm / 36)), riser: isVerticalRiser(a, b, W.s) });
     }
 
     for (const n of p.nodes) {
