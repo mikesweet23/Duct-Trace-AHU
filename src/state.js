@@ -6,7 +6,7 @@ import { defaultProps, componentDef } from "./standards/components.js";
 import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf } from "./layout.js";
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
-import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
+import { applicationOf, cloneProfile, defaultSockSpec, DUCT_ROLES } from "./standards/playbook.js";
 
 const STORAGE_KEY = "duct-trace-ahu:project";
 const NODE_MERGE_TOL = 8; // px in world space — tight, so close parallel ducts stay apart
@@ -18,27 +18,29 @@ export function uid(prefix = "id") {
 }
 
 export function defaultSettings() {
+  const profile = cloneProfile("commercial");
+  const caps = {};
+  const mins = {};
+  for (const role of DUCT_ROLES) {
+    caps[role] = profile.roles[role].max;
+    mins[role] = profile.roles[role].min;
+  }
   return {
-    sizingMethod: "friction", // "friction" | "velocity"
-    targetGradient: 1.0, // Pa/m
+    applicationType: "commercial",
+    applicationConfirmed: false,
+    sizingMethod: "hybrid", // "hybrid" | "friction" | "velocity"
+    targetGradient: profile.friction,
     ductType: "round", // "round" | "rect" | "square"
     rectHeight: 300, // mm
     maxAspect: 4,
     roughnessMm: 0.15,
     supplyTempC: 18,
     extractTempC: 22,
-    velocityCaps: {
-      main: RECOMMENDED_VELOCITY.main.max,
-      riser: RECOMMENDED_VELOCITY.riser.max,
-      branch: RECOMMENDED_VELOCITY.branch.max,
-      runout: RECOMMENDED_VELOCITY.runout.max,
-    },
-    velocityMins: {
-      main: RECOMMENDED_VELOCITY.main.min,
-      riser: RECOMMENDED_VELOCITY.riser.min,
-      branch: RECOMMENDED_VELOCITY.branch.min,
-      runout: RECOMMENDED_VELOCITY.runout.min,
-    },
+    dw144Class: "B",
+    velocityProfile: profile.roles,
+    velocityCaps: caps,
+    velocityMins: mins,
+    overlay: "none",
     conceptPxPerMeter: 50,
     flowUnit: "l/s",
     snapPoints: true,
@@ -47,7 +49,22 @@ export function defaultSettings() {
     defaultDuctHeight: 3.2,
     defaultAhuHeight: 0.3,
     defaultTerminalHeight: 2.7,
+    defaultSockHeight: 2.8,
   };
+}
+
+export function applyApplication(settings, appId) {
+  const app = applicationOf(appId);
+  const profile = cloneProfile(app.id);
+  settings.applicationType = app.id;
+  settings.applicationConfirmed = true;
+  settings.targetGradient = app.friction;
+  settings.velocityProfile = profile.roles;
+  for (const role of DUCT_ROLES) {
+    settings.velocityCaps[role] = profile.roles[role].max;
+    settings.velocityMins[role] = profile.roles[role].min;
+  }
+  return settings;
 }
 
 export function newProject(name = "Untitled project") {
@@ -92,8 +109,26 @@ export function migrateProject(raw) {
   p.settings = { ...defaults, ...(p.settings || {}) };
   p.settings.velocityCaps = { ...defaults.velocityCaps, ...(p.settings.velocityCaps || {}) };
   p.settings.velocityMins = { ...defaults.velocityMins, ...(p.settings.velocityMins || {}) };
+  p.settings.velocityProfile = { ...defaults.velocityProfile, ...(p.settings.velocityProfile || {}) };
   p.settings.flowUnit = normalizeFlowUnit(p.settings.flowUnit);
-  p.meta = { ...p.meta, version: 3 };
+  if (!p.settings.applicationType) p.settings.applicationType = "commercial";
+  if (raw?.settings?.applicationConfirmed == null) {
+    p.settings.applicationConfirmed = (p.segments || []).length > 0;
+  }
+  if (!p.settings.dw144Class) p.settings.dw144Class = "B";
+  if (!p.settings.overlay) p.settings.overlay = "none";
+  if (!["hybrid", "friction", "velocity"].includes(p.settings.sizingMethod)) p.settings.sizingMethod = "hybrid";
+  p.meta = { ...p.meta, version: 4 };
+  for (const s of p.segments || []) {
+    if (!s.ductKind) s.ductKind = "sheet";
+    if (s.sizeLocked == null) s.sizeLocked = !!(s.sizeOverride && (s.sizeOverride.diameterMm || s.sizeOverride.widthMm));
+    if (s.applicationType == null) s.applicationType = null;
+    if (s.warningAck == null) s.warningAck = false;
+    if (s.warningNote == null) s.warningNote = "";
+  }
+  for (const r of p.rooms || []) {
+    if (r.applicationType == null) r.applicationType = "";
+  }
   const settings = p.settings;
   for (const n of p.nodes) {
     if (!Number.isFinite(Number(n.z))) n.z = settings.defaultDuctHeight;
@@ -127,6 +162,7 @@ export class Store {
     this.tool = "select";
     this.activeSystem = "supply"; // for new ducts/components
     this.newComponentKind = null; // when tool === "component"
+    this.ductKind = "sheet"; // "sheet" | "sock"
     this.traceHeight = this.project.settings.defaultDuctHeight;
     this.overrideKey = false; // Alt: ignore snap-to-existing / flip ortho
     this.viewMode = "plan"; // "plan" | "3d"
@@ -198,6 +234,12 @@ export class Store {
   setTool(tool, kind = null) {
     this.tool = tool;
     this.newComponentKind = kind;
+    if (tool === "sock") {
+      this.ductKind = "sock";
+      this.traceHeight = this.project.settings.defaultSockHeight ?? 2.8;
+    } else if (tool === "duct") {
+      this.ductKind = "sheet";
+    }
     this.emit();
   }
 
@@ -244,18 +286,35 @@ export class Store {
     if (atJunction && !fittings.some((f) => f.type === "tee_branch" || f.type === "tee_straight")) {
       fittings.push({ type: "tee_branch", qty: 1 });
     }
+    const ductKind = extra.ductKind || this.ductKind || "sheet";
+    const prevSock =
+      this.project.segments.find((s) => s.ductKind === "sock" && (s.a === aNode.id || s.b === aNode.id || s.a === bNode.id || s.b === bNode.id))
+      || this.project.segments.filter((s) => s.ductKind === "sock").slice(-1)[0];
     const seg = {
       id: uid("s"),
       a: aNode.id,
       b: bNode.id,
       system,
+      ductKind,
       shapeOverride: extra.shapeOverride ?? null,
-      sizeOverride: extra.sizeOverride ?? null,
+      sizeOverride: extra.sizeOverride ?? (ductKind === "sock" ? { diameterMm: (extra.sock || prevSock?.sock || defaultSockSpec()).diameterMm } : null),
+      sizeLocked: extra.sizeLocked ?? ductKind === "sock",
       flowOverride: extra.flowOverride ?? null,
-      roleOverride: extra.roleOverride ?? null,
+      roleOverride: extra.roleOverride ?? (ductKind === "sock" ? "runout" : null),
+      applicationType: extra.applicationType ?? null,
+      warningAck: false,
+      warningNote: "",
       aOff: extra.aOff ?? null,
       bOff: extra.bOff ?? null,
       fittings,
+      sock: ductKind === "sock"
+        ? {
+            ...defaultSockSpec(),
+            ...(prevSock?.sock || {}),
+            ...(extra.sock || {}),
+            heightM: extra.sock?.heightM ?? prevSock?.sock?.heightM ?? this.project.settings.defaultSockHeight ?? 2.8,
+          }
+        : extra.sock ?? null,
     };
     this.project.segments.push(seg);
     return seg;
@@ -359,6 +418,7 @@ export class Store {
       points,
       supplyFlow_ls: 0,
       extractFlow_ls: 0,
+      applicationType: "",
     };
     this.project.rooms.push(room);
     return room;
@@ -377,10 +437,16 @@ export class Store {
       a: j.id,
       b: seg.b,
       system: seg.system,
+      ductKind: seg.ductKind || "sheet",
       shapeOverride: seg.shapeOverride,
       sizeOverride: seg.sizeOverride ? { ...seg.sizeOverride } : null,
+      sizeLocked: !!seg.sizeLocked,
       flowOverride: null,
       roleOverride: seg.roleOverride,
+      applicationType: seg.applicationType || null,
+      warningAck: false,
+      warningNote: "",
+      sock: seg.sock ? { ...seg.sock } : null,
       aOff: null,
       bOff: seg.bOff || null,
       fittings: (seg.fittings || []).filter((f) => f.type !== "tee_branch").map((f) => ({ ...f })),
@@ -529,6 +595,7 @@ export function seedDemo(store) {
   p.mode = "concept";
   p.scale = { pxPerMeter: 40, calib: null };
   p.settings = defaultSettings();
+  applyApplication(p.settings, "office");
   p.settings.ductType = "round";
 
   const mk = (id, x, y, z = 3.2) => ({ id, x, y, z });
@@ -549,8 +616,9 @@ export function seedDemo(store) {
   p.nodes = nodes;
 
   const seg = (id, a, b, system, fittings = []) => ({
-    id, a, b, system, shapeOverride: null, sizeOverride: null,
-    flowOverride: null, roleOverride: null, aOff: null, bOff: null, fittings,
+    id, a, b, system, ductKind: "sheet", shapeOverride: null, sizeOverride: null,
+    sizeLocked: false, flowOverride: null, roleOverride: null, applicationType: null,
+    aOff: null, bOff: null, fittings,
   });
   p.segments = [
     seg("sT0", "nAHU", "nT1", "supply", [{ type: "bend90_radius", qty: 1 }]),
@@ -597,7 +665,7 @@ export function seedDemo(store) {
   p.rooms = [
     { id: "rm1", name: "Office A", points: [{ x: 260, y: 120 }, { x: 480, y: 120 }, { x: 480, y: 300 }, { x: 260, y: 300 }], supplyFlow_ls: 120, extractFlow_ls: 100 },
     { id: "rm2", name: "Office B", points: [{ x: 500, y: 120 }, { x: 720, y: 120 }, { x: 720, y: 300 }, { x: 500, y: 300 }], supplyFlow_ls: 120, extractFlow_ls: 0 },
-    { id: "rm3", name: "Meeting", points: [{ x: 500, y: 500 }, { x: 760, y: 500 }, { x: 760, y: 640 }, { x: 500, y: 640 }], supplyFlow_ls: 90, extractFlow_ls: 120 },
+    { id: "rm3", name: "Meeting", points: [{ x: 500, y: 500 }, { x: 760, y: 500 }, { x: 760, y: 640 }, { x: 500, y: 640 }], supplyFlow_ls: 90, extractFlow_ls: 120, applicationType: "critical_acoustic" },
   ];
 
   store.project = p;

@@ -89,3 +89,11 @@ test("larger flow selects a larger circular duct", () => {
   const large = sizeCircular(1.0, { method: "velocity", maxVelocity: 6 });
   assert.ok(large.diameterMm > small.diameterMm);
 });
+
+test("hybrid sizes to the target velocity, not only the maximum", () => {
+  const flow = 0.5;
+  const byMax = sizeCircular(flow, { method: "velocity", maxVelocity: 7 });
+  const hybrid = sizeCircular(flow, { method: "hybrid", maxVelocity: 7, targetVelocity: 5, targetGradient: 1.2 });
+  assert.ok(hybrid.velocity <= 5 + 1e-9, `hybrid v=${hybrid.velocity}`);
+  assert.ok(hybrid.diameterMm >= byMax.diameterMm);
+});

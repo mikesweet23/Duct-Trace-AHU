@@ -71,9 +71,16 @@ export function dynamicPressure(velocity, density) {
 // method: "velocity" picks the smallest standard diameter whose velocity is
 // <= maxVelocity. "friction" picks the smallest standard diameter meeting the
 // target gradient AND the velocity cap.
+function methodAccepts(method, velOk, fricOk, targetOk) {
+  if (method === "velocity") return velOk;
+  if (method === "hybrid") return targetOk && fricOk;
+  return velOk && fricOk;
+}
+
 export function sizeCircular(flowM3s, opts = {}) {
   const method = opts.method ?? "friction";
   const maxVelocity = opts.maxVelocity ?? 7;
+  const targetVelocity = opts.targetVelocity ?? maxVelocity;
   const target = opts.targetGradient ?? 1.0; // Pa/m
   const warnings = [];
   let chosen = null;
@@ -81,10 +88,22 @@ export function sizeCircular(flowM3s, opts = {}) {
   for (const d of CIRCULAR_DIAMETERS) {
     const fr = circularFriction(flowM3s, d, opts);
     const velOk = fr.velocity <= maxVelocity;
+    const targetOk = fr.velocity <= targetVelocity + 1e-9;
     const fricOk = fr.gradient <= target;
-    if (method === "velocity" ? velOk : velOk && fricOk) {
+    if (methodAccepts(method, velOk, fricOk, targetOk)) {
       chosen = { diameterMm: d, ...fr };
       break;
+    }
+  }
+
+  if (!chosen && method === "hybrid") {
+    for (const d of CIRCULAR_DIAMETERS) {
+      const fr = circularFriction(flowM3s, d, opts);
+      if (fr.velocity <= maxVelocity && fr.gradient <= target) {
+        chosen = { diameterMm: d, ...fr };
+        warnings.push("Target velocity could not be met; sized to the maximum and friction limits.");
+        break;
+      }
     }
   }
 
@@ -125,6 +144,7 @@ export function sizeCircular(flowM3s, opts = {}) {
 export function sizeRectangular(flowM3s, opts = {}) {
   const method = opts.method ?? "friction";
   const maxVelocity = opts.maxVelocity ?? 7;
+  const targetVelocity = opts.targetVelocity ?? maxVelocity;
   const target = opts.targetGradient ?? 1.0;
   const maxAspect = opts.maxAspect ?? 4;
   const warnings = [];
@@ -145,8 +165,9 @@ export function sizeRectangular(flowM3s, opts = {}) {
       const aspect = Math.max(width, height) / Math.min(width, height);
       if (aspect > maxAspect) continue;
       const velOk = fr.velocity <= maxVelocity;
+      const targetOk = fr.velocity <= targetVelocity + 1e-9;
       const fricOk = fr.gradient <= target;
-      if (method === "velocity" ? velOk : velOk && fricOk) {
+      if (methodAccepts(method, velOk, fricOk, targetOk)) {
         return {
           shape: "rect",
           widthMm: width,
@@ -159,6 +180,31 @@ export function sizeRectangular(flowM3s, opts = {}) {
           aspect: round(aspect, 2),
           warnings,
         };
+      }
+    }
+  }
+
+  if (method === "hybrid") {
+    for (const height of heightOptions) {
+      for (const width of RECTANGULAR_SIDES) {
+        const fr = rectangularFriction(flowM3s, width, height, opts);
+        const aspect = Math.max(width, height) / Math.min(width, height);
+        if (aspect > maxAspect) continue;
+        if (fr.velocity <= maxVelocity && fr.gradient <= target) {
+          warnings.push("Target velocity could not be met; sized to the maximum and friction limits.");
+          return {
+            shape: "rect",
+            widthMm: width,
+            heightMm: height,
+            areaM2: fr.area,
+            velocity: fr.velocity,
+            gradient: fr.gradient,
+            reynolds: fr.reynolds,
+            equivDiameterMm: fr.equivDiameterMm,
+            aspect: round(aspect, 2),
+            warnings,
+          };
+        }
       }
     }
   }
@@ -186,6 +232,7 @@ export function sizeRectangular(flowM3s, opts = {}) {
 export function sizeSquare(flowM3s, opts = {}) {
   const method = opts.method ?? "friction";
   const maxVelocity = opts.maxVelocity ?? 7;
+  const targetVelocity = opts.targetVelocity ?? maxVelocity;
   const target = opts.targetGradient ?? 1.0;
   const warnings = [];
   const start = nearestRectSideUp(opts.rectHeight ?? opts.squareSide ?? 250);
@@ -194,8 +241,9 @@ export function sizeSquare(flowM3s, opts = {}) {
   for (const side of sides) {
     const fr = rectangularFriction(flowM3s, side, side, opts);
     const velOk = fr.velocity <= maxVelocity;
+    const targetOk = fr.velocity <= targetVelocity + 1e-9;
     const fricOk = fr.gradient <= target;
-    if (method === "velocity" ? velOk : velOk && fricOk) {
+    if (methodAccepts(method, velOk, fricOk, targetOk)) {
       return {
         shape: "square",
         widthMm: side,

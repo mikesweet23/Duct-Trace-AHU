@@ -1,6 +1,7 @@
 // Shared display helpers for flow, section size and role labels.
 
 import { flowUnitLabel, formatFlow, formatFlowLs, lsToDisplay, normalizeFlowUnit } from "./units.js";
+import { ROLE_LABELS } from "./standards/playbook.js";
 
 export function sectionSizeLabel(section) {
   if (!section) return "—";
@@ -19,8 +20,7 @@ export function sectionShapeLabel(shape) {
 }
 
 export function roleLabel(role) {
-  if (role === "runout") return "run-out";
-  return role || "main";
+  return ROLE_LABELS[role] || (role === "runout" ? "Final run to terminal" : role || "Main distribution");
 }
 
 export function flowHeading(unit) {

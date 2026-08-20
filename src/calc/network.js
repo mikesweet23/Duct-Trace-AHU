@@ -3,25 +3,126 @@
 // the plant, sizes every segment, and finds the index run (the path of
 // greatest total pressure loss), which sets the required system static.
 
-import { routeLengthM, isVerticalRiser } from "../geom.js";
+import { routeLengthM, isVerticalRiser, pointInPolygon } from "../geom.js";
 import { flowToM3s, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { airDensity, airViscosity } from "../units.js";
 import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizing.js";
 import { totalFittingK } from "../standards/fittings.js";
 import { componentDef, inlineLossPa } from "../standards/components.js";
-import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
+import { pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
+import {
+  applicationOf,
+  normalizeRole,
+  resolveBand,
+  warnLevel,
+  warnMessage,
+} from "../standards/playbook.js";
 
 const FLOW_MATCH_ABS_LS = 2;
 const FLOW_MATCH_REL = 0.02;
 
-function velocityLimits(role, settings) {
-  const caps = settings.velocityCaps || {};
-  const mins = settings.velocityMins || {};
-  const rec = RECOMMENDED_VELOCITY[role] || RECOMMENDED_VELOCITY.main;
-  return {
-    min: mins[role] ?? rec.min ?? 0,
-    max: caps[role] ?? rec.max ?? 7,
-  };
+function velocityLimits(role, settings, overrideApp) {
+  return resolveBand(role, settings, overrideApp);
+}
+
+function applicationForSegment(project, s, a, b) {
+  if (s.applicationType) return s.applicationType;
+  if (!a || !b) return null;
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  for (const room of project.rooms || []) {
+    if (room.applicationType && room.points && pointInPolygon(mid, room.points)) {
+      return room.applicationType;
+    }
+  }
+  return null;
+}
+
+function hasFixedSize(s) {
+  const o = s.sizeOverride;
+  return !!(s.sizeLocked && o && (o.diameterMm || o.widthMm));
+}
+
+function sockSpecOf(s) {
+  return s.sock && typeof s.sock === "object" ? s.sock : null;
+}
+
+function applySockDemand(segs, adj, parentNode, rootNode, demand, warnings, nodesById, pxPerMeter) {
+  const sockSegs = segs.filter((s) => s.ductKind === "sock");
+  if (!sockSegs.length) return;
+  const seen = new Set();
+  for (const start of sockSegs) {
+    if (seen.has(start.id)) continue;
+    const chain = [];
+    const walk = (seg) => {
+      if (seen.has(seg.id)) return;
+      seen.add(seg.id);
+      chain.push(seg);
+      for (const end of [seg.a, seg.b]) {
+        for (const { seg: next } of adj.get(end) || []) {
+          if (next.ductKind === "sock" && !seen.has(next.id)) walk(next);
+        }
+      }
+    };
+    walk(start);
+    const spec = sockSpecOf(chain.find((s) => s.sock) || chain[0]) || {};
+    const designLs = Number(spec.designFlow_ls) || 0;
+    if (designLs <= 0) continue;
+
+    let inletNode = chain[0].a;
+    if (rootNode != null) {
+      let best = inletNode;
+      let bestDepth = Infinity;
+      for (const seg of chain) {
+        for (const n of [seg.a, seg.b]) {
+          let d = 0;
+          let cur = n;
+          let guard = 0;
+          while (cur !== rootNode && parentNode.has(cur) && guard++ < 10000) {
+            cur = parentNode.get(cur);
+            d++;
+          }
+          if (cur === rootNode && d < bestDepth) {
+            bestDepth = d;
+            best = n;
+          }
+        }
+      }
+      inletNode = best;
+    }
+
+    const outletNodes = new Set();
+    for (const seg of chain) {
+      const child = parentNode.get(seg.b) === seg.a ? seg.b : parentNode.get(seg.a) === seg.b ? seg.a : null;
+      if (child) outletNodes.add(child);
+      else if (seg.a !== inletNode) outletNodes.add(seg.a);
+      else outletNodes.add(seg.b);
+    }
+    const existing = [...outletNodes].reduce((sum, n) => sum + (demand.get(n) || 0), 0);
+    const sockM3s = flowToM3s(designLs, "l/s");
+    if (existing > 1e-9 && Math.abs(existing - sockM3s) > Math.max(0.002, 0.02 * Math.max(existing, sockM3s))) {
+      warnings.push(
+        `Air sock spec (${round(designLs, 0)} l/s) does not match terminals on that run (${round(existing * 1000, 0)} l/s).`
+      );
+    }
+    if (existing > 1e-9) continue;
+
+    const lengths = new Map();
+    let totalLen = 0;
+    for (const seg of chain) {
+      const child = parentNode.get(seg.b) === seg.a ? seg.b
+        : parentNode.get(seg.a) === seg.b ? seg.a
+        : (seg.a === inletNode ? seg.b : seg.a);
+      const na = nodesById.get(seg.a);
+      const nb = nodesById.get(seg.b);
+      const len = na && nb ? Math.max(0.2, routeLengthM(na, nb, pxPerMeter)) : 1;
+      lengths.set(child, (lengths.get(child) || 0) + len);
+      totalLen += len;
+    }
+    if (totalLen <= 0) totalLen = chain.length;
+    for (const [nodeId, len] of lengths) {
+      demand.set(nodeId, (demand.get(nodeId) || 0) + sockM3s * (len / totalLen));
+    }
+  }
 }
 
 function plantServes(c, systemType) {
@@ -50,20 +151,27 @@ function flowsMatch(a, b) {
   return Math.abs(a - b) <= flowMatchTolLs(a, b);
 }
 
-function inferRole(s, a, b, px, parentNode, terminalNodes, adj, segFlow) {
-  if (s.roleOverride) return s.roleOverride;
+function inferRole(s, a, b, px, parentNode, terminalNodes, adj, segFlow, roleBySeg, rootNode) {
+  if (s.roleOverride) return normalizeRole(s.roleOverride);
+  if (s.ductKind === "sock") return "runout";
   if (a && b && isVerticalRiser(a, b, px)) return "riser";
 
   const childNode = parentNode.get(s.b) === s.a ? s.b : parentNode.get(s.a) === s.b ? s.a : null;
+  const parent = childNode != null ? parentNode.get(childNode) : null;
+  if (parent != null && parent === rootNode) return "discharge";
   if (childNode != null && terminalNodes.has(childNode)) return "runout";
 
-  if (childNode != null) {
-    const parent = parentNode.get(childNode);
+  if (childNode != null && parent != null) {
     const outgoing = (adj.get(parent) || []).filter(({ other }) => parentNode.get(other) === parent);
     if (outgoing.length >= 2) {
       const thisF = segFlow.get(s.id) || 0;
       const maxF = Math.max(...outgoing.map(({ seg }) => segFlow.get(seg.id) || 0));
-      if (thisF < maxF - 1e-9) return "branch";
+      if (thisF < maxF - 1e-9) {
+        const incoming = parentNode.has(parent) ? (adj.get(parent) || []).find(({ other }) => other === parentNode.get(parent)) : null;
+        const parentRole = incoming ? roleBySeg.get(incoming.seg.id) : null;
+        if (parentRole === "branch" || parentRole === "secondary" || parentRole === "runout") return "secondary";
+        return "branch";
+      }
     }
   }
   return "main";
@@ -102,7 +210,7 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
   const density = airDensity(tempC);
   const viscosity = airViscosity(tempC);
   const commonOpts = {
-    method: settings.sizingMethod || "friction",
+    method: settings.sizingMethod || "hybrid",
     targetGradient: settings.targetGradient ?? 1.0,
     roughnessMm: settings.roughnessMm ?? 0.15,
     rectHeight: settings.rectHeight ?? 250,
@@ -178,6 +286,7 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
         }
       }
     }
+    applySockDemand(segs, adj, parentNode, rootNode, demand, warnings, nodesById, pxPerMeter);
     const subtree = new Map();
     for (let i = order.length - 1; i >= 0; i--) {
       const n = order[i];
@@ -198,9 +307,29 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
 
   const segsToSize = plantFilter ? segs.filter((s) => reachableSegs.has(s.id) || s.flowOverride != null) : segs;
 
+  const roleBySeg = new Map();
+  if (order.length) {
+    for (const n of order) {
+      for (const { seg, other } of adj.get(n) || []) {
+        if (parentNode.get(other) !== n) continue;
+        const a = nodesById.get(seg.a);
+        const b = nodesById.get(seg.b);
+        roleBySeg.set(seg.id, inferRole(seg, a, b, pxPerMeter, parentNode, terminalNodes, adj, segFlow, roleBySeg, rootNode));
+      }
+    }
+  }
+
+  const designClass = settings.dw144Class || "B";
+  const classMax = PRESSURE_CLASSES[designClass]?.maxVelocity;
   const segResults = [];
   let minV = Infinity;
   let maxV = 0;
+  let maxGradient = 0;
+  let velWarnCount = 0;
+  let frictionWarnCount = 0;
+  let constructionWarnCount = 0;
+  let acoustic = false;
+
   for (const s of segsToSize) {
     let flow = segFlow.get(s.id) ?? 0;
     if (s.flowOverride != null && s.flowOverride !== "") {
@@ -209,30 +338,56 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
     const a = nodesById.get(s.a);
     const b = nodesById.get(s.b);
     const lengthM = a && b ? routeLengthM(a, b, pxPerMeter) : 0;
-
-    const role = inferRole(s, a, b, pxPerMeter, parentNode, terminalNodes, adj, segFlow);
-    const limits = velocityLimits(role, settings);
-    const maxVelocity = limits.max;
-    const minVelocity = limits.min;
+    const overrideApp = applicationForSegment(project, s, a, b);
+    const role = roleBySeg.get(s.id) || inferRole(s, a, b, pxPerMeter, parentNode, terminalNodes, adj, segFlow, roleBySeg, rootNode);
+    const band = velocityLimits(role, settings, overrideApp);
+    const maxVelocity = band.max;
+    const minVelocity = band.min;
+    const targetVelocity = band.target;
+    if (band.applicationType === "critical_acoustic") acoustic = true;
 
     const shape = s.shapeOverride || settings.ductType || "round";
+    const spec = sockSpecOf(s);
+    const sock = s.ductKind === "sock";
     let section;
-    let fr;
-    if (s.sizeOverride && (s.sizeOverride.diameterMm || s.sizeOverride.widthMm)) {
-      section = { shape, ...s.sizeOverride };
-      fr = frictionForSection(flow, section, commonOpts);
+    let suggestedSection = null;
+    const sizeOpts = { ...commonOpts, shape, maxVelocity, targetVelocity };
+    if (sock) {
+      const diameterMm = spec?.diameterMm || s.sizeOverride?.diameterMm || 400;
+      section = { shape: "round", diameterMm };
+      const fr = frictionForSection(flow, section, commonOpts);
       section.areaM2 = fr.area;
       section.velocity = fr.velocity;
       section.gradient = fr.gradient;
       section.warnings = [];
+    } else if (hasFixedSize(s) || (s.sizeOverride && (s.sizeOverride.diameterMm || s.sizeOverride.widthMm))) {
+      section = { shape, ...s.sizeOverride };
+      if (shape === "square" && section.widthMm && !section.heightMm) section.heightMm = section.widthMm;
+      const fr = frictionForSection(flow, section, commonOpts);
+      section.areaM2 = fr.area;
+      section.velocity = fr.velocity;
+      section.gradient = fr.gradient;
+      section.warnings = [];
+      suggestedSection = sizeDuct(flow, sizeOpts);
     } else {
-      section = sizeDuct(flow, { ...commonOpts, shape, maxVelocity });
+      section = sizeDuct(flow, sizeOpts);
     }
 
     const velocity = section.velocity || 0;
     const dp = dynamicPressure(velocity, density);
-    const frictionPa = (section.gradient || 0) * lengthM;
-    const kTotal = totalFittingK(s.fittings || []);
+    const child = parentNode.get(s.b) === s.a ? s.b : parentNode.get(s.a) === s.b ? s.a : s.b;
+    const parent = parentNode.get(child);
+    const incoming = parent != null ? (adj.get(parent) || []).find(({ other }) => other === parentNode.get(parent)) : null;
+    const sockInlet = sock && (!incoming || incoming.seg.ductKind !== "sock");
+    let frictionPa = (section.gradient || 0) * lengthM;
+    let gradient = section.gradient || 0;
+    if (sock) {
+      const specPa = Number(spec?.specPa) || 0;
+      frictionPa = sockInlet ? specPa : 0;
+      gradient = sockInlet && lengthM > 0 ? specPa / lengthM : 0;
+      section.gradient = gradient;
+    }
+    const kTotal = sock ? 0 : totalFittingK(s.fittings || []);
     const fittingPa = kTotal * dp;
     const inlineList = inlineNodes.get(s.b) || [];
     let inlinePa = 0;
@@ -244,39 +399,56 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
     if (flow > 0) {
       minV = Math.min(minV, velocity);
       maxV = Math.max(maxV, velocity);
+      maxGradient = Math.max(maxGradient, gradient);
     }
 
     const withinMax = velocity <= maxVelocity + 1e-6;
     const withinMin = flow <= 0 || velocity + 1e-6 >= minVelocity;
-    const rec = RECOMMENDED_VELOCITY[role] || RECOMMENDED_VELOCITY.main;
+    const level = flow > 0 ? warnLevel(velocity, band, { dw144Class: designClass, classMaxVelocity: classMax }) : "none";
     const segWarnings = [...(section.warnings || [])];
-    if (flow > 0 && !withinMax) {
-      segWarnings.push(`Velocity ${round(velocity, 1)} m/s exceeds the ${round(maxVelocity, 1)} m/s ${role} cap (${rec.source}).`);
-    }
+    const msg = warnMessage(velocity, band, level, { dw144Class: designClass, classMaxVelocity: classMax });
+    if (msg) segWarnings.push(msg);
     if (flow > 0 && !withinMin) {
-      segWarnings.push(`Velocity ${round(velocity, 1)} m/s is below the ${round(minVelocity, 1)} m/s ${role} minimum (${rec.source}).`);
+      segWarnings.push(`Velocity ${round(velocity, 1)} m/s is below the ${round(minVelocity, 1)} m/s ${band.source} minimum.`);
     }
+    if ((role === "runout" || role === "terminal") && flow > 0 && velocity > 0 && velocity < targetVelocity * 0.55) {
+      segWarnings.push("Unusually large final branch — check whether this size is required for noise or diffuser performance, or is an overly restrictive auto-size rule.");
+    }
+    if (level === "advisory" || level === "warning") velWarnCount++;
+    if (level === "critical") constructionWarnCount++;
+    if (gradient > (settings.targetGradient ?? 1) + 1e-6) frictionWarnCount++;
+    if (!suggestedSection && !withinMax && flow > 0 && !sock) suggestedSection = sizeDuct(flow, sizeOpts);
 
     segResults.push({
       id: s.id,
       system: systemType,
       role,
+      ductKind: s.ductKind || "sheet",
+      applicationType: band.applicationType,
+      applicationLabel: band.applicationLabel,
       flowM3s: flow,
       lengthM,
       section,
+      suggestedSection,
       velocity,
-      gradient: section.gradient || 0,
+      targetVelocity,
+      gradient,
       frictionPa,
       fittingPa,
       inlinePa,
       dpPa: segDp,
       kTotal,
       fittings: (s.fittings || []).map((f) => ({ ...f })),
-      withinVelocity: withinMax && withinMin,
+      withinVelocity: withinMax && withinMin && level !== "critical",
       withinMax,
       withinMin,
       maxVelocity,
       minVelocity,
+      warnLevel: level,
+      warningAck: !!s.warningAck,
+      warningNote: s.warningNote || "",
+      sizeLocked: !!s.sizeLocked,
+      sock: spec,
       warnings: segWarnings,
     });
   }
@@ -288,8 +460,13 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
   let indexPath = [];
   const terminals = [];
   const reached = new Set(order);
+  const terminalEntries = [];
+  for (const [nodeId, list] of terminalNodes) terminalEntries.push({ nodeId, list, sock: false });
+  for (const [nodeId, q] of demand) {
+    if (!terminalNodes.has(nodeId) && q > 0) terminalEntries.push({ nodeId, list: [], sock: true });
+  }
   if (rootNode != null) {
-    for (const [nodeId, list] of terminalNodes) {
+    for (const { nodeId, list, sock } of terminalEntries) {
       if (plantFilter && !reached.has(nodeId) && nodeId !== rootNode) continue;
       let cur = nodeId;
       let cum = 0;
@@ -310,7 +487,9 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
       terminals.push({
         nodeId,
         components: list,
-        name: list.map((c) => c.label || componentDef(c.kind)?.label).join(", "),
+        name: list.length
+          ? list.map((c) => c.label || componentDef(c.kind)?.label).join(", ")
+          : sock ? "Air sock" : "Demand",
         totalPa: cum,
         terminalLossPa: termLoss,
         flowM3s: demand.get(nodeId) || 0,
@@ -345,11 +524,18 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
 
   const plantClass = pressureClassFor(indexStaticPa);
   for (const r of segResults) {
-    const classMax = PRESSURE_CLASSES[plantClass]?.maxVelocity;
-    if (r.flowM3s > 0 && classMax && r.velocity > classMax + 1e-6) {
-      r.warnings.push(`Velocity ${round(r.velocity, 1)} m/s exceeds DW144 Class ${plantClass} limit of ${classMax} m/s.`);
+    const pClassMax = PRESSURE_CLASSES[plantClass]?.maxVelocity;
+    if (r.flowM3s > 0 && pClassMax && r.velocity > pClassMax + 1e-6) {
+      r.warnings.push(`Velocity ${round(r.velocity, 1)} m/s exceeds DW144 Class ${plantClass} limit of ${pClassMax} m/s.`);
       r.withinVelocity = false;
+      if (r.warnLevel !== "critical") {
+        r.warnLevel = "critical";
+        constructionWarnCount++;
+      }
     }
+  }
+  if (acoustic) {
+    warnings.push("Critical acoustic areas: consider attenuators, flexible connections, acoustic lining, low-velocity terminals, damper noise, breakout and regenerated noise at fittings.");
   }
 
   const plantLabel = plant ? (plant.label || componentDef(plant.kind)?.label || "Plant") : null;
@@ -373,6 +559,11 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
     pressureClassInfo: PRESSURE_CLASSES[plantClass],
     minVelocity: isFinite(minV) ? minV : 0,
     maxVelocity: maxV,
+    maxGradient,
+    dw144Class: designClass,
+    velWarnCount,
+    frictionWarnCount,
+    constructionWarnCount,
     segments: segResults,
     terminals,
     warnings,
@@ -415,6 +606,47 @@ function dualAhuWarnings(project, systems) {
   return warnings;
 }
 
+function buildDesignSummary(project, systems) {
+  const settings = project.settings || {};
+  const app = applicationOf(settings.applicationType);
+  const main = resolveBand("main", settings);
+  const riser = resolveBand("riser", settings);
+  const branch = resolveBand("branch", settings);
+  const runout = resolveBand("runout", settings);
+  let highestVelocity = 0;
+  let highestFriction = 0;
+  let totalResistance = 0;
+  let velocityWarnings = 0;
+  let pressureDropWarnings = 0;
+  let constructionWarnings = 0;
+  for (const sys of systems) {
+    totalResistance = Math.max(totalResistance, sys.indexStaticPa || 0);
+    highestVelocity = Math.max(highestVelocity, sys.maxVelocity || 0);
+    highestFriction = Math.max(highestFriction, sys.maxGradient || 0);
+    velocityWarnings += sys.velWarnCount || 0;
+    pressureDropWarnings += sys.frictionWarnCount || 0;
+    constructionWarnings += sys.constructionWarnCount || 0;
+  }
+  return {
+    applicationType: app.id,
+    applicationLabel: app.label,
+    sizingMethod: settings.sizingMethod || "hybrid",
+    mainTarget: main.target,
+    mainMax: main.max,
+    riserTarget: riser.target,
+    branchTarget: branch.target,
+    finalRunVelocity: runout.target,
+    pressureDropTarget: settings.targetGradient ?? app.friction,
+    highestVelocity,
+    highestFriction,
+    totalResistance,
+    dw144Class: settings.dw144Class || "B",
+    velocityWarnings,
+    pressureDropWarnings,
+    constructionWarnings,
+  };
+}
+
 export function computeAll(project) {
   const systems = [];
   for (const systemType of ["supply", "extract"]) {
@@ -430,7 +662,7 @@ export function computeAll(project) {
   const projectWarnings = dualAhuWarnings(project, systems);
   const supply = systems.find((s) => s.systemType === "supply") || emptySystem("supply");
   const extract = systems.find((s) => s.systemType === "extract") || emptySystem("extract");
-  return { supply, extract, systems, projectWarnings };
+  return { supply, extract, systems, projectWarnings, summary: buildDesignSummary(project, systems) };
 }
 
 export function allComputedSystems(results) {

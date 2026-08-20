@@ -13,7 +13,7 @@ function demoProject() {
       sizingMethod: "velocity",
       ductType: "round",
       supplyTempC: 18,
-      velocityCaps: { main: 7, branch: 5, runout: 3.5 },
+      velocityCaps: { discharge: 7, main: 7, branch: 5, runout: 3.5 },
     },
     nodes: [
       { id: "n0", x: 0, y: 0 },
@@ -123,7 +123,7 @@ test("a lower-flow take-off that is not a terminal leaf is a branch", () => {
   const res = computeSystem(p, "supply");
   assert.equal(res.segments.find((s) => s.id === "s3").role, "branch");
   assert.equal(res.segments.find((s) => s.id === "s2").role, "runout");
-  assert.equal(res.segments.find((s) => s.id === "s0").role, "main");
+  assert.equal(res.segments.find((s) => s.id === "s0").role, "discharge");
 });
 
 test("AHU duty that does not match terminals raises a warning", () => {
