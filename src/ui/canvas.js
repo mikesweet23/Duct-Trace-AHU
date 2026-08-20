@@ -6,7 +6,7 @@ import { componentDef } from "../standards/components.js";
 import { showPrompt } from "./modal.js";
 import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
 import { findSegResult, isIndexSegment } from "../calc/network.js";
-import { snapAt, hitJointAt } from "../snap.js";
+import { snapAt, hitJointAt, EQUIP_HIT_PX } from "../snap.js";
 import {
   componentBox,
   componentBoxTrue,
@@ -75,8 +75,13 @@ export class CanvasView {
   }
 
   previewPoint(world) {
-    const sn = snapAt(this.store.project, world, this.snapOpts());
+    const opts = this.snapOpts();
+    const sn = snapAt(this.store.project, world, opts);
     if (sn) return { x: sn.at.x, y: sn.at.y, snap: sn };
+    // A slightly wider magnet so a click on the last outlet is not turned
+    // into a 45° / square ghost corner just short of the grille.
+    const intent = snapAt(this.store.project, world, { ...opts, magnetPx: EQUIP_HIT_PX * 1.6 });
+    if (intent?.kind === "component") return { x: intent.at.x, y: intent.at.y, snap: intent };
     const last = this.ductLastNodeId
       ? this.store.project.nodes.find((n) => n.id === this.ductLastNodeId)
       : null;
