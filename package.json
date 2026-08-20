@@ -1,0 +1,12 @@
+{
+  "name": "duct-trace-ahu",
+  "version": "0.1.0",
+  "description": "Commercial/industrial ductwork tracing and HVAC duct sizing tool (DW144 / CIBSE).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "start": "python3 -m http.server 8000 --bind 0.0.0.0"
+  },
+  "license": "MIT"
+}
