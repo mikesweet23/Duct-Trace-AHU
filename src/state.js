@@ -3,9 +3,12 @@
 
 import { dist } from "./geom.js";
 import { defaultProps, componentDef } from "./standards/components.js";
+import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf } from "./layout.js";
+import { heightAlong } from "./snap.js";
 
 const STORAGE_KEY = "duct-trace-ahu:project";
-const NODE_MERGE_TOL = 12; // px in world space
+const NODE_MERGE_TOL = 8; // px in world space — tight, so close parallel ducts stay apart
+const Z_MERGE_TOL = 0.05; // m — stacked riser nodes must not collapse
 
 let idCounter = 1;
 export function uid(prefix = "id") {
@@ -25,12 +28,18 @@ export function defaultSettings() {
     velocityCaps: { main: 7.0, branch: 5.0, runout: 3.5 },
     conceptPxPerMeter: 50,
     flowUnit: "l/s",
+    snapPoints: true,
+    ortho: true,
+    showActualDucts: true,
+    defaultDuctHeight: 3.2,
+    defaultAhuHeight: 0.3,
+    defaultTerminalHeight: 2.7,
   };
 }
 
 export function newProject(name = "Untitled project") {
   return {
-    meta: { name, createdAt: Date.now(), app: "duct-trace-ahu", version: 1 },
+    meta: { name, createdAt: Date.now(), app: "duct-trace-ahu", version: 2 },
     mode: "concept", // "concept" | "drawing"
     scale: { pxPerMeter: null, calib: null },
     background: null, // { dataUrl, width, height, x, y, scale }
@@ -43,6 +52,39 @@ export function newProject(name = "Untitled project") {
   };
 }
 
+function serveSystem(c, systemType) {
+  return c.system === systemType || c.system === "both";
+}
+
+export function migrateProject(raw) {
+  const p = { ...newProject(), ...raw };
+  p.settings = { ...defaultSettings(), ...(p.settings || {}) };
+  p.meta = { ...p.meta, version: 2 };
+  const settings = p.settings;
+  for (const n of p.nodes) {
+    if (!Number.isFinite(Number(n.z))) n.z = settings.defaultDuctHeight;
+  }
+  for (const c of p.components) {
+    const foot = defaultFootprint(c.kind);
+    if (!(Number(c.widthM) > 0)) c.widthM = foot.w;
+    if (!(Number(c.depthM) > 0)) c.depthM = foot.d;
+    if (!Number.isFinite(Number(c.rot))) c.rot = 0;
+    if (!Number.isFinite(Number(c.heightM))) c.heightM = defaultHeightM(c.kind, settings);
+    const n = p.nodes.find((x) => x.id === c.nodeId);
+    if (n && !Number.isFinite(Number(n.z))) n.z = c.heightM;
+    if (c.system === "both" && c.kind === "ahu" && !c.returnNodeId) {
+      const off = portOffset("extract");
+      const at = connPoint(c, off, pxPerMeterOf(p));
+      const rn = { id: uid("n"), x: at.x, y: at.y, z: c.heightM };
+      p.nodes.push(rn);
+      c.returnNodeId = rn.id;
+      const supplyAt = connPoint(c, portOffset("supply"), pxPerMeterOf(p));
+      if (n) { n.x = supplyAt.x; n.y = supplyAt.y; n.z = c.heightM; }
+    }
+  }
+  return p;
+}
+
 export class Store {
   constructor() {
     this.project = newProject();
@@ -50,6 +92,9 @@ export class Store {
     this.tool = "select";
     this.activeSystem = "supply"; // for new ducts/components
     this.newComponentKind = null; // when tool === "component"
+    this.traceHeight = this.project.settings.defaultDuctHeight;
+    this.overrideKey = false; // Alt: ignore snap-to-existing / flip ortho
+    this.viewMode = "plan"; // "plan" | "3d"
     this.listeners = new Set();
     this.undoStack = [];
     this.redoStack = [];
@@ -73,7 +118,7 @@ export class Store {
   undo() {
     if (!this.undoStack.length) return;
     this.redoStack.push(JSON.stringify(this.project));
-    this.project = JSON.parse(this.undoStack.pop());
+    this.project = migrateProject(JSON.parse(this.undoStack.pop()));
     this.selection = null;
     this.persist();
     this.emit();
@@ -82,7 +127,7 @@ export class Store {
   redo() {
     if (!this.redoStack.length) return;
     this.undoStack.push(JSON.stringify(this.project));
-    this.project = JSON.parse(this.redoStack.pop());
+    this.project = migrateProject(JSON.parse(this.redoStack.pop()));
     this.selection = null;
     this.persist();
     this.emit();
@@ -105,8 +150,8 @@ export class Store {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        this.project = { ...newProject(), ...JSON.parse(raw) };
-        this.project.settings = { ...defaultSettings(), ...(this.project.settings || {}) };
+        this.project = migrateProject(JSON.parse(raw));
+        this.traceHeight = this.project.settings.defaultDuctHeight;
         return true;
       }
     } catch (e) {
@@ -126,12 +171,20 @@ export class Store {
     this.emit();
   }
 
+  setTraceHeight(z) {
+    const v = Number(z);
+    if (!Number.isFinite(v)) return;
+    this.traceHeight = v;
+    this.emit();
+  }
+
   // ---- Geometry mutation ------------------------------------------------
 
-  findNodeAt(point, tol = NODE_MERGE_TOL) {
+  findNodeAt(point, tol = NODE_MERGE_TOL, z = null) {
     let best = null;
     let bestD = tol;
     for (const n of this.project.nodes) {
+      if (z != null && Math.abs((n.z || 0) - z) > Z_MERGE_TOL) continue;
       const d = dist(n, point);
       if (d <= bestD) {
         best = n;
@@ -141,45 +194,127 @@ export class Store {
     return best;
   }
 
-  findOrCreateNode(point) {
-    const existing = this.findNodeAt(point);
+  findOrCreateNode(point, z = this.traceHeight) {
+    const existing = this.findNodeAt(point, NODE_MERGE_TOL, z);
     if (existing) return existing;
-    const n = { id: uid("n"), x: point.x, y: point.y };
+    const n = { id: uid("n"), x: point.x, y: point.y, z };
     this.project.nodes.push(n);
     return n;
   }
 
-  addSegment(aNode, bNode, system = this.activeSystem) {
+  addSegment(aNode, bNode, system = this.activeSystem, extra = {}) {
     if (aNode.id === bNode.id) return null;
+    const fittings = extra.fittings || [];
+    const atJunction = this.project.segments.filter((s) => s.a === aNode.id || s.b === aNode.id || s.a === bNode.id || s.b === bNode.id).length >= 2;
+    if (atJunction && !fittings.some((f) => f.type === "tee_branch" || f.type === "tee_straight")) {
+      fittings.push({ type: "tee_branch", qty: 1 });
+    }
     const seg = {
       id: uid("s"),
       a: aNode.id,
       b: bNode.id,
       system,
-      shapeOverride: null,
-      sizeOverride: null,
-      flowOverride: null,
-      roleOverride: null,
-      fittings: [],
+      shapeOverride: extra.shapeOverride ?? null,
+      sizeOverride: extra.sizeOverride ?? null,
+      flowOverride: extra.flowOverride ?? null,
+      roleOverride: extra.roleOverride ?? null,
+      aOff: extra.aOff ?? null,
+      bOff: extra.bOff ?? null,
+      fittings,
     };
     this.project.segments.push(seg);
     return seg;
   }
 
-  addComponentAtNode(node, kind, system = this.activeSystem) {
+  syncComponentPorts(c) {
+    const px = pxPerMeterOf(this.project);
+    const supplyOff = c.system === "both" && c.kind === "ahu" ? portOffset("supply") : null;
+    const extractOff = c.system === "both" && c.kind === "ahu" ? portOffset("extract") : null;
+    const n = this.project.nodes.find((x) => x.id === c.nodeId);
+    if (n) {
+      const at = connPoint(c, supplyOff, px);
+      n.x = at.x;
+      n.y = at.y;
+      n.z = Number.isFinite(Number(c.heightM)) ? c.heightM : n.z;
+    }
+    if (c.system === "both" && c.kind === "ahu") {
+      if (!c.returnNodeId) {
+        const at = connPoint(c, extractOff, px);
+        const rn = { id: uid("n"), x: at.x, y: at.y, z: c.heightM ?? this.project.settings.defaultAhuHeight };
+        this.project.nodes.push(rn);
+        c.returnNodeId = rn.id;
+      } else {
+        const rn = this.project.nodes.find((x) => x.id === c.returnNodeId);
+        if (rn) {
+          const at = connPoint(c, extractOff, px);
+          rn.x = at.x;
+          rn.y = at.y;
+          rn.z = Number.isFinite(Number(c.heightM)) ? c.heightM : rn.z;
+        }
+      }
+    }
+  }
+
+  addComponentAt(point, kind, system = this.activeSystem) {
     const def = componentDef(kind);
     if (!def) return null;
+    const foot = defaultFootprint(kind);
+    const heightM = defaultHeightM(kind, this.project.settings);
+    if (def.role === "terminal" && (kind === "grille_extract" || kind === "valve_extract")) {
+      system = "extract";
+    }
     const c = {
       id: uid("c"),
       kind,
-      nodeId: node.id,
-      system,
-      x: node.x,
-      y: node.y,
+      nodeId: null,
+      returnNodeId: null,
+      system: kind === "ahu" && system === "both" ? "both" : system,
+      x: point.x,
+      y: point.y,
+      widthM: foot.w,
+      depthM: foot.d,
+      rot: 0,
+      heightM,
       props: defaultProps(kind),
     };
+    const n = this.findOrCreateNode(point, heightM);
+    c.nodeId = n.id;
+    n.z = heightM;
     this.project.components.push(c);
+    this.syncComponentPorts(c);
     return c;
+  }
+
+  addComponentAtNode(node, kind, system = this.activeSystem) {
+    return this.addComponentAt({ x: node.x, y: node.y }, kind, system);
+  }
+
+  moveComponent(c, x, y) {
+    c.x = x;
+    c.y = y;
+    this.syncComponentPorts(c);
+  }
+
+  resizeComponent(c, widthM, depthM, rot) {
+    if (widthM != null) c.widthM = Math.max(0.08, widthM);
+    if (depthM != null) c.depthM = Math.max(0.08, depthM);
+    if (rot != null) c.rot = ((rot % 360) + 360) % 360;
+    this.syncComponentPorts(c);
+  }
+
+  setComponentSystem(c, system) {
+    c.system = system;
+    if (c.kind === "ahu" && system === "both") {
+      this.syncComponentPorts(c);
+    } else if (c.returnNodeId && system !== "both") {
+      const rid = c.returnNodeId;
+      c.returnNodeId = null;
+      const stillUsed = this.project.segments.some((s) => s.a === rid || s.b === rid);
+      if (!stillUsed) this.project.nodes = this.project.nodes.filter((n) => n.id !== rid);
+      this.syncComponentPorts(c);
+    } else {
+      this.syncComponentPorts(c);
+    }
   }
 
   addRoom(points) {
@@ -194,6 +329,90 @@ export class Store {
     return room;
   }
 
+  splitSegmentAt(seg, point, z) {
+    const a = this.project.nodes.find((n) => n.id === seg.a);
+    const b = this.project.nodes.find((n) => n.id === seg.b);
+    if (!a || !b) return null;
+    const t = dist(a, b) < 1e-6 ? 0 : dist(a, point) / dist(a, b);
+    const jz = z != null ? z : heightAlong(a, b, t);
+    const j = { id: uid("n"), x: point.x, y: point.y, z: jz, tee: true };
+    this.project.nodes.push(j);
+    const other = {
+      id: uid("s"),
+      a: j.id,
+      b: seg.b,
+      system: seg.system,
+      shapeOverride: seg.shapeOverride,
+      sizeOverride: seg.sizeOverride ? { ...seg.sizeOverride } : null,
+      flowOverride: null,
+      roleOverride: seg.roleOverride,
+      aOff: null,
+      bOff: seg.bOff || null,
+      fittings: (seg.fittings || []).filter((f) => f.type !== "tee_branch").map((f) => ({ ...f })),
+    };
+    other.fittings.push({ type: "tee_straight", qty: 1 });
+    seg.b = j.id;
+    seg.bOff = null;
+    seg.fittings = (seg.fittings || []).filter((f) => f.type !== "tee_branch");
+    seg.fittings.push({ type: "tee_straight", qty: 1 });
+    this.project.segments.push(other);
+    return j;
+  }
+
+  duplicateComponent(c, offsetM = null) {
+    const def = componentDef(c.kind);
+    if (!def) return null;
+    const px = pxPerMeterOf(this.project);
+    const dx = offsetM != null ? offsetM * px : Math.max(c.widthM || 0.6, 0.6) * px * 1.25;
+    const copy = {
+      id: uid("c"),
+      kind: c.kind,
+      nodeId: null,
+      returnNodeId: null,
+      system: c.system,
+      x: c.x + dx,
+      y: c.y,
+      widthM: c.widthM,
+      depthM: c.depthM,
+      rot: c.rot,
+      heightM: c.heightM,
+      label: c.label ? `${c.label} copy` : "",
+      props: JSON.parse(JSON.stringify(c.props || {})),
+    };
+    const n = this.findOrCreateNode({ x: copy.x, y: copy.y }, copy.heightM);
+    copy.nodeId = n.id;
+    n.z = copy.heightM;
+    this.project.components.push(copy);
+    this.syncComponentPorts(copy);
+    return copy;
+  }
+
+  setNodeHeight(node, z) {
+    node.z = Number(z) || 0;
+    const c = this.project.components.find((x) => x.nodeId === node.id || x.returnNodeId === node.id);
+    if (c) c.heightM = node.z;
+  }
+
+  levelRunFrom(nodeId, z) {
+    const seen = new Set([nodeId]);
+    const q = [nodeId];
+    while (q.length) {
+      const id = q.shift();
+      const n = this.project.nodes.find((x) => x.id === id);
+      if (n) n.z = z;
+      for (const s of this.project.segments) {
+        const other = s.a === id ? s.b : s.b === id ? s.a : null;
+        if (other && !seen.has(other)) {
+          seen.add(other);
+          q.push(other);
+        }
+      }
+    }
+    for (const c of this.project.components) {
+      if (seen.has(c.nodeId) || seen.has(c.returnNodeId)) c.heightM = z;
+    }
+  }
+
   deleteSelection() {
     const sel = this.selection;
     if (!sel) return;
@@ -202,13 +421,17 @@ export class Store {
     if (sel.type === "segment") {
       p.segments = p.segments.filter((s) => s.id !== sel.id);
     } else if (sel.type === "component") {
-      p.components = p.components.filter((c) => c.id !== sel.id);
+      const c = p.components.find((x) => x.id === sel.id);
+      p.components = p.components.filter((x) => x.id !== sel.id);
+      if (c) {
+        p.segments = p.segments.filter((s) => s.a !== c.nodeId && s.b !== c.nodeId && s.a !== c.returnNodeId && s.b !== c.returnNodeId);
+      }
     } else if (sel.type === "room") {
       p.rooms = p.rooms.filter((r) => r.id !== sel.id);
     } else if (sel.type === "node") {
       p.nodes = p.nodes.filter((n) => n.id !== sel.id);
       p.segments = p.segments.filter((s) => s.a !== sel.id && s.b !== sel.id);
-      p.components = p.components.filter((c) => c.nodeId !== sel.id);
+      p.components = p.components.filter((c) => c.nodeId !== sel.id && c.returnNodeId !== sel.id);
     }
     this.pruneOrphans();
     this.selection = null;
@@ -221,7 +444,10 @@ export class Store {
       used.add(s.a);
       used.add(s.b);
     }
-    for (const c of this.project.components) used.add(c.nodeId);
+    for (const c of this.project.components) {
+      used.add(c.nodeId);
+      if (c.returnNodeId) used.add(c.returnNodeId);
+    }
     this.project.nodes = this.project.nodes.filter((n) => used.has(n.id));
   }
 
@@ -243,8 +469,7 @@ export class Store {
   importJSON(text) {
     const data = JSON.parse(text);
     this.snapshot();
-    this.project = { ...newProject(), ...data };
-    this.project.settings = { ...defaultSettings(), ...(this.project.settings || {}) };
+    this.project = migrateProject(data);
     this.selection = null;
     this.commit();
   }
@@ -253,12 +478,16 @@ export class Store {
     this.snapshot();
     this.project = newProject();
     this.selection = null;
+    this.traceHeight = this.project.settings.defaultDuctHeight;
     this.commit();
   }
 }
 
+export { serveSystem };
+
 // A representative worked example so the tool is useful immediately and easy
-// to demonstrate. A supply AHU feeds a trunk that splits to four rooms.
+// to demonstrate. A combined supply+return AHU feeds a trunk that splits to
+// four rooms, with a riser on one extract run.
 export function seedDemo(store) {
   store.snapshot();
   const p = newProject("Demo — Office floor (supply + extract)");
@@ -267,26 +496,26 @@ export function seedDemo(store) {
   p.settings = defaultSettings();
   p.settings.ductType = "round";
 
-  const mk = (id, x, y) => ({ id, x, y });
+  const mk = (id, x, y, z = 3.2) => ({ id, x, y, z });
   const nodes = [
-    mk("nAHU", 120, 380),
-    mk("nT1", 320, 380),
-    mk("nT2", 560, 380),
-    mk("nB1", 320, 200),
-    mk("nB2", 560, 200),
-    mk("nB3", 560, 560),
-    mk("nB4", 800, 380),
-    // extract
-    mk("nEF", 120, 700),
-    mk("nE1", 400, 700),
-    mk("nE2", 400, 560),
-    mk("nE3", 680, 700),
+    mk("nAHU", 220, 380, 0.3),
+    mk("nAHUr", 20, 380, 0.3),
+    mk("nT1", 320, 380, 3.2),
+    mk("nT2", 560, 380, 3.2),
+    mk("nB1", 320, 200, 2.7),
+    mk("nB2", 560, 200, 2.7),
+    mk("nB3", 560, 560, 2.7),
+    mk("nB4", 800, 380, 2.7),
+    mk("nRise", 20, 380, 3.2),
+    mk("nE1", 400, 700, 3.2),
+    mk("nE2", 400, 560, 2.7),
+    mk("nE3", 680, 700, 2.7),
   ];
   p.nodes = nodes;
 
   const seg = (id, a, b, system, fittings = []) => ({
     id, a, b, system, shapeOverride: null, sizeOverride: null,
-    flowOverride: null, roleOverride: null, fittings,
+    flowOverride: null, roleOverride: null, aOff: null, bOff: null, fittings,
   });
   p.segments = [
     seg("sT0", "nAHU", "nT1", "supply", [{ type: "bend90_radius", qty: 1 }]),
@@ -295,28 +524,33 @@ export function seedDemo(store) {
     seg("sB2", "nT2", "nB2", "supply", [{ type: "tee_branch", qty: 1 }]),
     seg("sB3", "nT2", "nB3", "supply", [{ type: "tee_branch", qty: 1 }]),
     seg("sB4", "nT2", "nB4", "supply"),
-    // extract
-    seg("sE0", "nEF", "nE1", "extract", [{ type: "bend90_radius", qty: 1 }]),
+    seg("sRise", "nAHUr", "nRise", "extract"),
+    seg("sE0", "nRise", "nE1", "extract", [{ type: "bend90_radius", qty: 1 }]),
     seg("sE1", "nE1", "nE2", "extract", [{ type: "tee_branch", qty: 1 }]),
     seg("sE2", "nE1", "nE3", "extract"),
   ];
 
-  const comp = (id, kind, nodeId, system, props = {}) => ({
-    id, kind, nodeId, system,
-    x: nodes.find((n) => n.id === nodeId).x,
-    y: nodes.find((n) => n.id === nodeId).y,
-    props: { ...defaultProps(kind), ...props },
-  });
+  const comp = (id, kind, nodeId, system, x, y, props = {}, extra = {}) => {
+    const foot = defaultFootprint(kind);
+    return {
+      id, kind, nodeId, system, x, y,
+      returnNodeId: extra.returnNodeId || null,
+      widthM: extra.widthM ?? foot.w,
+      depthM: extra.depthM ?? foot.d,
+      rot: extra.rot ?? 0,
+      heightM: extra.heightM ?? defaultHeightM(kind, p.settings),
+      props: { ...defaultProps(kind), ...props },
+    };
+  };
   p.components = [
-    comp("cAHU", "ahu", "nAHU", "supply", { availableStaticPa: 300, supplyTempC: 18 }),
-    comp("cFD", "fire_damper", "nT1", "supply", { lossPa: 15 }),
-    comp("cD1", "diffuser", "nB1", "supply", { designFlow_ls: 120, terminalLossPa: 25 }),
-    comp("cD2", "diffuser", "nB2", "supply", { designFlow_ls: 120, terminalLossPa: 25 }),
-    comp("cD3", "diffuser", "nB3", "supply", { designFlow_ls: 90, terminalLossPa: 25 }),
-    comp("cD4", "diffuser", "nB4", "supply", { designFlow_ls: 150, terminalLossPa: 25 }),
-    comp("cEF", "fan_centrifugal", "nEF", "extract", { availableStaticPa: 250 }),
-    comp("cE2", "grille_extract", "nE2", "extract", { designFlow_ls: 200, terminalLossPa: 20 }),
-    comp("cE3", "grille_extract", "nE3", "extract", { designFlow_ls: 220, terminalLossPa: 20 }),
+    comp("cAHU", "ahu", "nAHU", "both", 120, 380, { availableStaticPa: 350, supplyTempC: 18 }, { returnNodeId: "nAHUr", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
+    comp("cFD", "fire_damper", "nT1", "supply", 320, 380, { lossPa: 15 }, { heightM: 3.2 }),
+    comp("cD1", "diffuser", "nB1", "supply", 320, 200, { designFlow_ls: 120, terminalLossPa: 25 }, { heightM: 2.7 }),
+    comp("cD2", "diffuser", "nB2", "supply", 560, 200, { designFlow_ls: 120, terminalLossPa: 25 }, { heightM: 2.7 }),
+    comp("cD3", "diffuser", "nB3", "supply", 560, 560, { designFlow_ls: 90, terminalLossPa: 25 }, { heightM: 2.7 }),
+    comp("cD4", "diffuser", "nB4", "supply", 800, 380, { designFlow_ls: 150, terminalLossPa: 25 }, { heightM: 2.7 }),
+    comp("cE2", "grille_extract", "nE2", "extract", 400, 560, { designFlow_ls: 200, terminalLossPa: 20 }, { heightM: 2.7 }),
+    comp("cE3", "grille_extract", "nE3", "extract", 680, 700, { designFlow_ls: 220, terminalLossPa: 20 }, { heightM: 2.7 }),
   ];
 
   p.rooms = [
@@ -327,5 +561,11 @@ export function seedDemo(store) {
 
   store.project = p;
   store.selection = null;
+  store.traceHeight = p.settings.defaultDuctHeight;
+  const ahu = p.components.find((c) => c.kind === "ahu");
+  if (ahu) store.syncComponentPorts(ahu);
+  const ret = p.nodes.find((n) => n.id === "nAHUr");
+  const rise = p.nodes.find((n) => n.id === "nRise");
+  if (ret && rise) { rise.x = ret.x; rise.y = ret.y; }
   store.commit();
 }

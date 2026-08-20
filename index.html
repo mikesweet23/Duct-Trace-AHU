@@ -30,6 +30,11 @@
         <button data-system="extract" class="seg-btn sys-extract">Extract</button>
       </div>
 
+      <div class="topbar-group segmented" role="group" aria-label="View">
+        <button data-view="plan" class="seg-btn">Plan</button>
+        <button data-view="3d" class="seg-btn">3D</button>
+      </div>
+
       <div class="topbar-group grow"></div>
 
       <div class="topbar-group">
@@ -50,7 +55,8 @@
           <button class="tool" data-tool="pan" title="Pan (Space/H)">✋<span>Pan</span></button>
           <button class="tool" data-tool="scale" title="Set scale from drawing">⟺<span>Scale</span></button>
           <button class="tool" data-tool="room" title="Draw a room">▱<span>Room</span></button>
-          <button class="tool" data-tool="duct" title="Trace ducts">╱<span>Duct</span></button>
+          <button class="tool" data-tool="duct" title="Trace ducts (D)">╱<span>Duct</span></button>
+          <button class="tool" data-tool="tee" title="Cut a T-piece (J)">⊤<span>T-piece</span></button>
           <button class="tool" data-tool="delete" title="Delete selected (Del)">🗑<span>Delete</span></button>
         </div>
         <div class="palette" id="palette"></div>
@@ -58,8 +64,14 @@
 
       <main class="canvas-wrap">
         <canvas id="canvas"></canvas>
+        <canvas id="view3d" class="view3d-canvas" hidden></canvas>
         <div class="canvas-hud">
           <div id="hint" class="hint"></div>
+          <label class="height-hud" title="Height of the next traced point, metres above finished floor">
+            Height
+            <input id="traceHeight" type="number" step="0.05" min="-5" max="80" value="3.20" />
+            m AFFL
+          </label>
         </div>
         <div class="canvas-toolbar">
           <label class="upload-btn" title="Upload a background drawing">

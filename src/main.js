@@ -3,8 +3,9 @@
 
 import { Store, seedDemo } from "./state.js";
 import { CanvasView } from "./ui/canvas.js";
+import { View3D } from "./ui/view3d.js";
 import { Panels } from "./ui/panels.js";
-import { componentsByCategory, CATEGORIES } from "./standards/components.js";
+import { componentsByCategory, CATEGORIES, componentDef } from "./standards/components.js";
 import { computeAll } from "./calc/network.js";
 import { showConfirm } from "./ui/modal.js";
 import { round } from "./units.js";
@@ -15,6 +16,7 @@ const store = new Store();
 if (!store.load()) seedDemo(store);
 
 const canvas = new CanvasView($("#canvas"), store, (t) => ($("#hint").textContent = t));
+const view3d = new View3D($("#view3d"), store);
 const panels = new Panels(store, {
   properties: $("#tab-properties"),
   results: $("#tab-results"),
@@ -63,6 +65,17 @@ document.querySelectorAll("[data-mode]").forEach((b) =>
 document.querySelectorAll("[data-system]").forEach((b) =>
   b.addEventListener("click", () => { store.activeSystem = b.dataset.system; store.emit(); })
 );
+document.querySelectorAll("[data-view]").forEach((b) =>
+  b.addEventListener("click", () => {
+    store.viewMode = b.dataset.view;
+    document.querySelector(".workspace").classList.toggle("view-3d", store.viewMode === "3d");
+    if (store.viewMode === "3d") view3d.resize();
+    store.emit();
+  })
+);
+
+$("#traceHeight").addEventListener("change", (e) => store.setTraceHeight(e.target.value));
+$("#traceHeight").addEventListener("wheel", (e) => { e.target.blur(); }, { passive: true });
 
 // ---- topbar buttons ----
 $("#projectName").addEventListener("change", (e) => { store.snapshot(); store.project.meta.name = e.target.value; store.commit(); });
@@ -135,14 +148,33 @@ window.addEventListener("keydown", (e) => {
   if (e.target.matches("input, textarea, select")) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? store.redo() : store.undo(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); store.redo(); return; }
-  const map = { v: "select", h: "pan", s: "scale", r: "room", d: "duct" };
-  if (map[e.key.toLowerCase()]) { store.setTool(map[e.key.toLowerCase()]); canvas.endDraft(); }
+  if (e.altKey) { store.overrideKey = true; canvas.draw(); }
+  const map = { v: "select", h: "pan", s: "scale", r: "room", d: "duct", j: "tee" };
+  if (map[e.key.toLowerCase()] && !e.ctrlKey && !e.metaKey) { store.setTool(map[e.key.toLowerCase()]); canvas.endDraft(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+    e.preventDefault();
+    const sel = store.getSelected();
+    if (store.selection?.type === "component" && sel && componentDef(sel.kind)?.role === "terminal") {
+      store.snapshot();
+      const copy = store.duplicateComponent(sel);
+      if (copy) store.select("component", copy.id);
+      store.commit();
+    }
+    return;
+  }
+  if (e.key === "[" || e.key === "]") {
+    e.preventDefault();
+    store.setTraceHeight(round(store.traceHeight + (e.key === "]" ? 0.1 : -0.1), 2));
+  }
   if (e.key === "Delete" || e.key === "Backspace") { if (store.selection) store.deleteSelection(); }
   if (e.key === "Escape") { canvas.endDraft(); store.select(null); }
   if (e.key === "Enter") { canvas.endDraft(); }
 });
+window.addEventListener("keyup", (e) => {
+  if (e.key === "Alt") { store.overrideKey = false; canvas.draw(); }
+});
 
-window.addEventListener("resize", () => canvas.resize());
+window.addEventListener("resize", () => { canvas.resize(); view3d.resize(); });
 
 // ---- render loop on state change ----
 function renderChrome() {
@@ -150,7 +182,9 @@ function renderChrome() {
   if ($("#projectName").value !== p.meta.name) $("#projectName").value = p.meta.name;
   document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("active", b.dataset.mode === p.mode));
   document.querySelectorAll("[data-system]").forEach((b) => b.classList.toggle("active", b.dataset.system === store.activeSystem));
+  document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === store.viewMode));
   document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === store.tool));
+  if (Number($("#traceHeight").value) !== store.traceHeight) $("#traceHeight").value = round(store.traceHeight, 2);
   document.querySelectorAll(".palette-btn").forEach((b) => b.classList.toggle("active", store.tool === "component" && b.dataset.kind === store.newComponentKind));
   $("#zoomLabel").textContent = `${Math.round(p.view.zoom * 100)}%`;
   $("#scaleLabel").textContent = p.scale.pxPerMeter ? `Scale: ${round(p.scale.pxPerMeter, 1)} px/m` : `Scale: concept (${p.settings.conceptPxPerMeter} px/m)`;
@@ -176,16 +210,19 @@ store.subscribe(() => {
     scheduled = false;
     const results = computeAll(store.project);
     canvas.setResults(results);
+    view3d.setResults(results);
     panels.setResults(results);
     panels.renderAll();
     renderStatus(results);
-    canvas.draw();
+    if (store.viewMode === "3d") view3d.draw();
+    else canvas.draw();
   });
 });
 
 // initial paint
 const initial = computeAll(store.project);
 canvas.setResults(initial);
+view3d.setResults(initial);
 panels.setResults(initial);
 panels.renderAll();
 renderChrome();

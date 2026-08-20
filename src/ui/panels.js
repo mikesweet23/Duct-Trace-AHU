@@ -1,10 +1,11 @@
 // Right-hand panel rendering: Properties, Results and Settings tabs.
 
-import { componentDef, COMPONENTS, CATEGORIES } from "../standards/components.js";
+import { componentDef, COMPONENTS } from "../standards/components.js";
 import { FITTINGS } from "../standards/fittings.js";
-import { formatFlow, round, flowFromM3s } from "../units.js";
-import { dist, polygonArea, pointInPolygon } from "../geom.js";
+import { formatFlow, round } from "../units.js";
+import { polygonArea, pointInPolygon, routeLengthM, isVerticalRiser, dist } from "../geom.js";
 import { showPrompt } from "./modal.js";
+import { pxPerMeterOf } from "../layout.js";
 
 const PROP_LABELS = {
   availableStaticPa: "Available static (Pa)",
@@ -95,7 +96,7 @@ export class Panels {
       <div class="field"><label>System</label>
         <select data-k="system">
           <option value="supply" ${s.system === "supply" ? "selected" : ""}>Supply</option>
-          <option value="extract" ${s.system === "extract" ? "selected" : ""}>Extract</option>
+          <option value="extract" ${s.system === "extract" ? "selected" : ""}>Extract / return</option>
         </select></div>
       <div class="field"><label>Role</label>
         <select data-k="roleOverride">
@@ -129,18 +130,38 @@ export class Panels {
         <button class="btn tiny" data-act="addFitting">Add</button>
       </div>
 
+      ${this.segHeights(s)}
       <div class="section-title">Calculated</div>
       <div class="metric-grid">
         <div class="metric"><div class="m-val">${sizeInfo}</div><div class="m-label">Size (DW144)</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.velocity, 2) : "—"} <small>m/s</small></div><div class="m-label">Velocity</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.flowM3s * 1000, 0) : 0} <small>l/s</small></div><div class="m-label">Flow</div></div>
-        <div class="metric"><div class="m-val">${res ? num(res.lengthM, 2) : 0} <small>m</small></div><div class="m-label">Length</div></div>
+        <div class="metric"><div class="m-val">${res ? num(res.lengthM, 2) : 0} <small>m</small></div><div class="m-label">Route (plan + rise)</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.gradient, 2) : 0} <small>Pa/m</small></div><div class="m-label">Gradient</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.dpPa, 1) : 0} <small>Pa</small></div><div class="m-label">Segment Δp</div></div>
       </div>
       ${res && !res.withinVelocity ? `<ul class="warn-list"><li>Velocity ${num(res.velocity,1)} m/s exceeds the ${num(res.maxVelocity,1)} m/s cap for ${res.role}.</li></ul>` : ""}
       ${res && res.warnings?.length ? `<ul class="warn-list">${res.warnings.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
       <div class="row-actions"><button class="btn ghost tiny" data-act="delete">Delete segment</button></div>
+    `;
+  }
+
+  segHeights(s) {
+    const p = this.store.project;
+    const a = p.nodes.find((n) => n.id === s.a);
+    const b = p.nodes.find((n) => n.id === s.b);
+    if (!a || !b) return "";
+    const px = pxPerMeterOf(p);
+    const plan = dist(a, b) / px;
+    const rise = Math.abs((a.z || 0) - (b.z || 0));
+    const route = routeLengthM(a, b, px);
+    const riser = isVerticalRiser(a, b, px);
+    return h`
+      <div class="section-title">Heights</div>
+      <div class="field"><label>Start (m AFFL)</label><input type="number" step="0.05" data-nodez="${a.id}" value="${num(a.z, 2)}"/></div>
+      <div class="field"><label>End (m AFFL)</label><input type="number" step="0.05" data-nodez="${b.id}" value="${num(b.z, 2)}"/></div>
+      <div class="field"><label>Plan / rise / route</label><span class="badge">${num(plan, 2)} · ${num(rise, 2)} · ${num(route, 2)} m</span></div>
+      ${riser ? `<p class="small-note">This is a <b>riser</b> — it does not draw as a run on the plan. Open the 3D view to see it.</p>` : `<p class="small-note">A height change along a run is a sloping duct. To make a vertical riser, change the trace height and click the same point again.</p>`}
     `;
   }
 
@@ -166,22 +187,34 @@ export class Panels {
         return `<div class="field"><label>${label}</label><input type="number" step="any" data-prop="${k}" value="${v}"/></div>`;
       })
       .join("");
+    const dual = c.kind === "ahu";
     return h`
-      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system}</span></div>
+      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "supply + return" : c.system}</span></div>
       <div class="field"><label>Custom label</label><input type="text" data-k="label" value="${c.label || ""}" placeholder="${def.label}"/></div>
       <div class="field"><label>System</label>
         <select data-k="system">
           <option value="supply" ${c.system === "supply" ? "selected" : ""}>Supply</option>
-          <option value="extract" ${c.system === "extract" ? "selected" : ""}>Extract</option>
+          <option value="extract" ${c.system === "extract" ? "selected" : ""}>Extract / return</option>
+          ${dual ? `<option value="both" ${c.system === "both" ? "selected" : ""}>Both (supply + return)</option>` : ""}
         </select></div>
       <div class="field"><label>Type</label>
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
         </select></div>
+      <div class="section-title">Size &amp; height</div>
+      <div class="field"><label>Width × depth (m)</label>
+        <span><input type="number" step="0.05" style="width:64px" data-k="widthM" value="${c.widthM ?? ""}"/>
+        <input type="number" step="0.05" style="width:64px" data-k="depthM" value="${c.depthM ?? ""}"/></span></div>
+      <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-k="rot" value="${c.rot || 0}"/></div>
+      <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
+      <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>
       <div class="section-title">Parameters</div>
       ${props}
       <button class="link-btn" data-act="addParam">+ Add custom parameter</button>
-      <div class="row-actions"><button class="btn ghost tiny" data-act="delete">Delete component</button></div>
+      <div class="row-actions">
+        ${def.role === "terminal" ? `<button class="btn tiny" data-act="duplicate">Duplicate outlet</button>` : ""}
+        <button class="btn ghost tiny" data-act="delete">Delete component</button>
+      </div>
     `;
   }
 
@@ -223,11 +256,15 @@ export class Panels {
     const p = this.store.project;
     const segs = p.segments.filter((s) => s.a === n.id || s.b === n.id).length;
     return h`
-      <div class="section-title">Junction node</div>
+      <div class="section-title">${n.tee || segs >= 3 ? "T-piece" : "Junction node"}</div>
       <div class="field"><label>Position</label><span class="badge">${Math.round(n.x)}, ${Math.round(n.y)}</span></div>
+      <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="z" value="${num(n.z, 2)}"/></div>
       <div class="field"><label>Connected ducts</label><span class="badge">${segs}</span></div>
-      <p class="small-note">Drag to move. Connecting more ducts here creates branches / tees.</p>
-      <div class="row-actions"><button class="btn ghost tiny" data-act="delete">Delete node &amp; ducts</button></div>
+      <p class="small-note">Drag to move. Use the <b>T-piece</b> tool to cut a branch into a run already traced. Changing height here is a riser if the other end stays put on plan.</p>
+      <div class="row-actions">
+        <button class="btn tiny" data-act="levelRun">Level connected run to this height</button>
+        <button class="btn ghost tiny" data-act="delete">Delete node &amp; ducts</button>
+      </div>
     `;
   }
 
@@ -241,7 +278,26 @@ export class Panels {
         const key = input.dataset.k;
         let val = input.value;
         if (input.type === "number") val = val === "" ? null : Number(val);
-        obj[key] = val;
+        if (sel.type === "component" && key === "system") {
+          store.setComponentSystem(obj, val);
+        } else if (sel.type === "component" && (key === "widthM" || key === "depthM" || key === "rot")) {
+          store.resizeComponent(obj, key === "widthM" ? val : null, key === "depthM" ? val : null, key === "rot" ? val : null);
+        } else if (sel.type === "component" && key === "heightM") {
+          obj.heightM = val;
+          store.syncComponentPorts(obj);
+        } else if (sel.type === "node" && key === "z") {
+          store.setNodeHeight(obj, val);
+        } else {
+          obj[key] = val;
+        }
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-nodez]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        const n = store.project.nodes.find((x) => x.id === input.dataset.nodez);
+        if (n) store.setNodeHeight(n, Number(input.value));
         commit();
       });
     });
@@ -294,9 +350,18 @@ export class Panels {
           commit();
         } else if (act === "clearSize") {
           store.snapshot(); obj.sizeOverride = null; commit();
-        } else if (act === "addParam") {
+        }         else if (act === "addParam") {
           const name = await showPrompt({ title: "Add custom parameter", label: "Parameter name", value: "" });
           if (name) { store.snapshot(); obj.props[name] = 0; commit(); }
+        } else if (act === "duplicate") {
+          store.snapshot();
+          const copy = store.duplicateComponent(obj);
+          if (copy) store.select("component", copy.id);
+          commit();
+        } else if (act === "levelRun") {
+          store.snapshot();
+          store.levelRunFrom(obj.id, obj.z);
+          commit();
         }
       });
     });
@@ -428,11 +493,34 @@ export class Panels {
           <option value="cfm" ${s.flowUnit === "cfm" ? "selected" : ""}>cfm</option>
         </select></div>
 
+      <div class="section-title">Tracing</div>
+      <div class="field"><label>Snap to equipment / joints</label>
+        <select data-s="snapPoints">
+          <option value="true" ${s.snapPoints !== false ? "selected" : ""}>On — only nearby points</option>
+          <option value="false" ${s.snapPoints === false ? "selected" : ""}>Off — Alt still cuts a T-piece</option>
+        </select></div>
+      <div class="field"><label>Square corners</label>
+        <select data-s="ortho">
+          <option value="true" ${s.ortho !== false ? "selected" : ""}>On (hold Alt for a free angle)</option>
+          <option value="false" ${s.ortho === false ? "selected" : ""}>Off (hold Alt to square)</option>
+        </select></div>
+      <div class="field"><label>Draw actual duct size</label>
+        <select data-s="showActualDucts">
+          <option value="true" ${s.showActualDucts !== false ? "selected" : ""}>Circular / rectangular body</option>
+          <option value="false" ${s.showActualDucts === false ? "selected" : ""}>Centreline only</option>
+        </select></div>
+      <p class="small-note">Snap only pulls to an outlet, AHU or existing corner when you are already nearby. Parallel supply and return can sit close without being yanked together. Use <b>T-piece</b> (J) to branch off a run.</p>
+
+      <div class="section-title">Default heights (m AFFL)</div>
+      <div class="field"><label>Duct run</label><input type="number" step="0.05" data-s="defaultDuctHeight" value="${s.defaultDuctHeight}"/></div>
+      <div class="field"><label>AHU / plant</label><input type="number" step="0.05" data-s="defaultAhuHeight" value="${s.defaultAhuHeight}"/></div>
+      <div class="field"><label>Outlets / terminals</label><input type="number" step="0.05" data-s="defaultTerminalHeight" value="${s.defaultTerminalHeight}"/></div>
+
       <div class="section-title">Scale</div>
       <div class="field"><label>Drawing scale</label><span class="badge">${scaleTxt}</span></div>
       <div class="field"><label>Concept scale (px/m)</label><input type="number" data-s="conceptPxPerMeter" value="${s.conceptPxPerMeter}"/></div>
       <button class="link-btn" data-act="resetScale">Reset drawing scale</button>
-      <p class="small-note">Use the <b>Scale</b> tool to calibrate from an uploaded drawing. In concept mode the concept scale sets duct lengths.</p>
+      <p class="small-note">Use the <b>Scale</b> tool to calibrate from an uploaded drawing. In concept mode the concept scale sets duct lengths. Risers are recovered from the heights, not from the plan.</p>
     `;
     this.bindSettings(el);
   }
@@ -444,7 +532,10 @@ export class Panels {
       input.addEventListener("change", () => {
         store.snapshot();
         const key = input.dataset.s;
-        s[key] = input.type === "number" ? Number(input.value) : input.value;
+        if (input.type === "number") s[key] = Number(input.value);
+        else if (input.value === "true") s[key] = true;
+        else if (input.value === "false") s[key] = false;
+        else s[key] = input.value;
         store.commit();
       });
     });
