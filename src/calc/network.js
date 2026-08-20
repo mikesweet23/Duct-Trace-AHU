@@ -30,7 +30,8 @@ function applicationForSegment(project, s, a, b) {
   if (!a || !b) return null;
   const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   for (const room of project.rooms || []) {
-    if (room.applicationType && room.points && pointInPolygon(mid, room.points)) {
+    if (!room.applicationType || !room.points) continue;
+    if (pointInPolygon(mid, room.points) || pointInPolygon(a, room.points) || pointInPolygon(b, room.points)) {
       return room.applicationType;
     }
   }

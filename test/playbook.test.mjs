@@ -171,6 +171,19 @@ test("design summary reports application, method and warning counts", () => {
   assert.ok(all.summary.highestVelocity > 0);
 });
 
+test("a room application override applies to ducts that end in that room", () => {
+  const p = project({
+    rooms: [{
+      id: "rm", name: "Studio", applicationType: "critical_acoustic",
+      points: [{ x: 450, y: 200 }, { x: 600, y: 200 }, { x: 600, y: 320 }, { x: 450, y: 320 }],
+    }],
+  });
+  const res = computeSystem(p, "supply");
+  const s1 = res.segments.find((s) => s.id === "s1");
+  assert.equal(s1.applicationType, "critical_acoustic");
+  assert.ok(s1.maxVelocity <= 2.5);
+});
+
 test("warnLevel steps normal → advisory → warning → critical", () => {
   const band = { target: 5, max: 6, min: 2, role: "branch", applicationLabel: "Office" };
   assert.equal(warnLevel(4.8, band, { dw144Class: "B", classMaxVelocity: 20 }), "normal");
