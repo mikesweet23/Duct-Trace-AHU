@@ -330,8 +330,10 @@ export function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
     ["Mode", project.mode === "drawing" ? "Drawing" : "Concept"],
     ["Flow unit", unitLabel],
     ["Default duct", sectionShapeLabel(project.settings?.ductType)],
-    ["Sizing method", project.settings?.sizingMethod === "velocity" ? "Velocity method" : "Equal friction"],
+    ["Application", results.summary?.applicationLabel || project.settings?.applicationType || "—"],
+    ["Sizing method", project.settings?.sizingMethod === "hybrid" ? "Hybrid" : project.settings?.sizingMethod === "velocity" ? "Velocity method" : "Equal friction"],
     ["Target gradient", `${project.settings?.targetGradient ?? 1} Pa/m`],
+    ["DW/144 class", project.settings?.dw144Class || "B"],
     ["Systems", String(systems.length)],
   ]);
 

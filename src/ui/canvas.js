@@ -4,8 +4,10 @@
 import { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVerticalRiser, clamp } from "../geom.js";
 import { componentDef } from "../standards/components.js";
 import { showPrompt } from "./modal.js";
-import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
+import { formatFlow, formatFlowLs, normalizeFlowUnit, round } from "../units.js";
 import { findSegResult, isIndexSegment } from "../calc/network.js";
+import { overlayColor } from "../standards/playbook.js";
+import { roleLabel, sectionSizeLabel } from "../format.js";
 import { snapAt, hitJointAt, EQUIP_HIT_PX } from "../snap.js";
 import {
   componentBox,
@@ -209,6 +211,7 @@ export class CanvasView {
       scale: `Scale: click two points a known distance apart${this.scalePts.length === 1 ? " · click the second point" : ""}`,
       room: "Room: click to add corners · double-click or Enter to finish",
       duct: `Duct (${this.store.activeSystem}) at ${round(h, 2)} m AFFL: snap to an outlet or AHU · [ ] change height · Alt cuts a T-piece`,
+      sock: `Air sock (${this.store.activeSystem}) at ${round(h, 2)} m AFFL: trace the fabric run · enter the manufacturer spec in Properties`,
       tee: "T-piece: click a duct to cut a branch joint · then trace a new run off it",
       component: `Place ${componentDef(this.store.newComponentKind)?.label || "component"} (${this.store.activeSystem}): click to drop · drag corners later to size it`,
       delete: "Delete: click an element to remove it",
@@ -279,7 +282,7 @@ export class CanvasView {
       this.draw();
       return;
     }
-    if (tool === "duct") {
+    if (tool === "duct" || tool === "sock") {
       this.placeDuctPoint(world);
       return;
     }
@@ -350,7 +353,7 @@ export class CanvasView {
       this.draw();
       return;
     }
-    if (this.store.tool === "duct" || this.store.tool === "tee" || this.store.tool === "room" || this.store.tool === "scale") this.draw();
+    if (this.store.tool === "duct" || this.store.tool === "sock" || this.store.tool === "tee" || this.store.tool === "room" || this.store.tool === "scale") this.draw();
   }
 
   onUp() {
@@ -430,7 +433,7 @@ export class CanvasView {
     this.store.snapshot();
     const j = this.store.splitSegmentAt(hit.seg, hit.r.point);
     this.store.select("node", j.id);
-    this.store.setTool("duct");
+    this.store.setTool(this.store.ductKind === "sock" ? "sock" : "duct");
     this.ductLastNodeId = j.id;
     this.store.commit();
   }
@@ -570,18 +573,31 @@ export class CanvasView {
     return clamp(real / 2, 4 / z, 22 / z);
   }
 
+  overlayScale() {
+    const segs = this.store.project.segments.map((s) => this.segResult(s.id)).filter(Boolean);
+    return {
+      maxFlow: Math.max(0.001, ...segs.map((r) => r.flowM3s || 0)),
+      maxArea: Math.max(0.001, ...segs.map((r) => r.section?.areaM2 || 0)),
+      maxDp: Math.max(0.001, ...segs.map((r) => r.dpPa || 0)),
+    };
+  }
+
   drawSegments(ctx) {
     const p = this.store.project;
     const sel = this.store.selection;
     const z = this.view.zoom;
     const px = this.pxPerMeter();
+    const overlay = p.settings.overlay || "none";
+    const scale = this.overlayScale();
+    const unit = normalizeFlowUnit(p.settings.flowUnit);
     for (const s of p.segments) {
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
       const res = this.segResult(s.id);
       const selected = sel?.type === "segment" && sel.id === s.id;
-      const base = s.system === "extract" ? "#d97706" : "#2563eb";
+      const tint = overlay !== "none" ? overlayColor(overlay, res, p.settings, scale) : null;
+      const base = tint || (s.system === "extract" ? "#d97706" : "#2563eb");
       const noFlow = !res || res.flowM3s <= 0;
       const shape = (res?.section?.shape) || s.shapeOverride || p.settings.ductType || "round";
 
@@ -595,7 +611,9 @@ export class CanvasView {
         selected,
         index: this.isIndexSeg(s.id),
         noFlow,
-        overVel: res && !res.withinVelocity,
+        overVel: res && (res.warnLevel === "warning" || res.warnLevel === "critical" || !res.withinVelocity),
+        sock: s.ductKind === "sock",
+        warnLevel: res?.warnLevel,
       });
 
       if (Math.abs((a.z || 0) - (b.z || 0)) > 0.05) {
@@ -611,15 +629,19 @@ export class CanvasView {
       ctx.font = `${11 / z}px system-ui`;
       ctx.textAlign = "center";
       if (res && res.flowM3s > 0) {
-        const label = (res.section.shape === "rect" || res.section.shape === "square")
-          ? `${res.section.widthMm}×${res.section.heightMm}`
-          : `⌀${res.section.diameterMm}`;
-        const txt = `${label}  ${round(res.velocity, 1)} m/s`;
-        const w = ctx.measureText(txt).width + 8 / z;
-        ctx.fillStyle = "rgba(10,15,28,0.82)";
-        ctx.fillRect(mx - w / 2, my - 16 / z, w, 14 / z);
-        ctx.fillStyle = res.withinVelocity ? "#e6edf7" : "#fca5a5";
-        ctx.fillText(txt, mx, my - 5 / z);
+        const size = sectionSizeLabel(res.section).replace("dia ", "⌀");
+        const line1 = `${formatFlow(res.flowM3s, unit)}  ${size}`;
+        const line2 = `${round(res.velocity, 2)} m/s  ${round(res.gradient, 2)} Pa/m`;
+        const line3 = z >= 0.85 ? `${roleLabel(res.role)} · ${res.applicationLabel || ""}` : "";
+        const lines = [line1, line2, line3].filter(Boolean);
+        const tw = Math.max(...lines.map((t) => ctx.measureText(t).width)) + 10 / z;
+        const th = (12 * lines.length + 4) / z;
+        ctx.fillStyle = "rgba(10,15,28,0.86)";
+        ctx.fillRect(mx - tw / 2, my - th - 2 / z, tw, th);
+        const col = res.warnLevel === "critical" || res.warnLevel === "warning" ? "#fca5a5"
+          : res.warnLevel === "advisory" ? "#fcd34d" : "#e6edf7";
+        ctx.fillStyle = col;
+        lines.forEach((t, i) => ctx.fillText(t, mx, my - th + (11 + i * 12) / z));
       } else {
         const txt = "no flow · connect to plant";
         const w = ctx.measureText(txt).width + 8 / z;
@@ -650,10 +672,26 @@ export class CanvasView {
       ctx.lineWidth = width + 3 / z;
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       ctx.strokeStyle = flags.overVel ? "#ef4444" : flags.noFlow ? (color + "99") : color;
-      if (flags.noFlow) ctx.setLineDash([10 / z, 7 / z]);
+      if (flags.noFlow || flags.sock) ctx.setLineDash(flags.sock ? [14 / z, 7 / z] : [10 / z, 7 / z]);
       ctx.lineWidth = width;
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       ctx.setLineDash([]);
+      if (flags.sock) {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len, ny = dx / len;
+        const ticks = Math.max(3, Math.floor(len / (18 / z)));
+        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+        ctx.lineWidth = 1.1 / z;
+        for (let i = 1; i < ticks; i++) {
+          const t = i / ticks;
+          const x = a.x + dx * t, y = a.y + dy * t;
+          ctx.beginPath();
+          ctx.moveTo(x + nx * width * 0.7, y + ny * width * 0.7);
+          ctx.lineTo(x - nx * width * 0.7, y - ny * width * 0.7);
+          ctx.stroke();
+        }
+      }
       ctx.strokeStyle = "rgba(255,255,255,0.28)";
       ctx.lineWidth = Math.max(1 / z, width * 0.12);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
@@ -812,7 +850,7 @@ export class CanvasView {
 
   drawDrafts(ctx) {
     const z = this.view.zoom;
-    if (this.store.tool === "duct" && this.pointer) {
+    if ((this.store.tool === "duct" || this.store.tool === "sock") && this.pointer) {
       const prev = this.previewPoint(this.pointer);
       this.hoverSnap = prev.snap;
       if (this.ductLastNodeId != null) {

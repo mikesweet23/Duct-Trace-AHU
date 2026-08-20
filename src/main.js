@@ -1,13 +1,14 @@
 // Application entry point: builds the palette, wires the toolbar/topbar,
 // creates the canvas and panels, and runs the compute-on-change loop.
 
-import { Store, seedDemo } from "./state.js";
+import { Store, seedDemo, applyApplication } from "./state.js";
 import { CanvasView } from "./ui/canvas.js";
 import { View3D } from "./ui/view3d.js";
 import { Panels } from "./ui/panels.js";
 import { componentsByCategory, CATEGORIES, componentDef } from "./standards/components.js";
 import { computeAll, allComputedSystems } from "./calc/network.js";
-import { showConfirm } from "./ui/modal.js";
+import { showApplicationPicker, showConfirm } from "./ui/modal.js";
+import { APPLICATIONS, APPLICATION_IDS } from "./standards/playbook.js";
 import { formatFlow, normalizeFlowUnit, round } from "./units.js";
 import { buildProjectPdf, downloadBlob } from "./export/pdf.js";
 
@@ -15,6 +16,19 @@ const $ = (sel) => document.querySelector(sel);
 
 const store = new Store();
 if (!store.load()) seedDemo(store);
+
+async function ensureApplication() {
+  if (store.project.settings.applicationConfirmed) return;
+  const picked = await showApplicationPicker({
+    current: store.project.settings.applicationType || "commercial",
+    apps: APPLICATION_IDS.map((id) => APPLICATIONS[id]),
+  });
+  if (picked) {
+    store.snapshot();
+    applyApplication(store.project.settings, picked);
+    store.commit();
+  }
+}
 
 const canvas = new CanvasView($("#canvas"), store, (t) => ($("#hint").textContent = t));
 const view3d = new View3D($("#view3d"), store);
@@ -97,7 +111,7 @@ $("#btnDemo").addEventListener("click", async () => {
 });
 $("#btnNew").addEventListener("click", async () => {
   if (await showConfirm({ title: "New project?", message: "This clears the current project.", okText: "New project" })) {
-    store.reset(); canvas.fit();
+    store.reset(); canvas.fit(); ensureApplication();
   }
 });
 $("#btnExport").addEventListener("click", () => {
@@ -210,7 +224,7 @@ window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? store.redo() : store.undo(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); store.redo(); return; }
   if (e.altKey) { store.overrideKey = true; canvas.draw(); }
-  const map = { v: "select", h: "pan", s: "scale", r: "room", d: "duct", j: "tee" };
+  const map = { v: "select", h: "pan", s: "scale", r: "room", d: "duct", k: "sock", j: "tee" };
   if (map[e.key.toLowerCase()] && !e.ctrlKey && !e.metaKey) { store.setTool(map[e.key.toLowerCase()]); canvas.endDraft(); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
     e.preventDefault();
@@ -290,6 +304,8 @@ store.subscribe(() => {
     else canvas.draw();
   });
 });
+
+ensureApplication();
 
 // initial paint
 const initial = computeAll(store.project);

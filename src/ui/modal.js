@@ -44,6 +44,40 @@ export function showPrompt({ title, label, value = "", type = "text", placeholde
   });
 }
 
+export function showApplicationPicker({ title = "Application type", current = "commercial", apps = [] } = {}) {
+  return new Promise((resolve) => {
+    root().innerHTML = "";
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    const options = apps.map((a) => `
+      <label class="app-option">
+        <input type="radio" name="app-type" value="${a.id}" ${a.id === current ? "checked" : ""}/>
+        <span>
+          <b>${a.label}</b>
+          ${a.notes?.[0] ? `<small>${a.notes[0]}</small>` : ""}
+        </span>
+      </label>`).join("");
+    backdrop.innerHTML = `
+      <div class="modal wide" role="dialog" aria-modal="true">
+        <h3>${title}</h3>
+        <p class="empty-hint">Select the intended use before duct sizing. This sets the default velocity profile. You can override rooms and individual sections later.</p>
+        <div class="app-list">${options}</div>
+        <div class="modal-actions">
+          <button class="btn primary" id="modal-ok">Use this application</button>
+        </div>
+      </div>`;
+    root().appendChild(backdrop);
+    const done = (val) => {
+      close();
+      resolve(val);
+    };
+    backdrop.querySelector("#modal-ok").onclick = () => {
+      const picked = backdrop.querySelector("input[name='app-type']:checked");
+      done(picked ? picked.value : current);
+    };
+  });
+}
+
 export function showConfirm({ title, message, okText = "OK" }) {
   return new Promise((resolve) => {
     root().innerHTML = "";

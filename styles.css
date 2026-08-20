@@ -257,3 +257,13 @@ table.schedule tr.over-vel td { color: #fca5a5; }
 }
 .modal h3 { margin: 0 0 10px; }
 .modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.modal.wide { width: min(560px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; }
+.app-list { display: flex; flex-direction: column; gap: 6px; max-height: 52vh; overflow: auto; }
+.app-option { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-2); cursor: pointer; }
+.app-option:has(input:checked) { border-color: var(--accent); background: var(--panel-2); }
+.app-option b { display: block; font-size: 13px; }
+.app-option small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; margin-top: 2px; }
+table.vel-table td input { width: 58px; }
+table.schedule tr.warn-advisory td { color: #fcd34d; }
+table.schedule tr.warn-warning td { color: #fb923c; }
+table.schedule tr.warn-critical td { color: #fca5a5; }
