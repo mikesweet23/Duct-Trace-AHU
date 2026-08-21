@@ -9,6 +9,12 @@ import { allComputedSystems, findSegResult } from "../calc/network.js";
 import { polygonArea, pointInPolygon, routeLengthM, isVerticalRiser, dist } from "../geom.js";
 import { showPrompt } from "./modal.js";
 import { pxPerMeterOf } from "../layout.js";
+import { parseLengthM, formatLengthM, hasLengthOverride } from "../fab/lengths.js";
+import { CONSTRUCTION_TYPES } from "../fab/catalog.js";
+import { renderFabrication } from "./fab-panel.js";
+import { renderTakeoff } from "./takeoff-panel.js";
+import { FITTINGS as FAB_FITTINGS } from "../standards/fittings.js";
+import { setPieceOverride } from "../fab/change.js";
 
 const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
 const SKIP_GENERIC = new Set(["designFlow", "designFlow_ls", "extractFlow_ls", "supplyFlow_ls", "availableStaticPa", "extractStaticPa", "supplyStaticPa"]);
@@ -47,6 +53,7 @@ export class Panels {
     this.els = els;
     this.results = null;
     this.onExportPdf = null;
+    this.onExportTakeoffPdf = null;
   }
 
   setResults(r) { this.results = r; }
@@ -54,6 +61,8 @@ export class Panels {
   renderAll() {
     this.renderProperties();
     this.renderResults();
+    if (this.els.fabrication) renderFabrication(this.store, this.results, this.els.fabrication);
+    if (this.els.takeoff) renderTakeoff(this.store, this.results, this.els.takeoff);
     this.renderSettings();
   }
 
@@ -71,6 +80,10 @@ export class Panels {
     else if (sel.type === "component") el.innerHTML = this.propComponent(selected);
     else if (sel.type === "room") el.innerHTML = this.propRoom(selected);
     else if (sel.type === "node") el.innerHTML = this.propNode(selected);
+    else if (sel.type === "piece") {
+      if (this.els.fabrication) renderFabrication(this.store, this.results, this.els.fabrication);
+      el.innerHTML = this.propPiece(selected);
+    }
     this.bindProperty(el, sel, selected);
   }
 
@@ -106,8 +119,22 @@ export class Panels {
     const flowDisp = s.flowOverride == null || s.flowOverride === "" ? "" : lsToDisplay(s.flowOverride, unit);
     const circOpts = CIRCULAR_DIAMETERS.map((d) => `<option value="${d}" ${Number(s.sizeOverride?.diameterMm) === d ? "selected" : ""}>${d}</option>`).join("");
     const rectOpts = (v) => RECTANGULAR_SIDES.map((d) => `<option value="${d}" ${Number(v) === d ? "selected" : ""}>${d}</option>`).join("");
+    const graphM = res?.graphicalLengthM ?? 0;
+    const engM = res?.lengthM ?? 0;
+    const override = hasLengthOverride(s) || res?.lengthOverride;
+    const lengthVal = s.engineeringLengthM == null || s.engineeringLengthM === "" ? "" : s.engineeringLengthM;
     return h`
       <div class="section-title">Duct segment <span class="pill ${s.system}">${s.system}</span></div>
+      <div class="length-box">
+        <label for="engLength">Length</label>
+        <input id="engLength" class="length-input" type="text" data-length="engineering" value="${lengthVal === "" ? num(engM, 2) : lengthVal}" placeholder="${num(graphM, 2)} m" />
+        <p class="small-note">Type <b>12.5 m</b> and press Enter. Calculations use this engineering length. The sketch does not resize.</p>
+        <div class="field"><label>Graphical length</label><span class="badge">${formatLengthM(graphM)}</span></div>
+        ${override
+          ? `<div class="field"><label>Actual length</label><span class="pill warn">${formatLengthM(engM)} – Manual Override</span></div>`
+          : `<div class="field"><label>Engineering length</label><span class="badge">${formatLengthM(engM)} (same as graphical)</span></div>`}
+        <button class="link-btn" data-act="clearLength">Clear override (use graphical)</button>
+      </div>
       <div class="field"><label>System</label>
         <select data-k="system">
           <option value="supply" ${s.system === "supply" ? "selected" : ""}>Supply</option>
@@ -141,6 +168,24 @@ export class Panels {
         : `<div class="field"><label>Diameter (mm)</label>
              <select data-size="diameterMm"><option value="">auto</option>${circOpts}</select></div>`}
       <button class="link-btn" data-act="clearSize">Clear manual size (use auto)</button>
+      <button class="link-btn" data-act="lockSize">Lock current calculated size</button>
+
+      <div class="section-title">Construction</div>
+      <div class="field"><label>Physical type</label>
+        <select data-k="constructionType">
+          <option value="">Default (${this.store.project.settings.ductType === "rect" ? "rectangular" : this.store.project.settings.ductType === "square" ? "square" : "spiral"})</option>
+          ${Object.values(CONSTRUCTION_TYPES).map((c) => `<option value="${c.key}" ${s.constructionType === c.key ? "selected" : ""}>${c.label}</option>`).join("")}
+        </select></div>
+      <div class="field"><label>Standard length (m)</label>
+        <input type="number" step="0.1" data-k="standardLengthM" value="${s.standardLengthM ?? ""}" placeholder="${this.store.project.settings.standardStraightLengthM || 3}" /></div>
+      <div class="field"><label>Floor</label><input type="text" data-k="floor" value="${s.floor || ""}" placeholder="e.g. L2"/></div>
+      <div class="field"><label>Zone</label><input type="text" data-k="zone" value="${s.zone || ""}" placeholder="e.g. East wing"/></div>
+      <div class="field"><label>Install area</label><input type="text" data-k="area" value="${s.area || ""}"/></div>
+
+      <div class="section-title">Insulation</div>
+      <div class="field"><label>Type</label><input type="text" data-ins="type" value="${s.insulationOverride?.type || ""}" placeholder="inherit"/></div>
+      <div class="field"><label>Thickness (mm)</label><input type="number" data-ins="thicknessMm" value="${s.insulationOverride?.thicknessMm ?? ""}" placeholder="inherit"/></div>
+      <div class="field"><label>Cladding</label><input type="text" data-ins="cladding" value="${s.insulationOverride?.cladding || ""}" placeholder="inherit"/></div>
 
       <div class="section-title">Fittings</div>
       ${fittings || `<p class="small-note">No fittings added.</p>`}
@@ -155,7 +200,7 @@ export class Panels {
         <div class="metric"><div class="m-val">${sizeInfo} <small>mm</small></div><div class="m-label">Size (${sectionShapeLabel(res?.section?.shape || shape)})</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.velocity, 2) : "—"} <small>m/s</small></div><div class="m-label">Velocity</div></div>
         <div class="metric"><div class="m-val">${res ? formatFlow(res.flowM3s, unit) : formatFlow(0, unit)}</div><div class="m-label">Flow</div></div>
-        <div class="metric"><div class="m-val">${res ? num(res.lengthM, 2) : 0} <small>m</small></div><div class="m-label">Route (plan + rise)</div></div>
+        <div class="metric"><div class="m-val">${res ? num(res.lengthM, 2) : 0} <small>m</small></div><div class="m-label">${override ? "Engineering length" : "Route (plan + rise)"}</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.gradient, 2) : 0} <small>Pa/m</small></div><div class="m-label">Gradient</div></div>
         <div class="metric"><div class="m-val">${res ? num(res.dpPa, 1) : 0} <small>Pa</small></div><div class="m-label">Segment Δp</div></div>
       </div>
@@ -332,16 +377,60 @@ export class Panels {
     `;
   }
 
+  propPiece(p) {
+    const alts = (p.alternatives || []).map((k) => `<option value="${k}" ${p.fittingType === k ? "selected" : ""}>${FAB_FITTINGS[k]?.label || k}</option>`).join("");
+    return h`
+      <div class="section-title">${p.ref} · ${p.label}</div>
+      <div class="field"><label>Engineering section</label><span class="badge">${p.segmentId || "—"}</span></div>
+      <div class="field"><label>Size</label><span class="badge">${p.sizeText || "—"}</span></div>
+      <div class="field"><label>Length</label><span class="badge">${num(p.lengthM, 2)} m</span></div>
+      ${alts ? `<div class="field"><label>Fitting</label><select data-k="fittingType">${alts}</select></div>` : ""}
+      <p class="small-note">Open the <b>Fabrication</b> tab for alignment, standard-length breaks and the full component list. Selecting this piece highlights the engineering section.</p>
+      <div class="row-actions"><button class="btn tiny" data-act="gotoSeg">Select engineering section</button></div>
+    `;
+  }
+
   bindProperty(el, sel, obj) {
     const store = this.store;
     const commit = () => store.commit();
     const unit = unitOf(store);
+    el.querySelectorAll("[data-length]").forEach((input) => {
+      const apply = () => {
+        store.snapshot();
+        const parsed = parseLengthM(input.value);
+        store.setEngineeringLength(obj, parsed);
+        commit();
+      };
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); apply(); }
+      });
+      input.addEventListener("change", apply);
+    });
+    el.querySelectorAll("[data-ins]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        obj.insulationOverride = obj.insulationOverride || {};
+        const key = input.dataset.ins;
+        obj.insulationOverride[key] = input.type === "number" ? (input.value === "" ? undefined : Number(input.value)) : input.value;
+        if (!obj.insulationOverride.type && !obj.insulationOverride.thicknessMm && !obj.insulationOverride.cladding) {
+          obj.insulationOverride = null;
+        }
+        commit();
+      });
+    });
     el.querySelectorAll("[data-k]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
         const key = input.dataset.k;
         let val = input.value;
         if (input.type === "number") val = val === "" ? null : Number(val);
+        if (key === "constructionType" && val === "") val = null;
+        if (key === "standardLengthM" && val === "") val = null;
+        if (sel.type === "piece" && key === "fittingType") {
+          store.setPhysicalModel(setPieceOverride(store.project.physical, obj.sourceKey, { fittingType: val, label: FAB_FITTINGS[val]?.label, k: FAB_FITTINGS[val]?.k }));
+          commit();
+          return;
+        }
         if (sel.type === "component" && key === "system") {
           store.setComponentSystem(obj, val);
         } else if (sel.type === "component" && (key === "widthM" || key === "depthM" || key === "rot")) {
@@ -425,8 +514,16 @@ export class Panels {
           const type = el.querySelector("#newFitting").value;
           obj.fittings.push({ type, qty: 1 });
           commit();
-        } else if (act === "clearSize") {
+        }         else if (act === "clearSize") {
           store.snapshot(); obj.sizeOverride = null; commit();
+        } else if (act === "lockSize") {
+          store.snapshot();
+          store.lockSegmentSize(obj, this.segResult(obj.id)?.section);
+          commit();
+        } else if (act === "clearLength") {
+          store.snapshot(); obj.engineeringLengthM = null; commit();
+        } else if (act === "gotoSeg") {
+          if (obj.segmentId) store.select("segment", obj.segmentId);
         } else if (act === "addParam") {
           const name = await showPrompt({ title: "Add custom parameter", label: "Parameter name", value: "" });
           if (name) { store.snapshot(); obj.props[name] = 0; commit(); }
@@ -615,6 +712,52 @@ export class Panels {
       <div class="field"><label>AHU / plant</label><input type="number" step="0.05" data-s="defaultAhuHeight" value="${s.defaultAhuHeight}"/></div>
       <div class="field"><label>Outlets / terminals</label><input type="number" step="0.05" data-s="defaultTerminalHeight" value="${s.defaultTerminalHeight}"/></div>
 
+      <div class="section-title">Physical model / fabrication</div>
+      <div class="field"><label>Standard straight length (m)</label><input type="number" step="0.1" data-s="standardStraightLengthM" value="${s.standardStraightLengthM}"/></div>
+      <div class="field"><label>Max transition angle (°)</label><input type="number" step="1" data-s="maxTransitionAngleDeg" value="${s.maxTransitionAngleDeg}"/></div>
+      <div class="field"><label>Circular construction</label>
+        <select data-s="defaultConstructionRound">
+          <option value="spiral" ${s.defaultConstructionRound === "spiral" ? "selected" : ""}>Spiral duct</option>
+          <option value="plain_circular" ${s.defaultConstructionRound === "plain_circular" ? "selected" : ""}>Plain circular</option>
+        </select></div>
+      <div class="field"><label>Rectangular construction</label>
+        <select data-s="defaultConstructionRect">
+          <option value="rectangular" ${s.defaultConstructionRect === "rectangular" ? "selected" : ""}>Rectangular</option>
+          <option value="square" ${s.defaultConstructionRect === "square" ? "selected" : ""}>Square</option>
+        </select></div>
+      <div class="field"><label>Elevation changes</label>
+        <select data-s="elevationMode">
+          <option value="orthogonal" ${s.elevationMode !== "diagonal" ? "selected" : ""}>Bend + riser + bend</option>
+          <option value="diagonal" ${s.elevationMode === "diagonal" ? "selected" : ""}>Diagonal (as drawn)</option>
+        </select></div>
+      <div class="field"><label>Default offset</label>
+        <select data-s="defaultOffsetStyle">
+          <option value="offset_2x45" ${s.defaultOffsetStyle === "offset_2x45" ? "selected" : ""}>2 × 45° bends</option>
+          <option value="offset_2x30" ${s.defaultOffsetStyle === "offset_2x30" ? "selected" : ""}>2 × 30° bends</option>
+          <option value="offset_custom" ${s.defaultOffsetStyle === "offset_custom" ? "selected" : ""}>Custom fabricated</option>
+          <option value="offset_rect" ${s.defaultOffsetStyle === "offset_rect" ? "selected" : ""}>Rectangular offset</option>
+        </select></div>
+      <div class="field"><label>Takeoff mode</label>
+        <select data-s="takeoffMode">
+          <option value="cut_lengths" ${s.takeoffMode !== "linear" ? "selected" : ""}>Standard + cut lengths</option>
+          <option value="linear" ${s.takeoffMode === "linear" ? "selected" : ""}>Total linear metres</option>
+        </select></div>
+      <div class="field"><label>Estimate supports</label>
+        <select data-s="estimateSupports">
+          <option value="true" ${s.estimateSupports !== false ? "selected" : ""}>On</option>
+          <option value="false" ${s.estimateSupports === false ? "selected" : ""}>Off</option>
+        </select></div>
+      <div class="field"><label>Circular support spacing (m)</label><input type="number" step="0.1" data-s="supportSpacingCircularM" value="${s.supportSpacingCircularM}"/></div>
+      <div class="field"><label>Rectangular support spacing (m)</label><input type="number" step="0.1" data-s="supportSpacingRectM" value="${s.supportSpacingRectM}"/></div>
+
+      <div class="section-title">Default insulation</div>
+      <div class="field"><label>Type</label><input type="text" data-ins-def="type" value="${s.defaultInsulation?.type || ""}" placeholder="e.g. foil faced"/></div>
+      <div class="field"><label>Thickness (mm)</label><input type="number" data-ins-def="thicknessMm" value="${s.defaultInsulation?.thicknessMm || 0}"/></div>
+      <div class="field"><label>Cladding</label><input type="text" data-ins-def="cladding" value="${s.defaultInsulation?.cladding || ""}" placeholder="e.g. aluminium"/></div>
+      <div class="field"><label>Supply insulation (mm)</label><input type="number" data-ins-sys="supply" value="${s.insulationBySystem?.supply?.thicknessMm || 0}"/></div>
+      <div class="field"><label>Extract insulation (mm)</label><input type="number" data-ins-sys="extract" value="${s.insulationBySystem?.extract?.thicknessMm || 0}"/></div>
+      <p class="small-note">Section override wins, then system, then project default. Area and volume are calculated from the physical model.</p>
+
       <div class="section-title">Scale</div>
       <div class="field"><label>Drawing scale</label><span class="badge">${scaleTxt}</span></div>
       <div class="field"><label>Concept scale (px/m)</label><input type="number" data-s="conceptPxPerMeter" value="${s.conceptPxPerMeter}"/></div>
@@ -649,6 +792,25 @@ export class Panels {
       input.addEventListener("change", () => {
         store.snapshot();
         s.velocityMins[input.dataset.vmin] = Number(input.value);
+        store.commit();
+      });
+    });
+    el.querySelectorAll("[data-ins-def]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        s.defaultInsulation = s.defaultInsulation || { type: "", thicknessMm: 0, cladding: "" };
+        const key = input.dataset.insDef;
+        s.defaultInsulation[key] = input.type === "number" ? Number(input.value) : input.value;
+        store.commit();
+      });
+    });
+    el.querySelectorAll("[data-ins-sys]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        const sys = input.dataset.insSys;
+        s.insulationBySystem = s.insulationBySystem || {};
+        s.insulationBySystem[sys] = s.insulationBySystem[sys] || { type: "", thicknessMm: 0, cladding: "" };
+        s.insulationBySystem[sys].thicknessMm = Number(input.value) || 0;
         store.commit();
       });
     });
