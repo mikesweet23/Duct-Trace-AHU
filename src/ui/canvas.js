@@ -211,7 +211,7 @@ export class CanvasView {
       duct: `Duct (${this.store.activeSystem}) at ${round(h, 2)} m AFFL: snap to an outlet or AHU · [ ] change height · Alt cuts a T-piece`,
       tee: "T-piece: click a duct to cut a branch joint · then trace a new run off it",
       component: `Place ${componentDef(this.store.newComponentKind)?.label || "component"} (${this.store.activeSystem}): click to drop · drag corners later to size it`,
-      delete: "Delete: click an element to remove it",
+      delete: "Delete: click an item to remove only that item · a damper or outlet does not take the duct with it",
     };
     this.onHint(map[t] || "");
   }

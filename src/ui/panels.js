@@ -10,11 +10,11 @@ import { polygonArea, pointInPolygon, routeLengthM, isVerticalRiser, dist } from
 import { showPrompt } from "./modal.js";
 import { pxPerMeterOf } from "../layout.js";
 import { parseLengthM, formatLengthM, hasLengthOverride } from "../fab/lengths.js";
-import { CONSTRUCTION_TYPES } from "../fab/catalog.js";
 import { renderFabrication } from "./fab-panel.js";
 import { renderTakeoff } from "./takeoff-panel.js";
 import { FITTINGS as FAB_FITTINGS } from "../standards/fittings.js";
 import { setPieceOverride } from "../fab/change.js";
+import { PROJECT_CONSTRUCTIONS, SECTION_CONSTRUCTIONS, projectConstructionLabel, sectionConstructionKey } from "../construction.js";
 
 const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
 const SKIP_GENERIC = new Set(["designFlow", "designFlow_ls", "extractFlow_ls", "supplyFlow_ls", "availableStaticPa", "extractStaticPa", "supplyStaticPa"]);
@@ -73,7 +73,7 @@ export class Panels {
     const selected = this.store.getSelected();
     if (!sel || !selected) {
       el.innerHTML = this.propertiesEmpty();
-      this.bindRooms(el);
+      this.bindProjectConstruction(el);
       return;
     }
     if (sel.type === "segment") el.innerHTML = this.propSegment(selected);
@@ -100,6 +100,11 @@ export class Panels {
         and mark <b>rooms</b>. Select an element to edit it here.
       </p>
       <div class="section-title">Project</div>
+      <div class="field"><label>Default construction</label>
+        <select data-project-duct>
+          ${PROJECT_CONSTRUCTIONS.map((c) => `<option value="${c.key}" ${p.settings.ductType === c.key ? "selected" : ""}>${c.label}</option>`).join("")}
+        </select></div>
+      <p class="small-note">This is the project ideal. Select a duct to change one length or a whole branch without rewriting the rest of the system.</p>
       <div class="field"><label>Nodes / ducts</label><span class="badge">${p.nodes.length} / ${p.segments.length}</span></div>
       <div class="field"><label>Components / rooms</label><span class="badge">${p.components.length} / ${p.rooms.length}</span></div>
       ${rooms ? `<div class="section-title">Rooms</div>${rooms}` : ""}
@@ -148,13 +153,6 @@ export class Panels {
           <option value="branch" ${s.roleOverride === "branch" ? "selected" : ""}>Branch</option>
           <option value="runout" ${s.roleOverride === "runout" ? "selected" : ""}>Run-out</option>
         </select></div>
-      <div class="field"><label>Shape</label>
-        <select data-k="shapeOverride">
-          <option value="">Default (${sectionShapeLabel(this.store.project.settings.ductType)})</option>
-          <option value="round" ${s.shapeOverride === "round" ? "selected" : ""}>Spiral / circular</option>
-          <option value="square" ${s.shapeOverride === "square" ? "selected" : ""}>Square</option>
-          <option value="rect" ${s.shapeOverride === "rect" ? "selected" : ""}>Rectangular</option>
-        </select></div>
       <div class="field"><label>Flow override (${ul})</label>
         <input type="number" step="any" data-flow-k="flowOverride" value="${flowDisp}" placeholder="auto" /></div>
 
@@ -170,12 +168,17 @@ export class Panels {
       <button class="link-btn" data-act="clearSize">Clear manual size (use auto)</button>
       <button class="link-btn" data-act="lockSize">Lock current calculated size</button>
 
-      <div class="section-title">Construction</div>
-      <div class="field"><label>Physical type</label>
-        <select data-k="constructionType">
-          <option value="">Default (${this.store.project.settings.ductType === "rect" ? "rectangular" : this.store.project.settings.ductType === "square" ? "square" : "spiral"})</option>
-          ${Object.values(CONSTRUCTION_TYPES).map((c) => `<option value="${c.key}" ${s.constructionType === c.key ? "selected" : ""}>${c.label}</option>`).join("")}
+      <div class="section-title">Construction ${s.shapeOverride || s.constructionType ? `<span class="pill warn">section override</span>` : `<span class="pill">project default</span>`}</div>
+      <div class="field"><label>This length</label>
+        <select data-construction="section">
+          <option value="" ${!(s.shapeOverride || s.constructionType) ? "selected" : ""}>Follow project (${projectConstructionLabel(this.store.project.settings)})</option>
+          ${SECTION_CONSTRUCTIONS.map((c) => `<option value="${c.key}" ${(s.shapeOverride || s.constructionType) && sectionConstructionKey(s, this.store.project.settings) === c.key ? "selected" : ""}>${c.label}</option>`).join("")}
         </select></div>
+      <p class="small-note">Changing this length does not change the rest of the system. Use the branch button to switch a take-off (for example rectangular trunk, spiral legs).</p>
+      <div class="row-actions">
+        <button class="btn tiny" data-act="applyBranch" title="This section and everything downstream toward the terminals">Apply to this branch</button>
+        <button class="btn ghost tiny" data-act="clearConstruction">Use project default</button>
+      </div>
       <div class="field"><label>Standard length (m)</label>
         <input type="number" step="0.1" data-k="standardLengthM" value="${s.standardLengthM ?? ""}" placeholder="${this.store.project.settings.standardStraightLengthM || 3}" /></div>
       <div class="field"><label>Floor</label><input type="text" data-k="floor" value="${s.floor || ""}" placeholder="e.g. L2"/></div>
@@ -319,9 +322,10 @@ export class Panels {
       <div class="section-title">Parameters</div>
       ${props}
       <button class="link-btn" data-act="addParam">+ Add custom parameter</button>
+      <p class="small-note">Delete removes only this ${def.label.toLowerCase()}. Connected ducts stay in place.</p>
       <div class="row-actions">
         ${def.role === "terminal" ? `<button class="btn tiny" data-act="duplicate">Duplicate outlet</button>` : ""}
-        <button class="btn ghost tiny" data-act="delete">Delete component</button>
+        <button class="btn ghost tiny" data-act="delete">Delete ${def.label.toLowerCase()}</button>
       </div>
     `;
   }
@@ -394,6 +398,13 @@ export class Panels {
     const store = this.store;
     const commit = () => store.commit();
     const unit = unitOf(store);
+    el.querySelectorAll("[data-construction]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        store.setSegmentConstruction(obj, input.value || null);
+        commit();
+      });
+    });
     el.querySelectorAll("[data-length]").forEach((input) => {
       const apply = () => {
         store.snapshot();
@@ -520,8 +531,17 @@ export class Panels {
           store.snapshot();
           store.lockSegmentSize(obj, this.segResult(obj.id)?.section);
           commit();
-        } else if (act === "clearLength") {
+        }         else if (act === "clearLength") {
           store.snapshot(); obj.engineeringLengthM = null; commit();
+        } else if (act === "applyBranch") {
+          store.snapshot();
+          const key = el.querySelector("[data-construction]")?.value || sectionConstructionKey(obj, store.project.settings);
+          store.applyConstruction(obj, key || null, "branch");
+          commit();
+        } else if (act === "clearConstruction") {
+          store.snapshot();
+          store.setSegmentConstruction(obj, null);
+          commit();
         } else if (act === "gotoSeg") {
           if (obj.segmentId) store.select("segment", obj.segmentId);
         } else if (act === "addParam") {
@@ -541,7 +561,15 @@ export class Panels {
     });
   }
 
-  bindRooms() {}
+  bindProjectConstruction(el) {
+    el.querySelectorAll("[data-project-duct]").forEach((input) => {
+      input.addEventListener("change", () => {
+        this.store.snapshot();
+        this.store.project.settings.ductType = input.value;
+        this.store.commit();
+      });
+    });
+  }
 
   // ---------------- Results ----------------
   renderResults() {
@@ -665,12 +693,13 @@ export class Panels {
           <option value="velocity" ${s.sizingMethod === "velocity" ? "selected" : ""}>Velocity method</option>
         </select></div>
       <div class="field"><label>Target gradient (Pa/m)</label><input type="number" step="0.1" data-s="targetGradient" value="${s.targetGradient}"/></div>
-      <div class="field"><label>Default duct shape</label>
+      <div class="field"><label>Project default construction</label>
         <select data-s="ductType">
-          <option value="round" ${s.ductType === "round" ? "selected" : ""}>Spiral / circular</option>
+          <option value="round" ${s.ductType === "round" ? "selected" : ""}>Spiral</option>
           <option value="square" ${s.ductType === "square" ? "selected" : ""}>Square</option>
           <option value="rect" ${s.ductType === "rect" ? "selected" : ""}>Rectangular</option>
         </select></div>
+      <p class="small-note">Used for every new length that has no override. Changing this does not rewrite sections you have already set to a different construction.</p>
       <div class="field"><label>Rect. / square start (mm)</label><input type="number" data-s="rectHeight" value="${s.rectHeight}"/></div>
       <div class="field"><label>Max aspect ratio</label><input type="number" step="0.5" data-s="maxAspect" value="${s.maxAspect}"/></div>
       <div class="field"><label>Roughness (mm)</label><input type="number" step="0.01" data-s="roughnessMm" value="${s.roughnessMm}"/></div>

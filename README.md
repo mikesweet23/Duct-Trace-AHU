@@ -41,6 +41,12 @@ no build step) as ES modules on a static server.
   diffusers/grilles/valves/louvres, fire dampers, VCDs, attenuators, plenums,
   heaters and filters. Every parameter is editable and you can add custom
   parameters or custom outlets.
+- **Construction per project, branch or length** — set a project default
+  (spiral / square / rectangular). Then override one length, or apply the
+  change to a whole downstream branch, without rewriting the rest of the
+  system. Typical use: rectangular trunk, spiral legs.
+- **Delete one item** — removing a damper, outlet or AHU deletes only that
+  item. The duct run it sits on stays.
 - **Automatic sizing** — spiral/circular, **square** and rectangular ducts sized
   to the full DW144 / EN 1506 / EN 1505 range, by equal-friction (target Pa/m)
   or velocity method, with per-role **min and max** velocities (main / **riser** /
