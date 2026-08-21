@@ -47,6 +47,21 @@ export function defaultSettings() {
     defaultDuctHeight: 3.2,
     defaultAhuHeight: 0.3,
     defaultTerminalHeight: 2.7,
+    standardStraightLengthM: 3.0,
+    maxTransitionAngleDeg: 15,
+    defaultConstructionRound: "spiral",
+    defaultConstructionRect: "rectangular",
+    elevationMode: "orthogonal",
+    defaultOffsetStyle: "offset_2x45",
+    takeoffMode: "cut_lengths",
+    estimateSupports: true,
+    supportSpacingCircularM: 3.0,
+    supportSpacingRectM: 2.4,
+    defaultInsulation: { type: "", thicknessMm: 0, cladding: "" },
+    insulationBySystem: {
+      supply: { type: "", thicknessMm: 0, cladding: "" },
+      extract: { type: "", thicknessMm: 0, cladding: "" },
+    },
   };
 }
 
@@ -62,6 +77,8 @@ export function newProject(name = "Untitled project") {
     segments: [],
     components: [],
     rooms: [],
+    physical: null,
+    engineeringLocked: false,
   };
 }
 
@@ -93,8 +110,15 @@ export function migrateProject(raw) {
   p.settings.velocityCaps = { ...defaults.velocityCaps, ...(p.settings.velocityCaps || {}) };
   p.settings.velocityMins = { ...defaults.velocityMins, ...(p.settings.velocityMins || {}) };
   p.settings.flowUnit = normalizeFlowUnit(p.settings.flowUnit);
-  p.meta = { ...p.meta, version: 3 };
+  p.meta = { ...p.meta, version: 4 };
+  p.physical = raw.physical || null;
+  p.engineeringLocked = !!raw.engineeringLocked;
   const settings = p.settings;
+  settings.insulationBySystem = {
+    supply: { type: "", thicknessMm: 0, cladding: "", ...(defaults.insulationBySystem.supply), ...(p.settings.insulationBySystem?.supply || {}) },
+    extract: { type: "", thicknessMm: 0, cladding: "", ...(defaults.insulationBySystem.extract), ...(p.settings.insulationBySystem?.extract || {}) },
+  };
+  settings.defaultInsulation = { type: "", thicknessMm: 0, cladding: "", ...defaults.defaultInsulation, ...(p.settings.defaultInsulation || {}) };
   for (const n of p.nodes) {
     if (!Number.isFinite(Number(n.z))) n.z = settings.defaultDuctHeight;
   }
@@ -130,6 +154,10 @@ export class Store {
     this.traceHeight = this.project.settings.defaultDuctHeight;
     this.overrideKey = false; // Alt: ignore snap-to-existing / flip ortho
     this.viewMode = "plan"; // "plan" | "3d"
+    this.visualMode = "centreline"; // centreline | simple3d | fabrication | transparent | airflow | velocity | pressure | installation
+    this.exploded = false;
+    this.hiddenSystems = new Set();
+    this.takeoffFilters = { scope: "project", system: "", ahu: "", floor: "", zone: "", branch: "", size: "", type: "", area: "" };
     this.listeners = new Set();
     this.undoStack = [];
     this.redoStack = [];
@@ -253,6 +281,13 @@ export class Store {
       sizeOverride: extra.sizeOverride ?? null,
       flowOverride: extra.flowOverride ?? null,
       roleOverride: extra.roleOverride ?? null,
+      engineeringLengthM: extra.engineeringLengthM ?? null,
+      constructionType: extra.constructionType ?? null,
+      insulationOverride: extra.insulationOverride ?? null,
+      standardLengthM: extra.standardLengthM ?? null,
+      floor: extra.floor ?? "",
+      zone: extra.zone ?? "",
+      area: extra.area ?? "",
       aOff: extra.aOff ?? null,
       bOff: extra.bOff ?? null,
       fittings,
@@ -381,6 +416,13 @@ export class Store {
       sizeOverride: seg.sizeOverride ? { ...seg.sizeOverride } : null,
       flowOverride: null,
       roleOverride: seg.roleOverride,
+      engineeringLengthM: null,
+      constructionType: seg.constructionType || null,
+      insulationOverride: seg.insulationOverride ? { ...seg.insulationOverride } : null,
+      standardLengthM: seg.standardLengthM || null,
+      floor: seg.floor || "",
+      zone: seg.zone || "",
+      area: seg.area || "",
       aOff: null,
       bOff: seg.bOff || null,
       fittings: (seg.fittings || []).filter((f) => f.type !== "tee_branch").map((f) => ({ ...f })),
@@ -494,7 +536,28 @@ export class Store {
     if (sel.type === "component") return p.components.find((c) => c.id === sel.id);
     if (sel.type === "room") return p.rooms.find((r) => r.id === sel.id);
     if (sel.type === "node") return p.nodes.find((n) => n.id === sel.id);
+    if (sel.type === "piece") return (p.physical?.pieces || []).find((x) => x.ref === sel.id || x.sourceKey === sel.id);
     return null;
+  }
+
+  setEngineeringLength(seg, lengthM) {
+    const v = lengthM == null || lengthM === "" ? null : Number(lengthM);
+    seg.engineeringLengthM = Number.isFinite(v) && v > 0 ? v : null;
+  }
+
+  lockSegmentSize(seg, section) {
+    if (!section) return;
+    if (section.shape === "rect" || section.shape === "square") {
+      seg.sizeOverride = { widthMm: section.widthMm, heightMm: section.heightMm };
+      if (!seg.shapeOverride) seg.shapeOverride = section.shape;
+    } else {
+      seg.sizeOverride = { diameterMm: section.diameterMm };
+      if (!seg.shapeOverride) seg.shapeOverride = section.shape || "round";
+    }
+  }
+
+  setPhysicalModel(model) {
+    this.project.physical = model;
   }
 
   exportJSON() {
@@ -548,13 +611,17 @@ export function seedDemo(store) {
   ];
   p.nodes = nodes;
 
-  const seg = (id, a, b, system, fittings = []) => ({
+  const seg = (id, a, b, system, fittings = [], extra = {}) => ({
     id, a, b, system, shapeOverride: null, sizeOverride: null,
     flowOverride: null, roleOverride: null, aOff: null, bOff: null, fittings,
+    engineeringLengthM: extra.engineeringLengthM ?? null,
+    constructionType: extra.constructionType ?? null,
+    insulationOverride: null, standardLengthM: null,
+    floor: extra.floor || "", zone: extra.zone || "", area: extra.area || "",
   });
   p.segments = [
     seg("sT0", "nAHU", "nT1", "supply", [{ type: "bend90_radius", qty: 1 }]),
-    seg("sT1", "nT1", "nT2", "supply"),
+    seg("sT1", "nT1", "nT2", "supply", [], { engineeringLengthM: 17.5, zone: "East", floor: "L2" }),
     seg("sB1", "nT1", "nB1", "supply", [{ type: "tee_branch", qty: 1 }]),
     seg("sB2", "nT2", "nB2", "supply", [{ type: "tee_branch", qty: 1 }]),
     seg("sB3", "nT2", "nB3", "supply", [{ type: "tee_branch", qty: 1 }]),

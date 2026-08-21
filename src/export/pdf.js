@@ -503,6 +503,44 @@ function writeSystem(w, project, sys, unit, unitLabel) {
   w.y -= 8;
 }
 
+export function buildTakeoffPdf({ project, takeoff }) {
+  const doc = new PdfDoc();
+  const w = new PageWriter(doc, pdfSafe(project.meta?.name || "Takeoff"));
+  w.heading(project.meta?.name || "Project", 16);
+  w.para("Fabrication takeoff generated from the physical model. Component references map back to the model.");
+  w.heading("Circular duct", 12);
+  const circ = (takeoff.circular || []).map((g) => [
+    g.size, g.construction, g.lengthM, g.standardCount, g.cutLengthM, g.sections,
+  ]);
+  if (circ.length) w.table(["Size", "Type", "Length m", "Std", "Cut m", "Pcs"], circ, [70, 80, 70, 50, 60, 40]);
+  else w.para("None.");
+  w.heading("Rectangular duct", 12);
+  const rect = (takeoff.rectangular || []).map((g) => [
+    g.size, g.construction, g.lengthM, g.sheetAreaM2, g.sections,
+  ]);
+  if (rect.length) w.table(["Size", "Type", "Length m", "Area m2", "Pcs"], rect, [90, 80, 70, 70, 40]);
+  else w.para("None.");
+  w.heading("Fittings", 12);
+  const fits = (takeoff.fittings || []).map((g) => [g.label, g.size, g.qty, (g.refs || []).join(" ")]);
+  if (fits.length) w.table(["Fitting", "Size", "Qty", "Refs"], fits, [180, 100, 36, 140]);
+  else w.para("None.");
+  w.heading("Joints", 12);
+  const joints = (takeoff.joints || []).map((g) => [g.label, g.size, g.qty]);
+  if (joints.length) w.table(["Joint", "Size", "Qty"], joints, [220, 120, 40]);
+  else w.para("None.");
+  w.heading("Insulation", 12);
+  const ins = (takeoff.insulation || []).map((g) => [`${g.thicknessMm} mm ${g.type}`, g.areaM2, g.cladding || "", g.claddingAreaM2 || ""]);
+  if (ins.length) w.table(["Insulation", "Area m2", "Cladding", "Clad m2"], ins, [180, 70, 100, 70]);
+  else w.para("None assigned.");
+  w.heading("Line items", 12);
+  const rows = (takeoff.rows || []).filter((r) => r.kind !== "support").map((r) => [
+    r.ref, r.description, r.size, r.qty, r.lengthM || "",
+  ]);
+  if (rows.length) w.table(["Ref", "Item", "Size", "Qty", "m"], rows, [50, 200, 90, 36, 40]);
+  w.flush();
+  return doc.build();
+}
+
 export function downloadBlob(blob, filename) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
