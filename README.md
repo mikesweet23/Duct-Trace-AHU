@@ -22,6 +22,21 @@ no build step) as ES modules on a static server.
   on the plan. Open **3D** to review the whole layout, including risers.
 - **Actual ducts** — once a run is sized it is drawn as a circular or
   rectangular body at the real DW144 size, not just a centreline.
+- **Engineering length override** — each section between two nodes is its
+  own object. Type `12.5 m` on a duct to set the real installed length
+  while leaving the sketch short. Pressure loss, index run, insulation and
+  takeoff all use the engineering length, not the graphical length.
+- **Physical simulator (Stage 2)** — **Generate model** turns the centreline
+  into fabricated straight lengths, joints, elbows, tees, reducers,
+  square-to-round pieces, boots and riser drops. Stage 1 stays the
+  calculation source; Stage 2 is the physical interpretation of the same
+  network. Engineering edits can update the model, with a review step so
+  manual fitting choices are not destroyed.
+- **Takeoff** — bill of materials from the physical pieces (standard + cut
+  lengths, fittings, joints, insulation, estimated supports), filterable by
+  system / AHU / floor / zone / size, exportable as CSV, Excel, PDF,
+  procurement and fabrication schedules. Each item carries costing fields
+  for a later estimating module.
 - **Components** — AHUs, centrifugal / axial / EC plug fans, supply & extract
   diffusers/grilles/valves/louvres, fire dampers, VCDs, attenuators, plenums,
   heaters and filters. Every parameter is editable and you can add custom
@@ -54,6 +69,21 @@ no build step) as ES modules on a static server.
 > These calculations follow standard published methods and sensible defaults;
 > always verify against project-specific manufacturer data before construction.
 
+## Two-stage workflow
+
+1. **Engineering design** — sketch centre lines, assign airflows, auto-size,
+   review velocity and pressure. Do not model every coupler while designing.
+2. Enter **actual lengths** where the sketch is not to scale.
+3. **Lock** the engineering design when it is ready.
+4. **Generate physical model** — spiral or rectangular pieces, joints,
+   fittings and riser drops, with persistent refs (`D001`, `F001`, `B001`).
+5. Adjust unusual fittings; the visual model updates resistance and takeoff.
+6. **Generate takeoff** and export fabrication or procurement schedules.
+
+Changes flow Stage 1 → physical generator → fabrication model → takeoff.
+Engineering centreline length (pressure) is kept distinct from fabricated
+material length (cut pieces + fittings).
+
 ## Local development
 
 No dependencies or build step. Serve the folder with any static server:
@@ -82,6 +112,7 @@ npm test        # == node --test
 | `src/snap.js`, `src/layout.js` | Nearby-only snap (ac-trace discipline) and equipment footprints |
 | `src/standards/` | DW144 data, sizing engine, fittings, component library |
 | `src/calc/network.js` | System solver (flows, index run, static pressure) |
+| `src/fab/` | Physical model generator, takeoff, change review, export |
 | `test/` | Node unit tests for the calculation core |
 
 ## Cloud Agent environment

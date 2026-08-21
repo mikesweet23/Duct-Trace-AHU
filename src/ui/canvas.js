@@ -580,7 +580,8 @@ export class CanvasView {
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
       const res = this.segResult(s.id);
-      const selected = sel?.type === "segment" && sel.id === s.id;
+      const selected = (sel?.type === "segment" && sel.id === s.id)
+        || (sel?.type === "piece" && this.store.getSelected()?.segmentId === s.id);
       const base = s.system === "extract" ? "#d97706" : "#2563eb";
       const noFlow = !res || res.flowM3s <= 0;
       const shape = (res?.section?.shape) || s.shapeOverride || p.settings.ductType || "round";
@@ -620,6 +621,15 @@ export class CanvasView {
         ctx.fillRect(mx - w / 2, my - 16 / z, w, 14 / z);
         ctx.fillStyle = res.withinVelocity ? "#e6edf7" : "#fca5a5";
         ctx.fillText(txt, mx, my - 5 / z);
+        if (res.lengthOverride) {
+          const lt = `Graphical ${round(res.graphicalLengthM, 2)} m  ·  Actual ${round(res.lengthM, 2)} m – override`;
+          const lw = ctx.measureText(lt).width + 8 / z;
+          ctx.fillStyle = "rgba(245,158,11,0.18)";
+          ctx.fillRect(mx - lw / 2, my + 4 / z, lw, 13 / z);
+          ctx.fillStyle = "#fcd34d";
+          ctx.font = `${10 / z}px system-ui`;
+          ctx.fillText(lt, mx, my + 14 / z);
+        }
       } else {
         const txt = "no flow · connect to plant";
         const w = ctx.measureText(txt).width + 8 / z;

@@ -154,6 +154,7 @@ body {
 }
 .workspace.view-3d #canvas { visibility: hidden; }
 .workspace.view-3d .view3d-canvas { display: block; }
+.workspace:not(.view-3d) .view3d-hud { display: none !important; }
 .workspace.view-3d .canvas-toolbar .upload-btn,
 .workspace.view-3d #btnClearBg { display: none; }
 .pill.both { background: linear-gradient(90deg, var(--supply-soft), var(--extract-soft)); color: #e6edf7; }
@@ -179,13 +180,13 @@ body {
 
 /* ---------- Right panel ---------- */
 .panel {
-  width: 380px; flex: 0 0 auto; background: var(--panel);
+  width: 400px; flex: 0 0 auto; background: var(--panel);
   border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0;
 }
-.panel-tabs { display: flex; border-bottom: 1px solid var(--line); }
+.panel-tabs { display: flex; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .panel-tab {
-  flex: 1; background: transparent; border: none; color: var(--muted);
-  padding: 10px; cursor: pointer; font-weight: 600; font-size: 12px; border-bottom: 2px solid transparent;
+  flex: 1 1 auto; background: transparent; border: none; color: var(--muted);
+  padding: 8px 6px; cursor: pointer; font-weight: 600; font-size: 11px; border-bottom: 2px solid transparent;
 }
 .panel-tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .panel-body { flex: 1; overflow-y: auto; }
@@ -246,6 +247,34 @@ table.schedule tr.over-vel td { color: #fca5a5; }
 .fitting-row input { width: 56px; }
 .link-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; }
 .small-note { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+
+.length-box {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px; margin-bottom: 10px;
+}
+.length-box > label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+.length-input {
+  width: 100%; background: var(--panel); border: 1px solid var(--accent); color: var(--text);
+  padding: 8px 10px; border-radius: 8px; font-size: 16px; font-weight: 700;
+}
+.length-input:focus { outline: none; box-shadow: 0 0 0 2px rgba(56,189,248,0.25); }
+.change-banner {
+  background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4);
+  border-radius: 8px; padding: 10px; color: #fcd34d; font-size: 12px; margin: 10px 0;
+}
+.view3d-hud {
+  position: absolute; top: 48px; left: 12px; right: 12px;
+  display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;
+  pointer-events: auto; z-index: 2;
+}
+.view3d-hud .segmented { flex-wrap: wrap; justify-content: center; }
+.view3d-hud .seg-btn { padding: 5px 8px; font-size: 11px; }
+.view3d-hud .btn.active { background: var(--accent); color: #04212f; }
+.takeoff-note {
+  font-size: 11px; color: var(--muted); background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px; white-space: pre-wrap; margin-top: 10px;
+}
+#btnExplode.active { background: var(--accent); color: #04212f; border-color: transparent; }
 
 /* ---------- Modal ---------- */
 .modal-backdrop {

@@ -9,7 +9,9 @@ import { componentsByCategory, CATEGORIES, componentDef } from "./standards/comp
 import { computeAll, allComputedSystems } from "./calc/network.js";
 import { showConfirm } from "./ui/modal.js";
 import { formatFlow, normalizeFlowUnit, round } from "./units.js";
-import { buildProjectPdf, downloadBlob } from "./export/pdf.js";
+import { buildProjectPdf, buildTakeoffPdf, downloadBlob } from "./export/pdf.js";
+import { generatePhysicalModel } from "./fab/generator.js";
+import { buildTakeoff } from "./fab/takeoff.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -21,9 +23,12 @@ const view3d = new View3D($("#view3d"), store);
 const panels = new Panels(store, {
   properties: $("#tab-properties"),
   results: $("#tab-results"),
+  fabrication: $("#tab-fabrication"),
+  takeoff: $("#tab-takeoff"),
   settings: $("#tab-settings"),
 });
 panels.onExportPdf = exportPdfReport;
+store.onExportTakeoffPdf = exportTakeoffPdf;
 
 // ---- palette ----
 function buildPalette() {
@@ -71,10 +76,52 @@ document.querySelectorAll("[data-view]").forEach((b) =>
   b.addEventListener("click", () => {
     store.viewMode = b.dataset.view;
     document.querySelector(".workspace").classList.toggle("view-3d", store.viewMode === "3d");
+    $("#view3d-hud").hidden = store.viewMode !== "3d";
     if (store.viewMode === "3d") view3d.resize();
     store.emit();
   })
 );
+document.querySelectorAll("[data-vismode]").forEach((b) =>
+  b.addEventListener("click", () => {
+    store.visualMode = b.dataset.vismode;
+    if (store.visualMode === "fabrication" && !store.project.physical?.generated) {
+      const results = computeAll(store.project);
+      store.setPhysicalModel(generatePhysicalModel(store.project, results, { previous: store.project.physical }));
+    }
+    store.emit();
+  })
+);
+$("#btnExplode")?.addEventListener("click", () => {
+  store.exploded = !store.exploded;
+  store.emit();
+});
+$("#btnFab")?.addEventListener("click", () => {
+  store.snapshot();
+  const results = computeAll(store.project);
+  store.setPhysicalModel(generatePhysicalModel(store.project, results, { previous: store.project.physical }));
+  store.visualMode = "fabrication";
+  store.viewMode = "3d";
+  document.querySelector(".workspace").classList.add("view-3d");
+  $("#view3d-hud").hidden = false;
+  activateTab("fabrication");
+  store.commit();
+  view3d.resize();
+});
+$("#btnTakeoff")?.addEventListener("click", () => {
+  if (!store.project.physical?.generated) {
+    store.snapshot();
+    const results = computeAll(store.project);
+    store.setPhysicalModel(generatePhysicalModel(store.project, results, { previous: store.project.physical }));
+    store.commit();
+  }
+  activateTab("takeoff");
+  store.emit();
+});
+
+function activateTab(name) {
+  document.querySelectorAll(".panel-tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document.querySelectorAll(".tab-pane").forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
+}
 document.querySelectorAll("[data-flowunit]").forEach((b) =>
   b.addEventListener("click", () => {
     store.snapshot();
@@ -160,6 +207,12 @@ async function exportPdfReport() {
     store.emit();
   }
 }
+
+function exportTakeoffPdf(takeoff) {
+  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project) });
+  const name = `${(store.project.meta.name || "duct-project").replace(/\s+/g, "-").toLowerCase()}-takeoff.pdf`;
+  downloadBlob(blob, name);
+}
 $("#btnImport").addEventListener("click", () => $("#fileImport").click());
 $("#fileImport").addEventListener("change", (e) => {
   const file = e.target.files[0];
@@ -244,6 +297,10 @@ function renderChrome() {
   document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("active", b.dataset.mode === p.mode));
   document.querySelectorAll("[data-system]").forEach((b) => b.classList.toggle("active", b.dataset.system === store.activeSystem));
   document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === store.viewMode));
+  document.querySelectorAll("[data-vismode]").forEach((b) => b.classList.toggle("active", b.dataset.vismode === store.visualMode));
+  if ($("#view3d-hud")) $("#view3d-hud").hidden = store.viewMode !== "3d";
+  if ($("#btnExplode")) $("#btnExplode").classList.toggle("active", !!store.exploded);
+  if ($("#btnExplode")) $("#btnExplode").textContent = store.exploded ? "Exploded on" : "Exploded view";
   const unit = normalizeFlowUnit(p.settings.flowUnit);
   document.querySelectorAll("[data-flowunit]").forEach((b) => b.classList.toggle("active", b.dataset.flowunit === unit));
   document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === store.tool));

@@ -3,7 +3,8 @@
 // the plant, sizes every segment, and finds the index run (the path of
 // greatest total pressure loss), which sets the required system static.
 
-import { routeLengthM, isVerticalRiser } from "../geom.js";
+import { isVerticalRiser } from "../geom.js";
+import { engineeringLengthM, graphicalLengthM, hasLengthOverride } from "../fab/lengths.js";
 import { flowToM3s, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { airDensity, airViscosity } from "../units.js";
 import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizing.js";
@@ -208,7 +209,8 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
     }
     const a = nodesById.get(s.a);
     const b = nodesById.get(s.b);
-    const lengthM = a && b ? routeLengthM(a, b, pxPerMeter) : 0;
+    const graphicalM = a && b ? graphicalLengthM(a, b, pxPerMeter) : 0;
+    const lengthM = a && b ? engineeringLengthM(s, a, b, pxPerMeter) : 0;
 
     const role = inferRole(s, a, b, pxPerMeter, parentNode, terminalNodes, adj, segFlow);
     const limits = velocityLimits(role, settings);
@@ -263,6 +265,8 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
       role,
       flowM3s: flow,
       lengthM,
+      graphicalLengthM: graphicalM,
+      lengthOverride: hasLengthOverride(s),
       section,
       velocity,
       gradient: section.gradient || 0,

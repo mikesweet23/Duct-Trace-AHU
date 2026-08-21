@@ -35,6 +35,11 @@
         <button data-view="3d" class="seg-btn">3D</button>
       </div>
 
+      <div class="topbar-group">
+        <button id="btnFab" class="btn">Generate model</button>
+        <button id="btnTakeoff" class="btn ghost">Takeoff</button>
+      </div>
+
       <div class="topbar-group segmented" role="group" aria-label="Flow unit">
         <button data-flowunit="l/s" class="seg-btn">l/s</button>
         <button data-flowunit="m3/h" class="seg-btn">m³/h</button>
@@ -79,6 +84,19 @@
             m AFFL
           </label>
         </div>
+        <div id="view3d-hud" class="view3d-hud" hidden>
+          <div class="segmented" role="group" aria-label="3D display mode">
+            <button class="seg-btn" data-vismode="centreline">Centreline</button>
+            <button class="seg-btn" data-vismode="simple3d">Simple 3D</button>
+            <button class="seg-btn" data-vismode="fabrication">Fabrication</button>
+            <button class="seg-btn" data-vismode="transparent">Transparent</button>
+            <button class="seg-btn" data-vismode="airflow">Airflow</button>
+            <button class="seg-btn" data-vismode="velocity">Velocity</button>
+            <button class="seg-btn" data-vismode="pressure">Pressure</button>
+            <button class="seg-btn" data-vismode="installation">Install</button>
+          </div>
+          <button id="btnExplode" class="btn ghost tiny">Exploded view</button>
+        </div>
         <div class="canvas-toolbar">
           <label class="upload-btn" title="Upload a background drawing">
             Upload drawing
@@ -100,11 +118,15 @@
         <div class="panel-tabs" role="tablist">
           <button class="panel-tab active" data-tab="properties">Properties</button>
           <button class="panel-tab" data-tab="results">Results</button>
+          <button class="panel-tab" data-tab="fabrication">Fabrication</button>
+          <button class="panel-tab" data-tab="takeoff">Takeoff</button>
           <button class="panel-tab" data-tab="settings">Settings</button>
         </div>
         <div class="panel-body">
           <section id="tab-properties" class="tab-pane active"></section>
           <section id="tab-results" class="tab-pane"></section>
+          <section id="tab-fabrication" class="tab-pane"></section>
+          <section id="tab-takeoff" class="tab-pane"></section>
           <section id="tab-settings" class="tab-pane"></section>
         </div>
       </aside>
