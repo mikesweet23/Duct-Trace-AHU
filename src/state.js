@@ -7,6 +7,7 @@ import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf }
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
 import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
+import { applyConstruction, setSegmentConstruction } from "./construction.js";
 
 const STORAGE_KEY = "duct-trace-ahu:project";
 const NODE_MERGE_TOL = 8; // px in world space — tight, so close parallel ducts stay apart
@@ -500,8 +501,20 @@ export class Store {
     } else if (sel.type === "component") {
       const c = p.components.find((x) => x.id === sel.id);
       p.components = p.components.filter((x) => x.id !== sel.id);
-      if (c) {
-        p.segments = p.segments.filter((s) => s.a !== c.nodeId && s.b !== c.nodeId && s.a !== c.returnNodeId && s.b !== c.returnNodeId);
+      if (c && p.physical?.pieces) {
+        p.physical.pieces = p.physical.pieces.filter((piece) => {
+          if (piece.sourceKey === `damper:${c.id}` || piece.sourceKey === `flex:${c.nodeId}`) return false;
+          return true;
+        });
+      }
+    } else if (sel.type === "piece") {
+      const piece = (p.physical?.pieces || []).find((x) => x.ref === sel.id || x.sourceKey === sel.id);
+      if (piece?.kind === "damper" && piece.sourceKey?.startsWith("damper:")) {
+        const cid = piece.sourceKey.slice("damper:".length);
+        p.components = p.components.filter((x) => x.id !== cid);
+      }
+      if (p.physical?.pieces) {
+        p.physical.pieces = p.physical.pieces.filter((x) => x.ref !== sel.id && x.sourceKey !== sel.id);
       }
     } else if (sel.type === "room") {
       p.rooms = p.rooms.filter((r) => r.id !== sel.id);
@@ -543,6 +556,14 @@ export class Store {
   setEngineeringLength(seg, lengthM) {
     const v = lengthM == null || lengthM === "" ? null : Number(lengthM);
     seg.engineeringLengthM = Number.isFinite(v) && v > 0 ? v : null;
+  }
+
+  setSegmentConstruction(seg, constructionKey) {
+    setSegmentConstruction(seg, constructionKey, this.project.settings);
+  }
+
+  applyConstruction(seg, constructionKey, scope = "section") {
+    return applyConstruction(this.project, seg, constructionKey, scope);
   }
 
   lockSegmentSize(seg, section) {
