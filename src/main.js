@@ -18,6 +18,8 @@ import { dist, routeLengthM, isVerticalRiser } from "./geom.js";
 import { pxPerMeterOf } from "./layout.js";
 import { HELP, HELP_SECTIONS, STEPS, helpMatches } from "./ui/help.js";
 import { SYSTEMS, isOutsideSystem } from "./systems.js";
+import { rotatedSize, normDeg, turnTakeoff, turnPoint } from "./rotate.js";
+import { uid } from "./state.js";
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -351,7 +353,8 @@ async function loadDrawingFile(file) {
     });
   }
   store.snapshot();
-  p.background = { dataUrl: img.dataUrl, width: img.w, height: img.h, x: 0, y: 0, opacity: 0.9, label: img.label };
+  p.background = { dataUrl: img.dataUrl, width: img.w, height: img.h, x: 0, y: 0, opacity: 0.9, label: img.label, rotDeg: 0, token: uid("dwg") };
+  bgOriginal = null;
   p.mode = "drawing";
   if (!keepScale) p.scale = { pxPerMeter: null, calib: null };
   store.commit();
@@ -368,10 +371,144 @@ function scaleGate() {
   const body = showModal("Set the scale — before anything else", `
     <p>Every length and every duct size comes off the drawing, so the scale has to be right first.</p>
     <p>Pick two points a known distance apart — a grid line, a bay, a dimension already on the drawing — and type the real figure. Use the longest one you can find.</p>
-    <div class="modal-actions"><button class="btn ghost" id="sgConcept">Work as a concept instead</button><button class="btn go" id="sgGo">Set the scale</button></div>`, { locked: true });
+    <p>Sheet on its side, or a scan a degree or two off square? <b>Rotate it first</b> — the scale is not affected either way, and anything traced later turns with it.</p>
+    <div class="modal-actions"><button class="btn ghost" id="sgConcept">Work as a concept instead</button><button class="btn ghost" id="sgRot">&#8635; Rotate it first</button><button class="btn go" id="sgGo">Set the scale</button></div>`, { locked: true });
+  body.querySelector("#sgRot").addEventListener("click", () => { closeModal(true); rotateDialog(); });
   body.querySelector("#sgGo").addEventListener("click", () => { closeModal(true); railTool = "scale"; paletteOpen = null; store.setTool("scale"); renderRail(); renderPalette(); renderHint(); });
   body.querySelector("#sgConcept").addEventListener("click", () => { closeModal(true); store.snapshot(); store.project.mode = "concept"; store.commit(); renderRail(); });
 }
+
+/* ---------- rotating the drawing ----------
+   Baked into the image, with every traced point turned with it (rotate.js).
+   Each turn is worked from the sheet as it was loaded, held here in memory
+   only; a save writes the sheet as it is now. */
+let bgOriginal = null; // { img, natW, natH, worldW, worldH, angle, token }
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = reject;
+    im.src = src;
+  });
+}
+
+async function originalOf(bg) {
+  if (bgOriginal && bgOriginal.token === bg.token) return bgOriginal;
+  // nothing in memory for this sheet (reopened, or undone past a swap):
+  // the sheet as it is now becomes the original, at its current angle
+  if (!bg.token) bg.token = uid("dwg");
+  const img = await loadImage(bg.dataUrl);
+  bgOriginal = { img, natW: img.naturalWidth, natH: img.naturalHeight, worldW: bg.width, worldH: bg.height, angle: Number(bg.rotDeg) || 0, token: bg.token };
+  return bgOriginal;
+}
+
+let rotating = false;
+async function rotateDrawing(targetDeg) {
+  const p = store.project;
+  const bg = p.background;
+  if (!bg || rotating) return;
+  rotating = true;
+  try {
+    const orig = await originalOf(bg);
+    const now = Number(bg.rotDeg) || 0;
+    const next = normDeg(targetDeg);
+    const delta = next - now;
+    if (Math.abs(delta) < 1e-9) return;
+    const turn = next - orig.angle;
+    const px = rotatedSize(orig.natW, orig.natH, turn);
+    const world = rotatedSize(orig.worldW, orig.worldH, turn);
+    // keep the image within what a browser canvas will take
+    const k = Math.min(1, 8000 / Math.max(px.w, px.h));
+    const cv = document.createElement("canvas");
+    cv.width = Math.max(1, Math.round(px.w * k));
+    cv.height = Math.max(1, Math.round(px.h * k));
+    const cx = cv.getContext("2d");
+    cx.fillStyle = "#fff";
+    cx.fillRect(0, 0, cv.width, cv.height);
+    cx.translate(cv.width / 2, cv.height / 2);
+    cx.rotate((turn * Math.PI) / 180);
+    cx.scale(k, k);
+    cx.drawImage(orig.img, -orig.natW / 2, -orig.natH / 2);
+    const dataUrl = cv.toDataURL("image/jpeg", 0.92);
+
+    // hold the drawing point in the middle of the screen where it is
+    const v = p.view;
+    const scr = { x: canvas.canvas.clientWidth / 2, y: canvas.canvas.clientHeight / 2 };
+    const mid = { x: (scr.x - v.offsetX) / v.zoom, y: (scr.y - v.offsetY) / v.zoom };
+    const from = { x: bg.x + bg.width / 2, y: bg.y + bg.height / 2 };
+    const to = { x: bg.x + world.w / 2, y: bg.y + world.h / 2 };
+
+    store.snapshot();
+    turnTakeoff(p, delta, from, to);
+    for (const c of p.components) store.syncComponentPorts(c);
+    bg.dataUrl = dataUrl;
+    bg.width = world.w;
+    bg.height = world.h;
+    bg.rotDeg = next;
+    const quarter = Math.abs(delta % 90) < 1e-9;
+    if (quarter) {
+      store.commit();
+      canvas.fit();
+    } else {
+      const m2 = turnPoint(mid, delta, from, to);
+      v.offsetX = scr.x - m2.x * v.zoom;
+      v.offsetY = scr.y - m2.y * v.zoom;
+      store.commit();
+    }
+    renderRotateNote();
+  } catch (err) {
+    console.error(err);
+    toast("The drawing could not be turned");
+  } finally {
+    rotating = false;
+  }
+}
+
+let rotFineDeg = 1;
+function renderRotateNote() {
+  const el = document.getElementById("rotNow");
+  if (el) el.textContent = `${round(Number(store.project.background?.rotDeg) || 0, 1)}°`;
+  const z = document.getElementById("rotZero");
+  if (z) z.disabled = !(Number(store.project.background?.rotDeg) || 0);
+}
+
+function rotateDialog() {
+  const bg = store.project.background;
+  if (!bg) { toast("Open a drawing first — there is nothing to turn"); return; }
+  if (store.project.mode === "concept") { store.project.mode = "drawing"; store.commit(); }
+  const body = showModal("Rotate the drawing", `
+    <p>Everything already traced turns with the sheet, and the scale is not affected — rotation cannot change a distance.</p>
+    <div class="row-actions">
+      <button class="btn ghost" id="rotL">&#8634; 90° anticlockwise</button>
+      <button class="btn ghost" id="rotR">90° clockwise &#8635;</button>
+      <button class="btn ghost" id="rot180">180°</button>
+    </div>
+    <div class="field" style="margin-top:10px"><label>Straighten a scan (degrees)</label>
+      <span><input type="number" id="rotFine" step="0.1" min="0" max="45" value="${rotFineDeg}">
+      <button class="btn ghost sm" id="rotNudgeL">&#8634; anticlockwise</button>
+      <button class="btn ghost sm" id="rotNudgeR">clockwise &#8635;</button></span></div>
+    <p>Turned <b class="mono" id="rotNow"></b> from the sheet as it was loaded. Each turn is worked from the original image, so straightening a degree at a time cannot soften it; corners opened up off square are filled white. <kbd>Ctrl</kbd>+<kbd>Z</kbd> steps a rotation back like anything else.</p>
+    <div class="modal-actions"><button class="btn ghost" id="rotZero">Back as loaded</button><button class="btn go" id="rotDone">Done</button></div>`,
+    { locked: scaleNeeded() });
+  const cur = () => Number(store.project.background?.rotDeg) || 0;
+  const fine = () => {
+    const v = Math.abs(parseFloat(body.querySelector("#rotFine").value));
+    rotFineDeg = Number.isFinite(v) ? Math.min(45, v) : 0;
+    return rotFineDeg;
+  };
+  body.querySelector("#rotL").addEventListener("click", () => rotateDrawing(cur() - 90));
+  body.querySelector("#rotR").addEventListener("click", () => rotateDrawing(cur() + 90));
+  body.querySelector("#rot180").addEventListener("click", () => rotateDrawing(cur() + 180));
+  body.querySelector("#rotNudgeL").addEventListener("click", () => rotateDrawing(cur() - fine()));
+  body.querySelector("#rotNudgeR").addEventListener("click", () => rotateDrawing(cur() + fine()));
+  body.querySelector("#rotZero").addEventListener("click", () => rotateDrawing(0));
+  body.querySelector("#rotFine").addEventListener("wheel", (e) => e.target.blur(), { passive: true });
+  // straightened or not, an uncalibrated sheet goes back to the scale gate
+  body.querySelector("#rotDone").addEventListener("click", () => { closeModal(true); scaleGate(); });
+  renderRotateNote();
+}
+$("#zRot").addEventListener("click", rotateDialog);
 
 // drop a PDF, an image or a saved project anywhere on the board or the sheet
 ["dragover", "drop"].forEach((ev) => {
@@ -697,7 +834,8 @@ function renderStatus(results) {
     plan += dist(a, b) / px;
     installed += Number(s.engineeringLengthM) > 0 ? Number(s.engineeringLengthM) : routeLengthM(a, b, px);
   }
-  const systems = results ? allComputedSystems(results) : [];
+  // only systems with something on them — an empty job shows no system cells
+  const systems = (results ? allComputedSystems(results) : []).filter((x) => x.segments.length || x.terminals.length || x.plant);
   const issues = results ? checkIssues(results) : [];
   const bad = issues.filter((i) => i.lvl === "bad").length;
   let html = cell(p.mode === "concept" ? "Concept" : "Scale", p.mode === "concept" && !p.background ? "schematic" : (p.scale.pxPerMeter > 0 ? `${round(p.scale.pxPerMeter, 1)} px/m` : "not set"), scaleNeeded() ? "bad" : "")
@@ -711,6 +849,7 @@ function renderStatus(results) {
   html += cell("Duct on plan", `${round(plan, 1)} m`)
     + cell("Installed", `${round(installed, 1)} m`)
     + cell("Check", issues.length ? `${issues.length} to look at` : "clean", bad ? "bad click" : issues.length ? "warn click" : "click", 'id="stCheck"')
+    + (p.background && Number(p.background.rotDeg) ? cell("Sheet turned", `${round(Number(p.background.rotDeg), 1)}°`) : "")
     + (p.meta.rev ? cell("File", `rev ${p.meta.rev}`) : "");
   st.innerHTML = html;
   $("#stUnit")?.addEventListener("click", () => setFlowUnit(unit === "m3/h" ? "l/s" : "m3/h"));
@@ -764,6 +903,7 @@ window.addEventListener("keydown", (e) => {
     renderHint();
     return;
   }
+  if (e.shiftKey && e.key.toLowerCase() === "r" && !ctrl) { rotateDialog(); return; }
   if (ctrl || e.altKey) return;
   const k = e.key.toLowerCase();
   if (k === "o") { store.project.settings.ortho = store.project.settings.ortho === false; store.persist(); renderHint(); renderStatus(lastResults); toast(store.project.settings.ortho !== false ? "Corners square up to 90° and 45°" : "Corners free — Alt squares one up"); return; }
@@ -791,6 +931,8 @@ function renderChrome() {
   const needs = !started;
   for (const id of ["#bCheck", "#b3d", "#bSched", "#bPdf", "#bSave"]) $(id).disabled = needs;
   $("#b3d").classList.toggle("on", store.viewMode === "3d");
+  $("#zRot").disabled = !p.background;
+  $("#zRot").style.opacity = p.background ? "" : ".35";
   $("#bSched").classList.toggle("on", $("#drawer").classList.contains("on"));
   modeSel.value = store.visualMode;
   // a tool set from somewhere else (the scale finishing, Esc) lights its rail button
