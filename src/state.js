@@ -2,7 +2,7 @@
 // history, and persistence. A tiny pub/sub lets the UI re-render on change.
 
 import { dist } from "./geom.js";
-import { defaultProps, componentDef } from "./standards/components.js";
+import { defaultProps, componentDef, isDualPort } from "./standards/components.js";
 import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf } from "./layout.js";
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
@@ -78,6 +78,7 @@ export function newProject(name = "Untitled project") {
     segments: [],
     components: [],
     rooms: [],
+    measures: [], // tape measures: [{ id, pts: [{x,y}] }] — plan metres only, never a duct
     physical: null,
     engineeringLocked: false,
   };
@@ -113,6 +114,7 @@ export function migrateProject(raw) {
   p.settings.flowUnit = normalizeFlowUnit(p.settings.flowUnit);
   p.meta = { ...p.meta, version: 4 };
   p.physical = raw.physical || null;
+  p.measures = Array.isArray(raw.measures) ? raw.measures.filter((m) => Array.isArray(m?.pts) && m.pts.length >= 2) : [];
   p.engineeringLocked = !!raw.engineeringLocked;
   const settings = p.settings;
   settings.insulationBySystem = {
@@ -132,7 +134,7 @@ export function migrateProject(raw) {
     const n = p.nodes.find((x) => x.id === c.nodeId);
     if (n && !Number.isFinite(Number(n.z))) n.z = c.heightM;
     if (componentDef(c.kind)?.role === "plant") c.props = migratePlantFlow(c.props);
-    if (c.system === "both" && c.kind === "ahu" && !c.returnNodeId) {
+    if (c.system === "both" && isDualPort(c.kind) && !c.returnNodeId) {
       const off = portOffset("extract");
       const at = connPoint(c, off, pxPerMeterOf(p));
       const rn = { id: uid("n"), x: at.x, y: at.y, z: c.heightM };
@@ -202,9 +204,39 @@ export class Store {
     this.emit();
   }
 
+  // Continuous changes (a drag, a pan) redraw once per frame, not once per
+  // pointer event — every emit re-solves the network.
+  emitSoon() {
+    if (this._emitRaf) return;
+    const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (f) => setTimeout(f, 16);
+    this._emitRaf = raf(() => { this._emitRaf = 0; this.emit(); });
+  }
+
+  persistSoon() {
+    clearTimeout(this._persistT);
+    this._persistT = setTimeout(() => this.persist(), 400);
+  }
+
+  // The take-off is written every time; the drawing only when it changes,
+  // under its own key, because it is by far the biggest part and a sheet too
+  // big for the store must not stop the take-off being kept.
   persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.project));
+      const bg = this.project.background;
+      const lite = bg ? { ...this.project, background: { ...bg, dataUrl: null, stored: true } } : this.project;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(lite));
+      const token = bg ? `${bg.dataUrl?.length || 0}:${bg.width}x${bg.height}` : "";
+      if (token !== this._bgToken) {
+        this._bgToken = token;
+        try {
+          if (bg?.dataUrl) localStorage.setItem(STORAGE_KEY + ":drawing", bg.dataUrl);
+          else localStorage.removeItem(STORAGE_KEY + ":drawing");
+          this.drawingNotStored = false;
+        } catch (e) {
+          this.drawingNotStored = true;
+          try { localStorage.removeItem(STORAGE_KEY + ":drawing"); } catch (_) { /* ignore */ }
+        }
+      }
     } catch (e) {
       /* storage may be unavailable */
     }
@@ -214,8 +246,17 @@ export class Store {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        this.project = migrateProject(JSON.parse(raw));
+        const data = JSON.parse(raw);
+        if (data.background && !data.background.dataUrl) {
+          const img = localStorage.getItem(STORAGE_KEY + ":drawing");
+          if (img) data.background.dataUrl = img;
+          else data.background = null;
+        }
+        if (data.background) delete data.background.stored;
+        this.project = migrateProject(data);
         this.traceHeight = this.project.settings.defaultDuctHeight;
+        const bg = this.project.background;
+        this._bgToken = bg ? `${bg.dataUrl?.length || 0}:${bg.width}x${bg.height}` : "";
         return true;
       }
     } catch (e) {
@@ -299,8 +340,8 @@ export class Store {
 
   syncComponentPorts(c) {
     const px = pxPerMeterOf(this.project);
-    const supplyOff = c.system === "both" && c.kind === "ahu" ? portOffset("supply") : null;
-    const extractOff = c.system === "both" && c.kind === "ahu" ? portOffset("extract") : null;
+    const supplyOff = c.system === "both" && isDualPort(c.kind) ? portOffset("supply") : null;
+    const extractOff = c.system === "both" && isDualPort(c.kind) ? portOffset("extract") : null;
     const n = this.project.nodes.find((x) => x.id === c.nodeId);
     if (n) {
       const at = connPoint(c, supplyOff, px);
@@ -308,7 +349,7 @@ export class Store {
       n.y = at.y;
       n.z = Number.isFinite(Number(c.heightM)) ? c.heightM : n.z;
     }
-    if (c.system === "both" && c.kind === "ahu") {
+    if (c.system === "both" && isDualPort(c.kind)) {
       if (!c.returnNodeId) {
         const at = connPoint(c, extractOff, px);
         const rn = { id: uid("n"), x: at.x, y: at.y, z: c.heightM ?? this.project.settings.defaultAhuHeight };
@@ -339,7 +380,7 @@ export class Store {
       kind,
       nodeId: null,
       returnNodeId: null,
-      system: kind === "ahu" && system === "both" ? "both" : system,
+      system: isDualPort(kind) && system === "both" ? "both" : system,
       x: point.x,
       y: point.y,
       widthM: foot.w,
@@ -375,7 +416,7 @@ export class Store {
 
   setComponentSystem(c, system) {
     c.system = system;
-    if (c.kind === "ahu" && system === "both") {
+    if (isDualPort(c.kind) && system === "both") {
       this.syncComponentPorts(c);
     } else if (c.returnNodeId && system !== "both") {
       const rid = c.returnNodeId;
@@ -398,6 +439,45 @@ export class Store {
     };
     this.project.rooms.push(room);
     return room;
+  }
+
+  addMeasure(pts) {
+    const m = { id: uid("m"), pts: pts.map((q) => ({ x: q.x, y: q.y })) };
+    this.project.measures.push(m);
+    return m;
+  }
+
+  // An in-line device (damper, attenuator, heater...) dropped on a duct sits
+  // on the duct: the run is cut there and the device takes the joint, so its
+  // loss is on the path it was placed on rather than on a loose node beside it.
+  placeOnRun(seg, point, kind) {
+    const j = this.splitSegmentAt(seg, point);
+    if (!j) return null;
+    j.tee = false;
+    for (const s of this.project.segments) {
+      if (s.a === j.id || s.b === j.id) s.fittings = (s.fittings || []).filter((f) => f.type !== "tee_straight");
+    }
+    const def = componentDef(kind);
+    const foot = defaultFootprint(kind);
+    const c = {
+      id: uid("c"),
+      kind,
+      nodeId: j.id,
+      returnNodeId: null,
+      system: seg.system,
+      x: j.x,
+      y: j.y,
+      widthM: foot.w,
+      depthM: foot.d,
+      rot: 0,
+      heightM: j.z,
+      props: defaultProps(kind),
+    };
+    const a = this.project.nodes.find((n) => n.id === seg.a);
+    if (a) c.rot = Math.round((Math.atan2(j.y - a.y, j.x - a.x) * 180) / Math.PI);
+    if (!def) return null;
+    this.project.components.push(c);
+    return c;
   }
 
   splitSegmentAt(seg, point, z) {
@@ -518,6 +598,8 @@ export class Store {
       }
     } else if (sel.type === "room") {
       p.rooms = p.rooms.filter((r) => r.id !== sel.id);
+    } else if (sel.type === "measure") {
+      p.measures = (p.measures || []).filter((m) => m.id !== sel.id);
     } else if (sel.type === "node") {
       p.nodes = p.nodes.filter((n) => n.id !== sel.id);
       p.segments = p.segments.filter((s) => s.a !== sel.id && s.b !== sel.id);
@@ -548,6 +630,7 @@ export class Store {
     if (sel.type === "segment") return p.segments.find((s) => s.id === sel.id);
     if (sel.type === "component") return p.components.find((c) => c.id === sel.id);
     if (sel.type === "room") return p.rooms.find((r) => r.id === sel.id);
+    if (sel.type === "measure") return (p.measures || []).find((m) => m.id === sel.id);
     if (sel.type === "node") return p.nodes.find((n) => n.id === sel.id);
     if (sel.type === "piece") return (p.physical?.pieces || []).find((x) => x.ref === sel.id || x.sourceKey === sel.id);
     return null;

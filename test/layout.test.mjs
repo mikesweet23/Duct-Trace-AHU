@@ -66,12 +66,11 @@ test("a click on the last extract is not turned into a 45° ghost corner", () =>
   store.addSegment(store.findOrCreateNode({ x: 100, y: 200 }, 3.2), last, "extract");
   const canvas = Object.create(CanvasView.prototype);
   canvas.store = store;
-  canvas.ductLastNodeId = last.id;
-  canvas.ductLastOff = null;
+  canvas.draft = { lastNodeId: last.id, lastOff: null, count: 1 };
   store.overrideKey = false;
   store.activeSystem = "extract";
   store.project.view.zoom = 1;
-  const prev = canvas.previewPoint({ x: 396, y: 226 });
+  const prev = canvas.traceTarget({ x: 396, y: 226 });
   assert.equal(prev.snap?.kind, "component");
   assert.equal(prev.snap.component.id, g.id);
   assert.ok(Math.abs(prev.x - g.x) < 1e-6 && Math.abs(prev.y - g.y) < 1e-6);
@@ -85,14 +84,14 @@ test("placing the last extract click adds one straight run to that outlet", () =
   const before = store.project.segments.length;
   const canvas = Object.create(CanvasView.prototype);
   canvas.store = store;
-  canvas.ductLastNodeId = last.id;
-  canvas.ductLastOff = null;
+  canvas.draft = { lastNodeId: last.id, lastOff: null, count: 1 };
   store.activeSystem = "extract";
-  canvas.placeDuctPoint({ x: 396, y: 226 });
+  canvas.traceClick({ x: 396, y: 226 });
   assert.equal(store.project.segments.length, before + 1);
   const added = store.project.segments[store.project.segments.length - 1];
   const ends = [added.a, added.b];
   assert.ok(ends.includes(last.id) && ends.includes(g.nodeId));
+  assert.equal(canvas.draft, null, "joining a terminal drops the pencil");
 });
 
 test("equipment magnet still reports a hit when the click is on the grown icon", () => {

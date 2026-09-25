@@ -15,7 +15,7 @@
 //   ghost, or the far end of a parallel run.
 
 import { dist, pointSegment, toLocal } from "./geom.js";
-import { componentDef } from "./standards/components.js";
+import { componentDef, isDualPort } from "./standards/components.js";
 import {
   componentBox,
   connPoint,
@@ -37,6 +37,7 @@ export function componentWord(c) {
   const def = componentDef(c.kind);
   if (!def) return "component";
   if (c.kind === "ahu") return "AHU";
+  if (c.kind === "hrv") return "HRV";
   return def.label.toLowerCase();
 }
 
@@ -78,7 +79,7 @@ export function componentTarget(project, c, system) {
   const px = pxPerMeterOf(project);
   const port = preferredPort(c, system);
   const node = nodeOf(project, port.nodeId) || nodeOf(project, c.nodeId);
-  const dual = c.kind === "ahu" && c.system === "both" && port.off;
+  const dual = isDualPort(c.kind) && c.system === "both" && port.off;
   const at = dual
     ? connPoint(c, port.off, px)
     : node
@@ -150,6 +151,10 @@ export function snapAt(project, p, opts = {}) {
     if (n.id === skipId) continue;
     const hasComp = project.components.some((c) => c.nodeId === n.id || c.returnNodeId === n.id);
     if (hasComp) continue;
+    if (opts.runDots && system) {
+      const touching = project.segments.filter((s) => s.a === n.id || s.b === n.id);
+      if (touching.length && !touching.some((s) => s.system === system)) continue;
+    }
     const d = dist(n, p);
     if (d <= tol && (!best || d < best.d)) {
       best = {
@@ -164,6 +169,16 @@ export function snapAt(project, p, opts = {}) {
     }
   }
   if (best) return best;
+
+  // Trace mode: a run of the system being traced shows a dot where the
+  // cursor meets it, and a click there cuts a T-piece exactly on the pipe.
+  // Without this a click on a duct dropped a loose node on top of it that
+  // looked joined and was not — the branch then read "no flow".
+  if (opts.runDots) {
+    const dot = hitRunDot(project, p, opts);
+    if (dot) return dot;
+    return null;
+  }
 
   const hit = hitSegment(project, p, 10 / zoom);
   if (!hit) return null;
@@ -203,4 +218,48 @@ export function snapAt(project, p, opts = {}) {
 
 export function hitJointAt(project, p, zoom) {
   return hitSegment(project, p, JOINT_HIT_PX / (zoom || 1));
+}
+
+// The branch dot: nearest point on a run of the traced system, within the
+// drawn half-width of the duct plus a few screen pixels. An end within
+// SNAP_PULL_PX of that point wins, so a click just short of a corner joins
+// the corner instead of cutting a stub a few centimetres from it.
+export function hitRunDot(project, p, opts = {}) {
+  const zoom = opts.zoom || 1;
+  const skipId = opts.skipNodeId || null;
+  const system = opts.system || null;
+  const halfOf = opts.runHalfWorld || (() => 0);
+  let best = null;
+  for (const s of project.segments) {
+    if (system && s.system !== system) continue;
+    const a = nodeOf(project, s.a);
+    const b = nodeOf(project, s.b);
+    if (!a || !b) continue;
+    const r = pointSegment(p, a, b);
+    const tol = halfOf(s) + 8 / zoom;
+    if (r.distance > tol) continue;
+    if (!best || r.distance < best.r.distance) best = { seg: s, r, a, b };
+  }
+  if (!best) return null;
+  const endTol = Math.max(SNAP_PX / zoom, halfOf(best.seg) * 1.2);
+  for (const end of [best.a, best.b]) {
+    if (end.id === skipId) continue;
+    if (dist(end, best.r.point) <= endTol) {
+      const hasComp = project.components.some((c) => c.nodeId === end.id || c.returnNodeId === end.id);
+      if (hasComp) continue;
+      return { kind: "node", node: end, at: { x: end.x, y: end.y }, off: null, d: dist(end, p), what: end.tee ? "T-piece" : "end of run", name: "" };
+    }
+  }
+  if (best.a.id === skipId && dist(best.a, best.r.point) < 1 / zoom) return null;
+  if (best.b.id === skipId && dist(best.b, best.r.point) < 1 / zoom) return null;
+  return {
+    kind: "run",
+    seg: best.seg,
+    r: best.r,
+    at: { x: best.r.point.x, y: best.r.point.y },
+    d: best.r.distance,
+    z: heightAlong(best.a, best.b, best.r.t),
+    what: "branch here",
+    name: "",
+  };
 }

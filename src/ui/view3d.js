@@ -134,6 +134,22 @@ export class View3D {
     return { x: sx, y: sy, depth };
   }
 
+  // Named views, the same row as Pipe Trace's 3D check.
+  setView(v) {
+    const W = this.world();
+    const w = this.canvas.clientWidth || 800, h = this.canvas.clientHeight || 600;
+    if (v === "iso") { this.az = -0.62; this.el = 0.62; }
+    else if (v === "front") { this.az = 0; this.el = 0.15; }
+    else if (v === "side") { this.az = -Math.PI / 2; this.el = 0.15; }
+    else if (v === "plan") { this.az = 0; this.el = 1.35; }
+    if (v === "fit" || v === "iso") {
+      this.scale = Math.max(8, Math.min(160, Math.min(w, h) / (W.spanM * 1.35)));
+      this.panX = 0;
+      this.panY = -h * 0.08;
+    }
+    this.draw();
+  }
+
   hidden(system) {
     return this.store.hiddenSystems?.has(system);
   }
@@ -144,7 +160,7 @@ export class View3D {
     ctx.save();
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
-    ctx.fillStyle = "#0d1526";
+    ctx.fillStyle = "#f1efe9";
     ctx.fillRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
 
     const W = this.world();
@@ -155,8 +171,8 @@ export class View3D {
     const step = W.spanM > 30 ? 5 : W.spanM > 12 ? 2 : 1;
     for (let g = -Math.ceil(half / step) * step; g <= half + 0.001; g += step) {
       const major = Math.abs(g) < 0.001;
-      items.push({ t: "line", pts: [this.toXYZ(W, { x: W.cx + g * W.s, y: W.cy - half * W.s }, 0), this.toXYZ(W, { x: W.cx + g * W.s, y: W.cy + half * W.s }, 0)], c: major ? "#334155" : "#1e293b", w: major ? 1.2 : 0.7, ground: true });
-      items.push({ t: "line", pts: [this.toXYZ(W, { x: W.cx - half * W.s, y: W.cy + g * W.s }, 0), this.toXYZ(W, { x: W.cx + half * W.s, y: W.cy + g * W.s }, 0)], c: major ? "#334155" : "#1e293b", w: major ? 1.2 : 0.7, ground: true });
+      items.push({ t: "line", pts: [this.toXYZ(W, { x: W.cx + g * W.s, y: W.cy - half * W.s }, 0), this.toXYZ(W, { x: W.cx + g * W.s, y: W.cy + half * W.s }, 0)], c: major ? "#bfb9ac" : "#dcd8cf", w: major ? 1.2 : 0.7, ground: true });
+      items.push({ t: "line", pts: [this.toXYZ(W, { x: W.cx - half * W.s, y: W.cy + g * W.s }, 0), this.toXYZ(W, { x: W.cx + half * W.s, y: W.cy + g * W.s }, 0)], c: major ? "#bfb9ac" : "#dcd8cf", w: major ? 1.2 : 0.7, ground: true });
     }
 
     const mode = this.mode();
@@ -170,7 +186,7 @@ export class View3D {
       const z = n.z || 0;
       const c = this.toXYZ(W, n, z);
       if (Math.abs(z) > 0.02) {
-        items.push({ t: "line", pts: [this.toXYZ(W, n, 0), c], c: "#64748b", w: 1, dash: true });
+        items.push({ t: "line", pts: [this.toXYZ(W, n, 0), c], c: "#a8a295", w: 1, dash: true });
       }
     }
 
@@ -185,9 +201,9 @@ export class View3D {
       const bw = foot.w * grow;
       const bd = foot.d * grow;
       const bh = Math.max(foot.t, 0.18) * grow;
-      const fill = comp.kind === "ahu" ? "#1e3a8a" : def.color;
+      const fill = def.color;
       cuboid(center, bw, bd, bh / this.ex, foot.rot).forEach((face) => {
-        items.push({ t: "poly", pts: face, fill, stroke: "#e2e8f0", z: center.Z, alpha: mode === "transparent" ? 0.35 : 0.92 });
+        items.push({ t: "poly", pts: face, fill, stroke: "rgba(0,0,0,0.35)", z: center.Z, alpha: mode === "transparent" ? 0.35 : 0.92 });
       });
       items.push({ t: "label", at: { X: center.X, Y: center.Y, Z: center.Z + bh / 2 / this.ex + 0.12 }, text: comp.label || def.label, sub: `${round(z, 2)} m` });
     }
@@ -218,17 +234,17 @@ export class View3D {
         ctx.globalAlpha = it.alpha ?? (mode === "transparent" ? 0.32 : 0.92);
         ctx.fill();
         ctx.globalAlpha = 1;
-        ctx.strokeStyle = it.stroke || "rgba(226,232,240,0.35)";
+        ctx.strokeStyle = it.stroke || "rgba(0,0,0,0.25)";
         ctx.lineWidth = it.selected ? 1.6 : 0.7;
         ctx.stroke();
       } else if (it.t === "label") {
         const q = this.project(it.at);
-        ctx.fillStyle = "#e6edf7";
-        ctx.font = "11px system-ui";
+        ctx.fillStyle = "#1d2433";
+        ctx.font = "600 11px Archivo, system-ui";
         ctx.textAlign = "center";
         ctx.fillText(it.text, q.x, q.y);
-        ctx.fillStyle = "#93a4c3";
-        ctx.font = "10px system-ui";
+        ctx.fillStyle = "#56607a";
+        ctx.font = "10px 'Azeret Mono', monospace";
         ctx.fillText(it.sub, q.x, q.y + 12);
       }
     }
@@ -247,7 +263,7 @@ export class View3D {
       if (!a || !b) continue;
       const res = this.segRes(s.id);
       const selected = sel?.type === "segment" && sel.id === s.id;
-      const col = selected ? "#38bdf8" : mode === "velocity" ? pieceFill({ velocity: res?.velocity }, "velocity")
+      const col = selected ? "#e0a422" : mode === "velocity" ? pieceFill({ velocity: res?.velocity }, "velocity")
         : mode === "pressure" ? pieceFill({ dpPa: res?.dpPa }, "pressure")
         : systemColor(s.system);
       const za = a.z || 0, zb = b.z || 0;
@@ -287,13 +303,13 @@ export class View3D {
           t: "poly",
           pts: face.map((q) => this.toXYZM(W, q)),
           fill,
-          stroke: selected ? "#e0f2fe" : "rgba(226,232,240,0.28)",
+          stroke: selected ? "#7a5300" : "rgba(0,0,0,0.22)",
           selected,
           alpha: mode === "transparent" ? 0.28 : piece.kind === "coupler" ? 0.95 : 0.88,
         });
       }
       for (const line of mesh.lines) {
-        items.push({ t: "line", pts: line.map((q) => this.toXYZM(W, q)), c: selected ? "#fff" : "rgba(226,232,240,0.55)", w: piece.construction === "spiral" ? 1.1 : 0.8 });
+        items.push({ t: "line", pts: line.map((q) => this.toXYZM(W, q)), c: selected ? "#7a5300" : "rgba(255,255,255,0.55)", w: piece.construction === "spiral" ? 1.1 : 0.8 });
       }
       if (piece.a && piece.b) {
         const mid = {
@@ -310,7 +326,7 @@ export class View3D {
             { x: piece.b.x / W.s, y: piece.b.y / W.s, z: piece.b.z || 0 },
           );
           if (arrow) {
-            items.push({ t: "line", pts: [this.toXYZM(W, arrow.tail), this.toXYZM(W, arrow.tip)], c: "#f8fafc", w: 2.2 });
+            items.push({ t: "line", pts: [this.toXYZM(W, arrow.tail), this.toXYZM(W, arrow.tip)], c: "#1d2433", w: 2.2 });
             items.push({ t: "label", at, text: piece.flowM3s ? formatFlow(piece.flowM3s, p.settings.flowUnit) : piece.ref, sub: piece.velocity ? `${round(piece.velocity, 1)} m/s` : "" });
           }
         }
@@ -336,21 +352,20 @@ export class View3D {
     const a = { X: sx, Y: sy, Z: 0 };
     const b = { X: sx, Y: sy, Z: top * this.ex };
     const pa = this.project(a), pb = this.project(b);
-    ctx.strokeStyle = "#94a3b8";
+    ctx.strokeStyle = "#8a8f9d";
     ctx.lineWidth = 1.4;
     ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = "10px system-ui";
+    ctx.fillStyle = "#56607a";
+    ctx.font = "10px 'Azeret Mono', monospace";
     ctx.textAlign = "right";
     for (let m = 0; m <= top; m++) {
       const t = this.project({ X: sx, Y: sy, Z: m * this.ex });
       ctx.fillText(`${m} m`, t.x - 6, t.y + 3);
     }
     ctx.textAlign = "left";
-    ctx.fillStyle = "#64748b";
+    ctx.fillStyle = "#8a8f9d";
     const exploded = this.store.exploded ? " · exploded" : "";
-    ctx.fillText(`Heights above finished floor · ${VISUAL_MODES.find((m) => m.key === mode)?.label || mode}${exploded}`, 16, this.canvas.clientHeight - 16);
-    ctx.fillText("Drag to orbit · Shift-drag to pan · scroll to zoom · click a piece to select", 16, this.canvas.clientHeight - 32);
+    ctx.fillText(`Heights above finished floor · ${VISUAL_MODES.find((m) => m.key === mode)?.label || mode}${exploded}`, 16, 22);
   }
 
   segRes(id) {
