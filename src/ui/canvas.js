@@ -998,7 +998,8 @@ export class CanvasView {
         if (Math.abs(off.u) === 1) dy = 0; else dx = 0;
         const ox = (dx * Math.cos(rot) - dy * Math.sin(rot)) * 17 / z;
         const oy = (dx * Math.sin(rot) + dy * Math.cos(rot)) * 12 / z;
-        this.chip(ctx, systemInfo(key).code, x + ox, y + oy, { size: 8.5, mono: true, bold: true, bg: col, color: "#fff" });
+        // IN on the internal face, EX on the external; the colour says which airstream
+        this.chip(ctx, systemInfo(key).outside ? "EX" : "IN", x + ox, y + oy, { size: 8.5, mono: true, bold: true, bg: col, color: "#fff" });
       }
     }
   }

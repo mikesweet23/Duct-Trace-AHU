@@ -118,19 +118,24 @@ export function hitHandle(c, p, pxPerMeter, zoom) {
 }
 
 // A two-port unit (AHU, HRV) serving supply and extract has four
-// connections. `portLayout` says where they are on the casing, in the
-// unit's own frame (u across its width, v across its depth):
+// connections, two on each face: the INTERNAL face (IN) carries supply and
+// extract to and from the building, the EXTERNAL face (EX) fresh air in and
+// exhaust out. Each airstream runs straight through the box. `portLayout`
+// says which way round, in the unit's own frame (u across its width, v
+// across its depth):
 //
-//   "inline" (new units) — building side on the right, outside on the left,
-//     each airstream running straight through the box:
-//         ODA (-1,-0.5) ──► SUP (1,-0.5)
-//         EHA (-1, 0.5) ◄── ETA (1, 0.5)
-//   "sides" (units drawn before there were four) — supply right, extract
-//     left as they always were, fresh air on top, exhaust underneath, so
-//     nothing already traced moves.
+//   "inline"  — internal on the right, external on the left
+//         EX ODA (-1,-0.5) ──► IN SUP (1,-0.5)
+//         EX EHA (-1, 0.5) ◄── IN ETA (1, 0.5)
+//   "flipped" — the same, mirrored: internal on the left
+//
+// Turning the unit with its handle turns the faces with it. There is no
+// layout with a connection on every face: a unit saved with the old
+// supply-right / extract-left / fresh-air-top layout ("sides") opens as
+// "inline", and its ducts follow the connections round.
 export const PORT_LAYOUTS = {
   inline: { supply: { u: 1, v: -0.5 }, extract: { u: 1, v: 0.5 }, outdoor: { u: -1, v: -0.5 }, exhaust: { u: -1, v: 0.5 } },
-  sides: { supply: { u: 1, v: 0 }, extract: { u: -1, v: 0 }, outdoor: { u: 0, v: -1 }, exhaust: { u: 0, v: 1 } },
+  flipped: { supply: { u: -1, v: -0.5 }, extract: { u: -1, v: 0.5 }, outdoor: { u: 1, v: -0.5 }, exhaust: { u: 1, v: 0.5 } },
 };
 
 export function portOffset(system, layout = "inline") {

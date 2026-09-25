@@ -572,12 +572,12 @@ table.schedule tr.over-vel td { color: var(--alarm); }
       </div>
 
       <div class="tpal" id="tpal" aria-label="Which airstream to trace">
-        <b>Inside the building</b>
-        <button type="button" data-tsys="supply"><i class="sw"></i>Supply<span class="sub">SUP · unit to the rooms</span></button>
-        <button type="button" data-tsys="extract"><i class="sw"></i>Extract<span class="sub">ETA · rooms back to unit</span></button>
-        <b>To and from outside</b>
-        <button type="button" data-tsys="outdoor"><i class="sw"></i>Fresh air in<span class="sub">ODA · outside to unit</span></button>
-        <button type="button" data-tsys="exhaust"><i class="sw"></i>Exhaust out<span class="sub">EHA · unit to outside</span></button>
+        <b>IN — internal</b>
+        <button type="button" data-tsys="supply"><i class="sw"></i>Supply<span class="sub">IN · unit to the rooms</span></button>
+        <button type="button" data-tsys="extract"><i class="sw"></i>Extract<span class="sub">IN · rooms back to unit</span></button>
+        <b>EX — external</b>
+        <button type="button" data-tsys="outdoor"><i class="sw"></i>Fresh air in<span class="sub">EX · outside to unit</span></button>
+        <button type="button" data-tsys="exhaust"><i class="sw"></i>Exhaust out<span class="sub">EX · unit to outside</span></button>
       </div>
 
       <div class="vpal" id="cpal">
@@ -1035,7 +1035,7 @@ const COMPONENTS = {
     label: "Fresh-air intake louvre",
     category: "terminal",
     role: "terminal",
-    symbol: "ODA",
+    symbol: "FRESH",
     color: "#15803d",
     system: "outdoor",
     outside: true,
@@ -1047,7 +1047,7 @@ const COMPONENTS = {
     label: "Exhaust louvre",
     category: "terminal",
     role: "terminal",
-    symbol: "EHA",
+    symbol: "EXHAUST",
     color: "#7c4a1e",
     system: "exhaust",
     outside: true,
@@ -1059,7 +1059,7 @@ const COMPONENTS = {
     label: "Roof exhaust cowl",
     category: "terminal",
     role: "terminal",
-    symbol: "RC",
+    symbol: "EXH",
     color: "#7c4a1e",
     system: "exhaust",
     outside: true,
@@ -1071,7 +1071,7 @@ const COMPONENTS = {
     label: "Roof fresh-air intake",
     category: "terminal",
     role: "terminal",
-    symbol: "RI",
+    symbol: "FRESH",
     color: "#15803d",
     system: "outdoor",
     outside: true,
@@ -1316,19 +1316,24 @@ function hitHandle(c, p, pxPerMeter, zoom) {
 }
 
 // A two-port unit (AHU, HRV) serving supply and extract has four
-// connections. `portLayout` says where they are on the casing, in the
-// unit's own frame (u across its width, v across its depth):
+// connections, two on each face: the INTERNAL face (IN) carries supply and
+// extract to and from the building, the EXTERNAL face (EX) fresh air in and
+// exhaust out. Each airstream runs straight through the box. `portLayout`
+// says which way round, in the unit's own frame (u across its width, v
+// across its depth):
 //
-//   "inline" (new units) — building side on the right, outside on the left,
-//     each airstream running straight through the box:
-//         ODA (-1,-0.5) ──► SUP (1,-0.5)
-//         EHA (-1, 0.5) ◄── ETA (1, 0.5)
-//   "sides" (units drawn before there were four) — supply right, extract
-//     left as they always were, fresh air on top, exhaust underneath, so
-//     nothing already traced moves.
+//   "inline"  — internal on the right, external on the left
+//         EX ODA (-1,-0.5) ──► IN SUP (1,-0.5)
+//         EX EHA (-1, 0.5) ◄── IN ETA (1, 0.5)
+//   "flipped" — the same, mirrored: internal on the left
+//
+// Turning the unit with its handle turns the faces with it. There is no
+// layout with a connection on every face: a unit saved with the old
+// supply-right / extract-left / fresh-air-top layout ("sides") opens as
+// "inline", and its ducts follow the connections round.
 const PORT_LAYOUTS = {
   inline: { supply: { u: 1, v: -0.5 }, extract: { u: 1, v: 0.5 }, outdoor: { u: -1, v: -0.5 }, exhaust: { u: -1, v: 0.5 } },
-  sides: { supply: { u: 1, v: 0 }, extract: { u: -1, v: 0 }, outdoor: { u: 0, v: -1 }, exhaust: { u: 0, v: 1 } },
+  flipped: { supply: { u: -1, v: -0.5 }, extract: { u: -1, v: 0.5 }, outdoor: { u: 1, v: -0.5 }, exhaust: { u: 1, v: 0.5 } },
 };
 
 function portOffset(system, layout = "inline") {
@@ -1385,7 +1390,7 @@ const SNAP_PULL_PX = 36;
 const JOINT_HIT_PX = 18;
 const EQUIP_HIT_PX = 22;
 
-const PORT_WORD = { supply: "supply (SUP)", extract: "extract (ETA)", outdoor: "fresh air (ODA)", exhaust: "exhaust (EHA)" };
+const PORT_WORD = { supply: "IN supply", extract: "IN extract", outdoor: "EX fresh air", exhaust: "EX exhaust" };
 
 function nodeZ(n, fallback = 0) {
   const z = Number(n?.z);
@@ -2032,7 +2037,7 @@ __m["src/state.js"] = (() => {
 
 const { dist } = __m["src/geom.js"];
 const { defaultProps, componentDef, isDualPort } = __m["src/standards/components.js"];
-const { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY } = __m["src/layout.js"];
+const { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } = __m["src/layout.js"];
 const { heightAlong } = __m["src/snap.js"];
 const { normalizeFlowUnit } = __m["src/units.js"];
 const { RECOMMENDED_VELOCITY } = __m["src/standards/dw144.js"];
@@ -2169,7 +2174,7 @@ function migrateProject(raw) {
       // a unit drawn before it had four connections keeps supply right and
       // extract left, so nothing already traced moves; fresh air and exhaust
       // are added top and bottom
-      if (!c.portLayout) c.portLayout = c.returnNodeId ? "sides" : "inline";
+      if (!PORT_LAYOUTS[c.portLayout]) c.portLayout = "inline"; // "sides" and anything unknown
       syncPorts(p, c);
     }
   }
@@ -2791,13 +2796,13 @@ function seedDemo(store) {
     };
   };
   p.components = [
-    comp("cAHU", "ahu", "nAHU", "both", 120, 380, {
+    comp("cAHU", "ahu", "nAHU", "both", 120, 394, {
       availableStaticPa: 350,
       extractStaticPa: 280,
       designFlow_ls: 480,
       extractFlow_ls: 420,
       supplyTempC: 18,
-    }, { returnNodeId: "nAHUr", outdoorNodeId: "nODAp", exhaustNodeId: "nEHAp", portLayout: "sides", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
+    }, { returnNodeId: "nAHUr", outdoorNodeId: "nODAp", exhaustNodeId: "nEHAp", portLayout: "inline", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
     comp("cODA", "intake_louvre", "nODA", "outdoor", 120, 150, {}, { heightM: 3.0 }),
     comp("cEHA", "exhaust_louvre", "nEHA", "exhaust", 120, 640, {}, { heightM: 3.0 }),
     comp("cFD", "fire_damper", "nT1", "supply", 320, 380, { lossPa: 15 }, { heightM: 3.2 }),
@@ -2825,10 +2830,14 @@ function seedDemo(store) {
   if (ret && rise) { rise.x = ret.x; rise.y = ret.y; }
   const ec = p.nodes.find((n) => n.id === "nEc");
   if (ret && ec) ec.x = ret.x;
-  // the outside ducts drop straight off the ODA / EHA connections
-  for (const [port, corner] of [["nODAp", "nODAc"], ["nEHAp", "nEHAc"]]) {
+  // the external ducts rise off the fresh-air / exhaust connections and run
+  // straight to their louvres
+  for (const [port, corner, end, comp] of [["nODAp", "nODAc", "nODA", "cODA"], ["nEHAp", "nEHAc", "nEHA", "cEHA"]]) {
     const a = p.nodes.find((n) => n.id === port), b = p.nodes.find((n) => n.id === corner);
+    const e = p.nodes.find((n) => n.id === end), c = p.components.find((x) => x.id === comp);
     if (a && b) { b.x = a.x; b.y = a.y; }
+    if (a && e) e.x = a.x;
+    if (a && c) c.x = a.x;
   }
   store.commit();
 }
@@ -3439,12 +3448,16 @@ __m["src/systems.js"] = (() => {
 //
 // Colours follow the usual schematic convention: outdoor green, supply blue,
 // extract yellow-orange, exhaust brown.
+//
+// On screen the codes are IN (internal — supply and extract, the building
+// side of the unit) and EX (external — fresh air and exhaust, the outside
+// side); `en` keeps the EN 16798-3 abbreviation for reference.
 
 const SYSTEMS = {
-  supply:  { key: "supply",  code: "SUP", label: "Supply",    long: "Supply air — into the building",   color: "#1f6fd1", fan: "supply",  outside: false, towardUnit: false },
-  extract: { key: "extract", code: "ETA", label: "Extract",   long: "Extract air — back from the building", color: "#c2410c", fan: "extract", outside: false, towardUnit: true },
-  outdoor: { key: "outdoor", code: "ODA", label: "Fresh air", long: "Outdoor air — fresh air in from outside", color: "#15803d", fan: "supply",  outside: true,  towardUnit: true },
-  exhaust: { key: "exhaust", code: "EHA", label: "Exhaust",   long: "Exhaust air — stale air out to outside", color: "#7c4a1e", fan: "extract", outside: true,  towardUnit: false },
+  supply:  { key: "supply",  code: "IN", en: "SUP", label: "Supply",    long: "Supply air — into the building",   color: "#1f6fd1", fan: "supply",  outside: false, towardUnit: false },
+  extract: { key: "extract", code: "IN", en: "ETA", label: "Extract",   long: "Extract air — back from the building", color: "#c2410c", fan: "extract", outside: false, towardUnit: true },
+  outdoor: { key: "outdoor", code: "EX", en: "ODA", label: "Fresh air", long: "Outdoor air — fresh air in from outside", color: "#15803d", fan: "supply",  outside: true,  towardUnit: true },
+  exhaust: { key: "exhaust", code: "EX", en: "EHA", label: "Exhaust",   long: "Exhaust air — stale air out to outside", color: "#7c4a1e", fan: "extract", outside: true,  towardUnit: false },
 };
 
 const SYSTEM_KEYS = ["supply", "extract", "outdoor", "exhaust"];
@@ -5004,7 +5017,8 @@ class CanvasView {
         if (Math.abs(off.u) === 1) dy = 0; else dx = 0;
         const ox = (dx * Math.cos(rot) - dy * Math.sin(rot)) * 17 / z;
         const oy = (dx * Math.sin(rot) + dy * Math.cos(rot)) * 12 / z;
-        this.chip(ctx, systemInfo(key).code, x + ox, y + oy, { size: 8.5, mono: true, bold: true, bg: col, color: "#fff" });
+        // IN on the internal face, EX on the external; the colour says which airstream
+        this.chip(ctx, systemInfo(key).outside ? "EX" : "IN", x + ox, y + oy, { size: 8.5, mono: true, bold: true, bg: col, color: "#fff" });
       }
     }
   }
@@ -7965,10 +7979,10 @@ class Panels {
         </select></div>`}
       ${dual && c.system === "both" ? `<div class="field"><label>Connections</label>
         <select data-k="portLayout">
-          <option value="inline" ${c.portLayout !== "sides" ? "selected" : ""}>Building side right (SUP, ETA) · outside left (ODA, EHA)</option>
-          <option value="sides" ${c.portLayout === "sides" ? "selected" : ""}>Supply right · extract left · fresh air top · exhaust bottom</option>
+          <option value="inline" ${c.portLayout !== "flipped" ? "selected" : ""}>Internal (IN) on the right · external (EX) on the left</option>
+          <option value="flipped" ${c.portLayout === "flipped" ? "selected" : ""}>Internal (IN) on the left · external (EX) on the right</option>
         </select></div>
-      <p class="small-note">Four connections: <b style="color:#1f6fd1">SUP</b> supply into the building, <b style="color:#c2410c">ETA</b> extract back from it, <b style="color:#15803d">ODA</b> fresh air in from outside, <b style="color:#7c4a1e">EHA</b> exhaust out. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box.</p>` : ""}
+      <p class="small-note">Two connections on each face. <b>IN</b> (internal, to the building): <b style="color:#1f6fd1">supply</b> and <b style="color:#c2410c">extract</b>. <b>EX</b> (external, to outside): <b style="color:#15803d">fresh air in</b> and <b style="color:#7c4a1e">exhaust out</b>. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box.</p>` : ""}
       <div class="field"><label>Type</label>
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
@@ -9148,9 +9162,9 @@ const HELP = [
     b: "<b>Room</b> <kbd>R</kbd>: click the corners, then set supply and extract targets in the inspector. Terminals inside the outline are added up against those targets." },
 
   { sec: "place", tools: ["ahu", "hrv"], t: "I want to put the AHU or heat recovery unit down",
-    b: "<b>AHU</b> <kbd>A</kbd> or <b>HRV</b> <kbd>E</kbd>, then click. The building side is on the right — supply (SUP) and extract (ETA); the outside is on the left — fresh air in (ODA) and exhaust out (EHA). Turn it with the handle above the box." },
+    b: "<b>AHU</b> <kbd>A</kbd> or <b>HRV</b> <kbd>E</kbd>, then click. Two connections on each face: <b>IN</b> (internal) on the right — supply and extract to the building; <b>EX</b> (external) on the left — fresh air in and exhaust out. Turn it with the handle above the box." },
   { sec: "place", tools: ["ahu", "hrv", "duct"], t: "I need fresh air in and stale air out, not just supply and extract",
-    b: "An AHU or HRV serving both sides has <b>four connections</b>: <b>SUP</b> supply and <b>ETA</b> extract on the building side, <b>ODA</b> fresh air in and <b>EHA</b> exhaust out on the outside. In <b>Trace</b> pick <b>Fresh air in</b> or <b>Exhaust out</b> and start on that ring. <b>Connections</b> in the inspector moves them round the casing." },
+    b: "An AHU or HRV serving both sides has <b>four connections</b>, two on each face: <b>IN</b> (internal) — supply and extract; <b>EX</b> (external) — fresh air in and exhaust out. The colour of the ring says which airstream. In <b>Trace</b> pick <b>Fresh air in</b> or <b>Exhaust out</b> and start on that ring. <b>Connections</b> in the inspector swaps which face is internal." },
   { sec: "place", tools: ["terminal"], t: "I want an intake louvre or an exhaust louvre / cowl",
     b: "<b>Terminal</b> → <i>Outside</i>: fresh-air intake louvre, roof intake, exhaust louvre, roof cowl. Leave the flow at 0 and it takes the unit's own airflow — supply for fresh air, extract for exhaust — shared if there are several." },
   { sec: "size", tools: ["select"], t: "Does the fan's static include the fresh air and exhaust ducts?",
@@ -9198,7 +9212,7 @@ const STEPS = [
   { t: "Set the scale — before anything else", b: "Two points a known distance apart, and the real figure. Every length and every size comes off it." },
   { t: "Place the unit", b: "<b>AHU</b> or <b>HRV</b> for a supply and extract unit, or a <b>Fan</b>. Supply leaves the right-hand side, extract the left." },
   { t: "Place the terminals and their flows", b: "Diffusers, grilles and extract valves from <b>Terminal</b>. Type each design flow. Rooms are optional, for a balance check." },
-  { t: "Trace supply, extract, fresh air and exhaust", b: "<b>Trace</b>, choose the airstream, start on the unit's ring for it (SUP, ETA, ODA or EHA), click the corners, finish on each terminal's ring. Branch off a duct by clicking the dot that appears on it. Change <b>Height</b> and click the same point for a riser." },
+  { t: "Trace supply, extract, fresh air and exhaust", b: "<b>Trace</b>, choose the airstream, start on the unit's ring for it (IN for supply and extract, EX for fresh air and exhaust), click the corners, finish on each terminal's ring. Branch off a duct by clicking the dot that appears on it. Change <b>Height</b> and click the same point for a riser." },
   { t: "Put the dampers and attenuators on", b: "<b>In-line</b>, then click on the duct." },
   { t: "Check, then read the sizes", b: "<b>Check</b> finds anything not joined. <b>Schedule</b> gives the sizes, velocities, the index run and the static pressure; <b>3D check</b> shows the heights." },
   { t: "Report and take-off", b: "<b>PDF</b> for the report; <b>Schedule → Fabrication / Take-off</b> for the physical model and the bill of materials; <b>Save</b> for the file." },
@@ -9386,7 +9400,7 @@ function hintText() {
     const def = componentDef(store.newComponentKind);
     if (!def) return "";
     if (def.role === "inline") return `Click on a duct to put the <b>${esc(def.label.toLowerCase())}</b> on it. Drag empty paper to pan.`;
-    if (isDualPort(store.newComponentKind)) return `Click where the <b>${esc(def.label)}</b> sits. The building side is on the right (supply SUP, extract ETA), outside on the left (fresh air ODA, exhaust EHA) — turn the unit to suit. Drag empty paper to pan.`;
+    if (isDualPort(store.newComponentKind)) return `Click where the <b>${esc(def.label)}</b> sits. Internal (IN, supply and extract) on the right, external (EX, fresh air and exhaust) on the left — turn the unit to suit. Drag empty paper to pan.`;
     if (def.outside) return `Click where the <b>${esc(def.label.toLowerCase())}</b> sits, on the outside wall or roof. Its flow follows the unit. Drag empty paper to pan.`;
     return `Click where the <b>${esc(def.label.toLowerCase())}</b> sits (${def.system || (isOutsideSystem(store.activeSystem) ? "supply" : store.activeSystem)}). Drag empty paper to pan.`;
   }
@@ -9794,8 +9808,8 @@ function checkIssues(results) {
     if (!def) continue;
     const name = c.label || def.label;
     if (isDualPort(c.kind) && c.system === "both") {
-      if (c.outdoorNodeId && !touching(c.outdoorNodeId).length && touching(c.nodeId).length) out.push({ lvl: "warn", msg: `${name} has no fresh-air (ODA) duct — trace one from an intake louvre to its ODA connection.`, sel: ["component", c.id] });
-      if (c.exhaustNodeId && !touching(c.exhaustNodeId).length && c.returnNodeId && touching(c.returnNodeId).length) out.push({ lvl: "warn", msg: `${name} has no exhaust (EHA) duct — trace one from its EHA connection to an exhaust louvre or cowl.`, sel: ["component", c.id] });
+      if (c.outdoorNodeId && !touching(c.outdoorNodeId).length && touching(c.nodeId).length) out.push({ lvl: "warn", msg: `${name} has no fresh-air duct — trace one from an intake louvre to its EX fresh-air connection.`, sel: ["component", c.id] });
+      if (c.exhaustNodeId && !touching(c.exhaustNodeId).length && c.returnNodeId && touching(c.returnNodeId).length) out.push({ lvl: "warn", msg: `${name} has no exhaust duct — trace one from its EX exhaust connection to an exhaust louvre or cowl.`, sel: ["component", c.id] });
     }
     const joined = [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean).reduce((a, id) => a + touching(id).length, 0);
     if (!joined) out.push({ lvl: def.role === "plant" ? "warn" : "bad", msg: `${name} is not connected to any duct.`, sel: ["component", c.id] });

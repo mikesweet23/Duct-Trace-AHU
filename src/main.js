@@ -170,7 +170,7 @@ function hintText() {
     const def = componentDef(store.newComponentKind);
     if (!def) return "";
     if (def.role === "inline") return `Click on a duct to put the <b>${esc(def.label.toLowerCase())}</b> on it. Drag empty paper to pan.`;
-    if (isDualPort(store.newComponentKind)) return `Click where the <b>${esc(def.label)}</b> sits. The building side is on the right (supply SUP, extract ETA), outside on the left (fresh air ODA, exhaust EHA) — turn the unit to suit. Drag empty paper to pan.`;
+    if (isDualPort(store.newComponentKind)) return `Click where the <b>${esc(def.label)}</b> sits. Internal (IN, supply and extract) on the right, external (EX, fresh air and exhaust) on the left — turn the unit to suit. Drag empty paper to pan.`;
     if (def.outside) return `Click where the <b>${esc(def.label.toLowerCase())}</b> sits, on the outside wall or roof. Its flow follows the unit. Drag empty paper to pan.`;
     return `Click where the <b>${esc(def.label.toLowerCase())}</b> sits (${def.system || (isOutsideSystem(store.activeSystem) ? "supply" : store.activeSystem)}). Drag empty paper to pan.`;
   }
@@ -578,8 +578,8 @@ function checkIssues(results) {
     if (!def) continue;
     const name = c.label || def.label;
     if (isDualPort(c.kind) && c.system === "both") {
-      if (c.outdoorNodeId && !touching(c.outdoorNodeId).length && touching(c.nodeId).length) out.push({ lvl: "warn", msg: `${name} has no fresh-air (ODA) duct — trace one from an intake louvre to its ODA connection.`, sel: ["component", c.id] });
-      if (c.exhaustNodeId && !touching(c.exhaustNodeId).length && c.returnNodeId && touching(c.returnNodeId).length) out.push({ lvl: "warn", msg: `${name} has no exhaust (EHA) duct — trace one from its EHA connection to an exhaust louvre or cowl.`, sel: ["component", c.id] });
+      if (c.outdoorNodeId && !touching(c.outdoorNodeId).length && touching(c.nodeId).length) out.push({ lvl: "warn", msg: `${name} has no fresh-air duct — trace one from an intake louvre to its EX fresh-air connection.`, sel: ["component", c.id] });
+      if (c.exhaustNodeId && !touching(c.exhaustNodeId).length && c.returnNodeId && touching(c.returnNodeId).length) out.push({ lvl: "warn", msg: `${name} has no exhaust duct — trace one from its EX exhaust connection to an exhaust louvre or cowl.`, sel: ["component", c.id] });
     }
     const joined = [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean).reduce((a, id) => a + touching(id).length, 0);
     if (!joined) out.push({ lvl: def.role === "plant" ? "warn" : "bad", msg: `${name} is not connected to any duct.`, sel: ["component", c.id] });

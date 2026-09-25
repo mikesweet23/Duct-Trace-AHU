@@ -175,15 +175,23 @@ test("tracing fresh air snaps to the unit's ODA connection, not the supply one",
   assert.equal(canvas.traceTarget({ x: 0, y: 0 }).snap?.node?.id, hrv.exhaustNodeId);
 });
 
-test("a unit drawn with two connections keeps them where they were", () => {
+test("every AHU and HRV has internal on one face and external on the other, old files included", () => {
   const { store } = setup();
   const p = store.project;
-  p.nodes.push({ id: "s", x: 60, y: 0, z: 0.3 }, { id: "r", x: -60, y: 0, z: 0.3 });
-  p.components.push({ id: "c", kind: "ahu", system: "both", nodeId: "s", returnNodeId: "r", x: 0, y: 0, widthM: 2.4, depthM: 1.2, rot: 0, heightM: 0.3, props: {} });
+  // a unit saved with a connection on every face ("sides")
+  p.nodes.push({ id: "s", x: 60, y: 0, z: 0.3 }, { id: "r", x: -60, y: 0, z: 0.3 }, { id: "o", x: 0, y: -30, z: 0.3 }, { id: "e", x: 0, y: 30, z: 0.3 });
+  p.components.push({ id: "c", kind: "hrv", system: "both", portLayout: "sides", nodeId: "s", returnNodeId: "r", outdoorNodeId: "o", exhaustNodeId: "e", x: 0, y: 0, widthM: 1.2, depthM: 0.7, rot: 0, heightM: 0.3, props: {} });
   const m = migrateProject(JSON.parse(JSON.stringify(p)));
   const c = m.components[0];
-  assert.equal(c.portLayout, "sides");
-  const s = m.nodes.find((n) => n.id === "s"), r = m.nodes.find((n) => n.id === "r");
-  assert.ok(Math.abs(s.x - 60) < 1e-6 && Math.abs(r.x + 60) < 1e-6, "supply and extract did not move");
-  assert.ok(c.outdoorNodeId && c.exhaustNodeId, "fresh air and exhaust were added");
+  assert.equal(c.portLayout, "inline");
+  const at = (id) => m.nodes.find((n) => n.id === id);
+  assert.ok(at("s").x > 0 && at("r").x > 0, "IN: supply and extract on one face");
+  assert.ok(at("o").x < 0 && at("e").x < 0, "EX: fresh air and exhaust on the other");
+  assert.equal(at("s").x, at("r").x);
+  assert.equal(at("o").x, at("e").x);
+  // mirrored
+  store.project = m;
+  c.portLayout = "flipped";
+  store.syncComponentPorts(c);
+  assert.ok(at("s").x < 0 && at("o").x > 0);
 });

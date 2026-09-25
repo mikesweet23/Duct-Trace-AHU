@@ -29,7 +29,7 @@ export const SNAP_PULL_PX = 36;
 export const JOINT_HIT_PX = 18;
 export const EQUIP_HIT_PX = 22;
 
-const PORT_WORD = { supply: "supply (SUP)", extract: "extract (ETA)", outdoor: "fresh air (ODA)", exhaust: "exhaust (EHA)" };
+const PORT_WORD = { supply: "IN supply", extract: "IN extract", outdoor: "EX fresh air", exhaust: "EX exhaust" };
 
 export function nodeZ(n, fallback = 0) {
   const z = Number(n?.z);
