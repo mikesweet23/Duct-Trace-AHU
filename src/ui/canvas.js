@@ -20,7 +20,7 @@ import { componentDef, isDualPort } from "../standards/components.js";
 import { showPrompt, toast } from "./modal.js";
 import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
 import { findSegResult, isIndexSegment } from "../calc/network.js";
-import { snapAt, hitSegment, EQUIP_HIT_PX } from "../snap.js";
+import { snapAt, hitSegment, hitComponentAt, EQUIP_HIT_PX } from "../snap.js";
 import { uid } from "../state.js";
 import { systemColor, systemInfo, SYSTEM_KEYS } from "../systems.js";
 import { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, unitPortOffset, connPoint, componentNodeIds } from "../layout.js";
@@ -39,6 +39,20 @@ const COL = {
 const FONT = "Archivo, system-ui, sans-serif";
 const MONO = "'Azeret Mono', ui-monospace, monospace";
 const CLICK_SLOP = 5; // screen px a press can wander and still be a click
+
+export function noFlowHint(segment, result, project) {
+  if (result?.flowM3s > 0) return null;
+  const wrongTerminal = project?.components?.find((c) =>
+    componentDef(c.kind)?.role === "terminal"
+    && c.system !== segment.system
+    && (c.nodeId === segment.a || c.nodeId === segment.b));
+  if (wrongTerminal) {
+    const target = systemInfo(wrongTerminal.system);
+    return `wrong air path — retrace ${target.label} (${target.en})`;
+  }
+  if (result?.connectedToPlant) return `connected — set ${systemInfo(segment.system).fan} airflow`;
+  return "not fed — join it to a unit";
+}
 
 export class CanvasView {
   constructor(canvas, store, hooks = {}) {
@@ -469,6 +483,12 @@ export class CanvasView {
   traceClick(world) {
     const store = this.store;
     const p = store.project;
+    const equipment = hitComponentAt(p, world, { zoom: this.zoom });
+    if (equipment && SYSTEM_KEYS.includes(equipment.component.system) && equipment.component.system !== store.activeSystem) {
+      const wanted = systemInfo(equipment.component.system);
+      toast(`${equipment.component.label || equipment.what} uses ${wanted.label} (${wanted.en}). Pick ${wanted.label} and trace from the matching unit connection.`);
+      return;
+    }
     const tgt = this.traceTarget(world);
     const last = this.draft ? p.nodes.find((n) => n.id === this.draft.lastNodeId) : null;
 
@@ -813,7 +833,7 @@ export class CanvasView {
         this.chip(ctx, `${size} · ${round(res.velocity, 1)} m/s`, lx, ly, { mono: true, color: res.withinVelocity ? COL.ink : "#b42318", border: "rgba(29,36,51,0.15)" });
         if (res.lengthOverride) this.chip(ctx, `${round(res.lengthM, 2)} m typed`, lx, ly + 14 / z, { size: 9.5, bg: "#fff4e0", color: "#8a5d00" });
       } else if (noFlow && segLenScr > 60) {
-        this.chip(ctx, "not fed — join it to a unit", lx, ly, { size: 9.5, bg: "#fff4e0", color: "#8a5d00" });
+        this.chip(ctx, noFlowHint(L.s, res, p), lx, ly, { size: 9.5, bg: "#fff4e0", color: "#8a5d00" });
       }
       const picked = this.store.selection?.type === "segment" && this.store.selection.id === L.s.id;
       if (picked && Math.abs((a.z || 0) - (b.z || 0)) > 0.05) {
