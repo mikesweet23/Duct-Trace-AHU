@@ -138,6 +138,18 @@ export const PORT_LAYOUTS = {
   flipped: { supply: { u: -1, v: -0.5 }, extract: { u: -1, v: 0.5 }, outdoor: { u: 1, v: -0.5 }, exhaust: { u: 1, v: 0.5 } },
 };
 
+// Where one airstream joins a particular unit: its layout, then the two
+// per-face swaps a manufacturer's handing may need — `swapInternal` puts
+// extract where supply was (and supply where extract was) on the internal
+// face, `swapExternal` does the same for fresh air and exhaust on the
+// external face. Each face swaps on its own.
+const SWAP_PARTNER = { supply: "extract", extract: "supply", outdoor: "exhaust", exhaust: "outdoor" };
+export function unitPortOffset(c, system) {
+  const outside = system === "outdoor" || system === "exhaust";
+  const swapped = outside ? !!c?.swapExternal : !!c?.swapInternal;
+  return portOffset(swapped ? SWAP_PARTNER[system] || system : system, c?.portLayout);
+}
+
 export function portOffset(system, layout = "inline") {
   const L = PORT_LAYOUTS[layout] || PORT_LAYOUTS.inline;
   return L[system] ? { ...L[system] } : null;
@@ -153,7 +165,7 @@ export function isFourPort(c) {
 export function preferredPort(c, system) {
   if (isFourPort(c)) {
     const key = PORT_NODE_KEY[system] || "nodeId";
-    return { nodeId: c[key] || c.nodeId, off: portOffset(system in PORT_NODE_KEY ? system : "supply", c.portLayout) };
+    return { nodeId: c[key] || c.nodeId, off: unitPortOffset(c, system in PORT_NODE_KEY ? system : "supply") };
   }
   return { nodeId: c.nodeId, off: null };
 }

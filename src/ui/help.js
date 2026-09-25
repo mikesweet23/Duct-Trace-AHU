@@ -30,6 +30,8 @@ export const HELP = [
     b: "<b>AHU</b> <kbd>A</kbd> or <b>HRV</b> <kbd>E</kbd>, then click. Two connections on each face: <b>IN</b> (internal) on the right — supply and extract to the building; <b>EX</b> (external) on the left — fresh air in and exhaust out. Turn it with the handle above the box." },
   { sec: "place", tools: ["ahu", "hrv", "duct"], t: "I need fresh air in and stale air out, not just supply and extract",
     b: "An AHU or HRV serving both sides has <b>four connections</b>, two on each face: <b>IN</b> (internal) — supply and extract; <b>EX</b> (external) — fresh air in and exhaust out. The colour of the ring says which airstream. In <b>Trace</b> pick <b>Fresh air in</b> or <b>Exhaust out</b> and start on that ring. <b>Connections</b> in the inspector swaps which face is internal." },
+  { sec: "place", tools: ["ahu", "hrv", "select"], t: "The unit has supply and extract (or fresh air and exhaust) the other way round",
+    b: "Pick the unit. Under <b>Connections</b>, <b>&#8645; Swap supply / extract</b> swaps the two on the internal (IN) face and <b>&#8645; Swap fresh air / exhaust</b> the two on the external (EX) face — each on its own, to match the model's handing. Ducts already on the unit move with their connection. <b>Connections</b> itself puts the internal face on the left or right." },
   { sec: "place", tools: ["terminal"], t: "I want an intake louvre or an exhaust louvre / cowl",
     b: "<b>Terminal</b> → <i>Outside</i>: fresh-air intake louvre, roof intake, exhaust louvre, roof cowl. Leave the flow at 0 and it takes the unit's own airflow — supply for fresh air, extract for exhaust — shared if there are several." },
   { sec: "size", tools: ["select"], t: "Does the fan's static include the fresh air and exhaust ducts?",

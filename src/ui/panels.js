@@ -357,7 +357,7 @@ export class Panels {
       .join("");
     const dual = isDualPort(c.kind);
     return h`
-      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "SUP · ETA · ODA · EHA" : (SYSTEMS[c.system]?.label || c.system)}</span></div>
+      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "IN supply · extract — EX fresh air · exhaust" : (SYSTEMS[c.system]?.label || c.system)}</span></div>
       <div class="field"><label>Custom label</label><input type="text" data-k="label" value="${c.label || ""}" placeholder="${def.label}"/></div>
       ${def.system ? `<div class="field"><label>System</label><span class="badge">${SYSTEMS[def.system].label} (${SYSTEMS[def.system].code})</span></div>` : `<div class="field"><label>System</label>
         <select data-k="system">
@@ -371,7 +371,21 @@ export class Panels {
           <option value="inline" ${c.portLayout !== "flipped" ? "selected" : ""}>Internal (IN) on the right · external (EX) on the left</option>
           <option value="flipped" ${c.portLayout === "flipped" ? "selected" : ""}>Internal (IN) on the left · external (EX) on the right</option>
         </select></div>
-      <p class="small-note">Two connections on each face. <b>IN</b> (internal, to the building): <b style="color:#1f6fd1">supply</b> and <b style="color:#c2410c">extract</b>. <b>EX</b> (external, to outside): <b style="color:#15803d">fresh air in</b> and <b style="color:#7c4a1e">exhaust out</b>. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box.</p>` : ""}
+      <div class="field"><label>Internal face — which is on top</label>
+        <select data-k="swapInternal">
+          <option value="false" ${!c.swapInternal ? "selected" : ""}>Supply first, extract second</option>
+          <option value="true" ${c.swapInternal ? "selected" : ""}>Extract first, supply second (swapped)</option>
+        </select></div>
+      <div class="field"><label>External face — which is on top</label>
+        <select data-k="swapExternal">
+          <option value="false" ${!c.swapExternal ? "selected" : ""}>Fresh air first, exhaust second</option>
+          <option value="true" ${c.swapExternal ? "selected" : ""}>Exhaust first, fresh air second (swapped)</option>
+        </select></div>
+      <div class="row-actions">
+        <button class="btn ghost tiny" data-act="swapInternal">&#8645; Swap supply / extract</button>
+        <button class="btn ghost tiny" data-act="swapExternal">&#8645; Swap fresh air / exhaust</button>
+      </div>
+      <p class="small-note">Two connections on each face. <b>IN</b> (internal, to the building): <b style="color:#1f6fd1">supply</b> and <b style="color:#c2410c">extract</b>. <b>EX</b> (external, to outside): <b style="color:#15803d">fresh air in</b> and <b style="color:#7c4a1e">exhaust out</b>. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box. If the model has supply and extract (or fresh air and exhaust) the other way round, swap that face below — each face swaps on its own, and ducts already on the unit move with their connection.</p>` : ""}
       <div class="field"><label>Type</label>
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
@@ -514,6 +528,9 @@ export class Panels {
         } else if (sel.type === "component" && key === "heightM") {
           obj.heightM = val;
           store.syncComponentPorts(obj);
+        } else if (sel.type === "component" && (key === "swapInternal" || key === "swapExternal")) {
+          obj[key] = val === "true";
+          store.syncComponentPorts(obj);
         } else if (sel.type === "component" && key === "portLayout") {
           obj.portLayout = val;
           store.syncComponentPorts(obj);
@@ -639,6 +656,11 @@ export class Panels {
           store.snapshot();
           const copy = store.duplicateComponent(obj);
           if (copy) store.select("component", copy.id);
+          commit();
+        } else if (act === "swapInternal" || act === "swapExternal") {
+          store.snapshot();
+          obj[act] = !obj[act];
+          store.syncComponentPorts(obj);
           commit();
         } else if (act === "levelRun") {
           store.snapshot();

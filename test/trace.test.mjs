@@ -195,3 +195,35 @@ test("every AHU and HRV has internal on one face and external on the other, old 
   store.syncComponentPorts(c);
   assert.ok(at("s").x < 0 && at("o").x > 0);
 });
+
+test("each face of a unit can swap its two connections on its own", () => {
+  const { store, hrv } = fourPortJob();
+  const at = (id) => store.project.nodes.find((n) => n.id === id);
+  const y0 = { s: at(hrv.nodeId).y, e: at(hrv.returnNodeId).y, o: at(hrv.outdoorNodeId).y, x: at(hrv.exhaustNodeId).y };
+  const x0 = { s: at(hrv.nodeId).x, o: at(hrv.outdoorNodeId).x };
+  const before = computeAll(store.project);
+  hrv.swapInternal = true;
+  store.syncComponentPorts(hrv);
+  assert.equal(at(hrv.nodeId).y, y0.e, "supply now where extract was");
+  assert.equal(at(hrv.returnNodeId).y, y0.s, "extract now where supply was");
+  assert.equal(at(hrv.nodeId).x, x0.s, "still on the internal face");
+  assert.equal(at(hrv.outdoorNodeId).y, y0.o, "the external face did not move");
+  assert.equal(at(hrv.exhaustNodeId).y, y0.x);
+  hrv.swapExternal = true;
+  store.syncComponentPorts(hrv);
+  assert.equal(at(hrv.outdoorNodeId).y, y0.x, "fresh air now where exhaust was");
+  assert.equal(at(hrv.exhaustNodeId).y, y0.o);
+  assert.equal(at(hrv.outdoorNodeId).x, x0.o, "still on the external face");
+  // the ducts stay on their airstream: the same flows as before
+  const after = computeAll(store.project);
+  for (const k of ["supply", "extract", "outdoor", "exhaust"]) {
+    assert.ok(Math.abs(after[k].totalFlowM3s - before[k].totalFlowM3s) < 1e-12);
+  }
+  // and tracing snaps to the moved connection
+  const { canvas } = setup();
+  canvas.store = store;
+  store.activeSystem = "supply";
+  assert.equal(canvas.traceTarget({ x: hrv.x, y: hrv.y }).snap.node.id, hrv.nodeId);
+  const snapAt = canvas.traceTarget({ x: hrv.x, y: hrv.y }).snap.at;
+  assert.ok(Math.abs(snapAt.y - y0.e) < 1e-9, "the ring drawn and the ring snapped to agree");
+});

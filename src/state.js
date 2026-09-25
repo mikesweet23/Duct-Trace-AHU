@@ -3,7 +3,7 @@
 
 import { dist } from "./geom.js";
 import { defaultProps, componentDef, isDualPort } from "./standards/components.js";
-import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } from "./layout.js";
+import { connPoint, defaultFootprint, defaultHeightM, portOffset, unitPortOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } from "./layout.js";
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
 import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
@@ -155,7 +155,7 @@ function syncPorts(project, c) {
   const z = Number.isFinite(Number(c.heightM)) ? c.heightM : project.settings.defaultAhuHeight;
   for (const [system, key] of Object.entries(PORT_NODE_KEY)) {
     if (!four && system !== "supply") continue;
-    const at = connPoint(c, four ? portOffset(system, c.portLayout) : null, px);
+    const at = connPoint(c, four ? unitPortOffset(c, system) : null, px);
     let n = c[key] ? project.nodes.find((x) => x.id === c[key]) : null;
     if (!n) {
       if (system === "supply") continue;
