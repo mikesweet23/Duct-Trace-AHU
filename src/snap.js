@@ -21,12 +21,15 @@ import {
   connPoint,
   preferredPort,
   pxPerMeterOf,
+  componentNodeIds,
 } from "./layout.js";
 
 export const SNAP_PX = 14;
 export const SNAP_PULL_PX = 36;
 export const JOINT_HIT_PX = 18;
 export const EQUIP_HIT_PX = 22;
+
+const PORT_WORD = { supply: "supply (SUP)", extract: "extract (ETA)", outdoor: "fresh air (ODA)", exhaust: "exhaust (EHA)" };
 
 export function nodeZ(n, fallback = 0) {
   const z = Number(n?.z);
@@ -80,6 +83,7 @@ export function componentTarget(project, c, system) {
   const port = preferredPort(c, system);
   const node = nodeOf(project, port.nodeId) || nodeOf(project, c.nodeId);
   const dual = isDualPort(c.kind) && c.system === "both" && port.off;
+  // a unit's outside connections only exist when it serves both sides
   const at = dual
     ? connPoint(c, port.off, px)
     : node
@@ -102,8 +106,7 @@ export function hitComponentAt(project, p, opts = {}) {
   for (const c of project.components) {
     const n = nodeOf(project, c.nodeId);
     if (!n) continue;
-    if (n.id === skipId) continue;
-    if (c.returnNodeId && c.returnNodeId === skipId) continue;
+    if (componentNodeIds(c).includes(skipId)) continue;
     const tgt = componentTarget(project, c, system);
     if (!tgt.node) continue;
     const drawn = componentBox(c, px, zoom);
@@ -113,6 +116,10 @@ export function hitComponentAt(project, p, opts = {}) {
     // Magnet hits must match the active system so a supply diffuser does not
     // steal an extract run. A click on the visible icon always wins.
     if (!onIcon && !systemOk(c, system)) continue;
+    // fresh air and exhaust only join an outside terminal of their own kind,
+    // or a unit that serves both sides (it has the ODA / EHA connection)
+    if ((system === "outdoor" || system === "exhaust") && !systemOk(c, system)) continue;
+    if ((system === "outdoor" || system === "exhaust") && componentDef(c.kind)?.role === "plant" && !(isDualPort(c.kind) && c.system === "both")) continue;
     hits.push({
       kind: "component",
       component: c,
@@ -121,7 +128,7 @@ export function hitComponentAt(project, p, opts = {}) {
       off: tgt.off,
       d,
       onIcon,
-      what: componentWord(c) + (tgt.off ? " edge" : ""),
+      what: componentWord(c) + (tgt.off ? ` ${PORT_WORD[system] || "edge"}` : ""),
       name: c.label || "",
     });
   }
@@ -149,7 +156,7 @@ export function snapAt(project, p, opts = {}) {
   let best = null;
   for (const n of project.nodes) {
     if (n.id === skipId) continue;
-    const hasComp = project.components.some((c) => c.nodeId === n.id || c.returnNodeId === n.id);
+    const hasComp = project.components.some((c) => componentNodeIds(c).includes(n.id));
     if (hasComp) continue;
     if (opts.runDots && system) {
       const touching = project.segments.filter((s) => s.a === n.id || s.b === n.id);
@@ -245,7 +252,7 @@ export function hitRunDot(project, p, opts = {}) {
   for (const end of [best.a, best.b]) {
     if (end.id === skipId) continue;
     if (dist(end, best.r.point) <= endTol) {
-      const hasComp = project.components.some((c) => c.nodeId === end.id || c.returnNodeId === end.id);
+      const hasComp = project.components.some((c) => componentNodeIds(c).includes(end.id));
       if (hasComp) continue;
       return { kind: "node", node: end, at: { x: end.x, y: end.y }, off: null, d: dist(end, p), what: end.tee ? "T-piece" : "end of run", name: "" };
     }

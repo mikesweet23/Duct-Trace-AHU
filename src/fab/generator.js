@@ -103,7 +103,7 @@ function defaultBootType(shape) {
 }
 
 function nodeComps(project, nodeId) {
-  return (project.components || []).filter((c) => c.nodeId === nodeId || c.returnNodeId === nodeId);
+  return (project.components || []).filter((c) => [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].includes(nodeId));
 }
 
 function nextRef(counters, kind) {

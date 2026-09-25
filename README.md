@@ -66,12 +66,39 @@ with no drawing; type the installed length on each run.
 3. The canvas had no `touch-action`, so on a tablet a drag scrolled the page
    instead of tracing.
 
+## Four airstreams: supply, extract, fresh air, exhaust
+
+An AHU or HRV serving both sides has **four connections**, named to
+BS EN 16798-3 and drawn on the casing:
+
+| Code | Airstream | Colour | Runs |
+| --- | --- | --- | --- |
+| **SUP** | Supply air | blue | unit → rooms |
+| **ETA** | Extract air | orange | rooms → unit |
+| **ODA** | Outdoor (fresh) air | green | outside → unit |
+| **EHA** | Exhaust air | brown | unit → outside |
+
+The building side is on the right (SUP, ETA), the outside on the left (ODA,
+EHA), each airstream straight through the box; **Connections** in the
+inspector can put supply right, extract left, fresh air top and exhaust
+bottom instead. A unit drawn before this keeps its supply and extract where
+they were and gains fresh air and exhaust top and bottom.
+
+**Trace** asks which of the four to draw. Outside terminals — fresh-air
+intake louvre, roof intake, exhaust louvre, roof cowl — left at 0 l/s take
+the unit's own airflow (supply for fresh air, extract for exhaust), shared if
+there are several. The supply fan pushes ODA + SUP in series and the extract
+fan pulls ETA + EHA, so each fan's static is the index run on **both sides**
+of it; the schedule shows it and Check flags a shortfall. Fresh-air and
+exhaust temperatures are in Duct & basis. Code: `src/systems.js`,
+`PORT_LAYOUTS` in `src/layout.js`, `pairFanSides()` in
+`src/calc/network.js`.
+
 ## Units
 
 - **AHU** — supply and extract in one box, or supply-only / extract-only.
 - **HRV — heat recovery unit (MVHR)** — a balanced supply + extract unit with
-  its own two ports (supply leaves the right-hand side, extract comes in on
-  the left). Carries the exchanger type, temperature efficiency, SFP, summer
+  the same four connections as an AHU. Carries the exchanger type, temperature efficiency, SFP, summer
   bypass, frost protection and filters; the inspector gives the supply
   temperature after recovery, the heat recovered and the fan power, and they
   go on the PDF. The duct sizes come from the flows and available static,

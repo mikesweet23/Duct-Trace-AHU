@@ -1,3 +1,4 @@
+import { systemColor as colorOf } from "../systems.js";
 // 3D meshes for fabrication pieces. Canvas 2D, painter's algorithm.
 // Recognisable assembly, not photorealism.
 
@@ -15,7 +16,7 @@ export function pressureColor(pa, max = 200) {
 }
 
 export function systemColor(system) {
-  return system === "extract" ? "#c2410c" : "#1f6fd1";
+  return colorOf(system);
 }
 
 export function pieceFill(piece, mode, selected) {
@@ -24,7 +25,7 @@ export function pieceFill(piece, mode, selected) {
   if (mode === "pressure") return pressureColor(piece.dpPa, 80);
   if (mode === "airflow") return systemColor(piece.system);
   if (piece.kind === "coupler") return "#cbd5e1";
-  if (piece.kind === "elbow") return piece.system === "extract" ? "#e0662d" : "#4b8fe0";
+  if (piece.kind === "elbow") return colorOf(piece.system);
   if (piece.kind === "reducer" || piece.kind === "enlarger" || piece.kind === "transition" || piece.kind === "sqr_to_round") {
     return "#a78bfa";
   }

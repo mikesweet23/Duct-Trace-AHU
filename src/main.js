@@ -17,6 +17,7 @@ import { buildTakeoff } from "./fab/takeoff.js";
 import { dist, routeLengthM, isVerticalRiser } from "./geom.js";
 import { pxPerMeterOf } from "./layout.js";
 import { HELP, HELP_SECTIONS, STEPS, helpMatches } from "./ui/help.js";
+import { SYSTEMS, isOutsideSystem } from "./systems.js";
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -67,7 +68,7 @@ const TOOLS = [
 ];
 const PALETTES = {
   fan: { title: "Fans", kinds: ["fan_centrifugal", "fan_axial", "fan_plug"], note: "A fan is the plant for the system you are tracing." },
-  terminal: { title: "Terminals", kinds: ["diffuser", "grille_supply", "louvre", "grille_extract", "valve_extract"], note: "Extract grilles and valves land on extract whatever is armed." },
+  terminal: { title: "Terminals", groups: [["In the building", ["diffuser", "grille_supply", "louvre", "grille_extract", "valve_extract"]], ["Outside", ["intake_louvre", "roof_intake", "exhaust_louvre", "roof_cowl"]]], note: "Extract grilles are always extract, intake louvres fresh air and exhaust louvres exhaust. An outside terminal takes the unit's own airflow unless you type one." },
   inline: { title: "In-line devices", kinds: ["fire_damper", "vcd", "attenuator", "plenum", "heater", "filter"], note: "Click on a duct to put the device on it." },
 };
 let paletteOpen = null; // "fan" | "terminal" | "inline"
@@ -105,7 +106,8 @@ function armTool(id) {
   hintHidden = false;
   if (t.palette) {
     paletteOpen = t.palette;
-    const kinds = PALETTES[t.palette].kinds;
+    const pal = PALETTES[t.palette];
+    const kinds = pal.kinds || pal.groups.flatMap((g) => g[1]);
     const keep = kinds.includes(store.newComponentKind) ? store.newComponentKind : kinds[0];
     store.setTool("component", keep);
   } else {
@@ -126,14 +128,18 @@ function renderPalette() {
   $("#cpalNote").textContent = pal.note;
   const body = $("#cpalBody");
   body.innerHTML = "";
-  for (const kind of pal.kinds) {
+  const groups = pal.groups || [[null, pal.kinds]];
+  for (const [gname, kinds] of groups) {
+  if (gname) { const g = document.createElement("div"); g.className = "vgrp"; g.textContent = gname; body.appendChild(g); }
+  for (const kind of kinds) {
     const def = COMPONENTS[kind];
     const b = document.createElement("button");
     b.className = "vitem" + (store.newComponentKind === kind ? " on" : "");
-    const extra = def.role === "terminal" ? `${def.props.designFlow_ls} l/s` : def.role === "inline" ? `${def.props.lossPa} Pa` : `${def.props.availableStaticPa} Pa`;
+    const extra = def.role === "terminal" ? (def.outside ? "auto" : `${def.props.designFlow_ls} l/s`) : def.role === "inline" ? `${def.props.lossPa} Pa` : `${def.props.availableStaticPa} Pa`;
     b.innerHTML = `<span class="vsym" style="background:${def.color}">${esc(def.symbol)}</span><span class="vlbl">${esc(def.label)}</span><span class="vn">${extra}</span>`;
     b.addEventListener("click", () => { store.setTool("component", kind); renderPalette(); renderHint(); });
     body.appendChild(b);
+  }
   }
   el.classList.add("on");
 }
@@ -156,7 +162,7 @@ const HINTS = {
   scale: "Click two points a known distance apart, then type the real dimension.",
   tape: "Click along the route; click again to turn. Double-click, <kbd>Enter</kbd> or Finish keeps it. Plan metres only — never a duct.",
   room: "Click the corners of the room. Click the first corner, double-click or <kbd>Enter</kbd> to close it.",
-  duct: "Start on a unit's ring or a dot on a run. Click each corner; click a unit or a run to join and drop the pencil. Double-click, <kbd>Enter</kbd> or Finish stops in mid-air. Set <b>Height</b> and click the same point for a riser.",
+  duct: "Pick the airstream on the left. Start on a unit's ring or a dot on a run. Click each corner; click a unit or a run to join and drop the pencil. Double-click, <kbd>Enter</kbd> or Finish stops in mid-air. Set <b>Height</b> and click the same point for a riser.",
 };
 function hintText() {
   const tool = store.tool;
@@ -164,8 +170,9 @@ function hintText() {
     const def = componentDef(store.newComponentKind);
     if (!def) return "";
     if (def.role === "inline") return `Click on a duct to put the <b>${esc(def.label.toLowerCase())}</b> on it. Drag empty paper to pan.`;
-    if (isDualPort(store.newComponentKind)) return `Click where the <b>${esc(def.label)}</b> sits. Supply leaves the right-hand side, extract the left — turn the unit to suit. Drag empty paper to pan.`;
-    return `Click where the <b>${esc(def.label.toLowerCase())}</b> sits (${store.activeSystem}). Drag empty paper to pan.`;
+    if (isDualPort(store.newComponentKind)) return `Click where the <b>${esc(def.label)}</b> sits. The building side is on the right (supply SUP, extract ETA), outside on the left (fresh air ODA, exhaust EHA) — turn the unit to suit. Drag empty paper to pan.`;
+    if (def.outside) return `Click where the <b>${esc(def.label.toLowerCase())}</b> sits, on the outside wall or roof. Its flow follows the unit. Drag empty paper to pan.`;
+    return `Click where the <b>${esc(def.label.toLowerCase())}</b> sits (${def.system || (isOutsideSystem(store.activeSystem) ? "supply" : store.activeSystem)}). Drag empty paper to pan.`;
   }
   return HINTS[tool] || "";
 }
@@ -570,12 +577,16 @@ function checkIssues(results) {
     const def = componentDef(c.kind);
     if (!def) continue;
     const name = c.label || def.label;
-    const joined = touching(c.nodeId).length + (c.returnNodeId ? touching(c.returnNodeId).length : 0);
+    if (isDualPort(c.kind) && c.system === "both") {
+      if (c.outdoorNodeId && !touching(c.outdoorNodeId).length && touching(c.nodeId).length) out.push({ lvl: "warn", msg: `${name} has no fresh-air (ODA) duct — trace one from an intake louvre to its ODA connection.`, sel: ["component", c.id] });
+      if (c.exhaustNodeId && !touching(c.exhaustNodeId).length && c.returnNodeId && touching(c.returnNodeId).length) out.push({ lvl: "warn", msg: `${name} has no exhaust (EHA) duct — trace one from its EHA connection to an exhaust louvre or cowl.`, sel: ["component", c.id] });
+    }
+    const joined = [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean).reduce((a, id) => a + touching(id).length, 0);
     if (!joined) out.push({ lvl: def.role === "plant" ? "warn" : "bad", msg: `${name} is not connected to any duct.`, sel: ["component", c.id] });
     if (def.role === "terminal" && !(Number(c.props?.designFlow_ls) > 0)) out.push({ lvl: "warn", msg: `${name} has no design flow.`, sel: ["component", c.id] });
   }
   for (const n of p.nodes) {
-    if (p.components.some((c) => c.nodeId === n.id || c.returnNodeId === n.id)) continue;
+    if (p.components.some((c) => [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].includes(n.id))) continue;
     const t = touching(n.id);
     if (t.length === 1) {
       const other = p.nodes.find((x) => x.id === (t[0].a === n.id ? t[0].b : t[0].a));
@@ -592,7 +603,7 @@ function checkIssues(results) {
   const projectWarn = new Set(results?.projectWarnings || []);
   for (const sys of systems) {
     for (const w of sys.warnings || []) if (!projectWarn.has(w)) out.push({ lvl: /exceed|short|mismatch|do not match|does not match/i.test(w) ? "bad" : "warn", msg: `${sys.name}: ${w}` });
-    if (sys.plant && sys.marginPa < 0) out.push({ lvl: "bad", msg: `${sys.name}: the index run needs ${round(sys.indexStaticPa, 0)} Pa and the unit has ${round(sys.availableStaticPa, 0)} Pa.` });
+    if (sys.plant && sys.marginPa < 0 && !["outdoor", "exhaust"].includes(sys.systemType)) out.push({ lvl: "bad", msg: `${sys.name}: the fan needs ${round(sys.fanStaticPa ?? sys.indexStaticPa, 0)} Pa and the unit has ${round(sys.availableStaticPa, 0)} Pa.` });
   }
   for (const w of results?.projectWarnings || []) out.push({ lvl: "bad", msg: w });
   const seen = new Set();
@@ -693,11 +704,11 @@ function renderStatus(results) {
     + cell("Terminals", String(terms.length))
     + cell("Flow unit", unit === "m3/h" ? "m³/h" : "l/s", "click", 'id="stUnit" title="Click to switch l/s and m³/h"');
   for (const sys of systems) {
-    const cls = sys.systemType === "extract" ? "ext" : "sup";
-    html += cell(sys.name || sys.systemType, `${formatFlow(sys.totalFlowM3s, unit)} · ${round(sys.indexStaticPa, 0)} Pa`, sys.plant && sys.marginPa < 0 ? "bad" : cls);
+    const cls = { supply: "sup", extract: "ext", outdoor: "oda", exhaust: "eha" }[sys.systemType] || "sup";
+    const oneUnit = systems.filter((x) => x.systemType === sys.systemType).length === 1;
+    html += cell(oneUnit ? `${SYSTEMS[sys.systemType]?.label || sys.systemType} ${SYSTEMS[sys.systemType]?.code || ""}` : (sys.name || sys.systemType), `${formatFlow(sys.totalFlowM3s, unit)} · ${round(sys.indexStaticPa, 0)} Pa`, sys.plant && sys.marginPa < 0 ? "bad" : cls);
   }
-  html += cell("Corners", (p.settings.ortho !== false) !== !!store.overrideKey ? "square" : "free")
-    + cell("Duct on plan", `${round(plan, 1)} m`)
+  html += cell("Duct on plan", `${round(plan, 1)} m`)
     + cell("Installed", `${round(installed, 1)} m`)
     + cell("Check", issues.length ? `${issues.length} to look at` : "clean", bad ? "bad click" : issues.length ? "warn click" : "click", 'id="stCheck"')
     + (p.meta.rev ? cell("File", `rev ${p.meta.rev}`) : "");
@@ -810,9 +821,8 @@ store.subscribe(() => {
 });
 
 function renderLegend() {
-  $("#threeLegend").innerHTML = `<div class="ln"><span class="sw" style="background:#1f6fd1"></span>Supply</div>
-    <div class="ln"><span class="sw" style="background:#c2410c"></span>Extract</div>
-    <div class="ln" style="color:var(--muted);font-size:11px">Heights above finished floor</div>`;
+  $("#threeLegend").innerHTML = Object.values(SYSTEMS).map((x) => `<div class="ln"><span class="sw" style="background:${x.color}"></span>${x.label} <span style="color:var(--muted)">${x.code}</span></div>`).join("")
+    + `<div class="ln" style="color:var(--muted);font-size:11px">Heights above finished floor</div>`;
 }
 
 // initial paint

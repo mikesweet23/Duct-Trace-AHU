@@ -4,7 +4,7 @@
 // it that looked joined and was not.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Store, newProject } from "../src/state.js";
+import { Store, newProject, migrateProject } from "../src/state.js";
 import { CanvasView } from "../src/ui/canvas.js";
 import { computeAll, findSegResult } from "../src/calc/network.js";
 import { isDualPort, recoveredSupplyTempC, recoveredHeatKw, COMPONENTS } from "../src/standards/components.js";
@@ -101,9 +101,9 @@ test("a heat recovery unit is a two-port plant that serves supply and extract", 
   assert.ok(hrv.returnNodeId && hrv.returnNodeId !== hrv.nodeId, "separate extract port");
   const sNode = store.project.nodes.find((n) => n.id === hrv.nodeId);
   const eNode = store.project.nodes.find((n) => n.id === hrv.returnNodeId);
-  assert.ok(sNode.x > eNode.x, "supply on the right, extract on the left");
+  assert.ok(sNode.x > hrv.x && eNode.x > hrv.x, "supply and extract on the building side");
   const d = store.addComponentAt({ x: 300, y: 0 }, "diffuser", "supply");
-  const g = store.addComponentAt({ x: -300, y: 0 }, "grille_extract", "extract");
+  const g = store.addComponentAt({ x: 300, y: 200 }, "grille_extract", "extract");
   store.addSegment(sNode, store.project.nodes.find((n) => n.id === d.nodeId), "supply");
   store.addSegment(eNode, store.project.nodes.find((n) => n.id === g.nodeId), "extract");
   const res = computeAll(store.project);
@@ -115,4 +115,75 @@ test("heat recovery: supply temperature and heat recovered", () => {
   assert.equal(recoveredSupplyTempC(-4, 21, 80), 16);
   const kw = recoveredHeatKw(100, -4, 21, 80);
   assert.ok(Math.abs(kw - 0.1 * 1.2 * 1.006 * 20) < 1e-9);
+});
+
+// Fresh air in and stale air out: the other two connections of the unit.
+function fourPortJob() {
+  const { store, canvas } = setup();
+  const hrv = store.addComponentAt({ x: 0, y: 0 }, "hrv", "both");
+  const d = store.addComponentAt({ x: 400, y: -100 }, "diffuser", "supply");
+  d.props.designFlow_ls = 120;
+  const g = store.addComponentAt({ x: 400, y: 100 }, "grille_extract", "extract");
+  g.props.designFlow_ls = 110;
+  const oda = store.addComponentAt({ x: -400, y: -100 }, "intake_louvre", "supply");
+  const eha = store.addComponentAt({ x: -400, y: 100 }, "exhaust_louvre", "supply");
+  const node = (id) => store.project.nodes.find((n) => n.id === id);
+  store.addSegment(node(hrv.nodeId), node(d.nodeId), "supply");
+  store.addSegment(node(hrv.returnNodeId), node(g.nodeId), "extract");
+  store.addSegment(node(oda.nodeId), node(hrv.outdoorNodeId), "outdoor");
+  store.addSegment(node(hrv.exhaustNodeId), node(eha.nodeId), "exhaust");
+  return { store, canvas, hrv, oda, eha };
+}
+
+test("an AHU or HRV serving both sides has four connections: SUP and ETA inside, ODA and EHA outside", () => {
+  const { store, hrv, oda, eha } = fourPortJob();
+  assert.equal(oda.system, "outdoor", "an intake louvre is always fresh air");
+  assert.equal(eha.system, "exhaust", "an exhaust louvre is always exhaust");
+  const n = (id) => store.project.nodes.find((x) => x.id === id);
+  assert.ok(hrv.outdoorNodeId && hrv.exhaustNodeId);
+  assert.ok(n(hrv.outdoorNodeId).x < hrv.x && n(hrv.exhaustNodeId).x < hrv.x, "outside connections on the outside face");
+  assert.ok(n(hrv.nodeId).x > hrv.x && n(hrv.returnNodeId).x > hrv.x, "building connections on the building face");
+  assert.ok(n(hrv.outdoorNodeId).y < n(hrv.exhaustNodeId).y, "fresh air runs straight through to supply");
+});
+
+test("fresh air carries the unit's supply flow and exhaust its extract flow", () => {
+  const { store } = fourPortJob();
+  const res = computeAll(store.project);
+  assert.ok(Math.abs(res.outdoor.totalFlowM3s - 0.12) < 1e-9);
+  assert.ok(Math.abs(res.exhaust.totalFlowM3s - 0.11) < 1e-9);
+  const odaSeg = store.project.segments.find((s) => s.system === "outdoor");
+  assert.ok(findSegResult(res, odaSeg.id).flowM3s > 0);
+});
+
+test("each fan's static covers both sides of it", () => {
+  const { store, hrv } = fourPortJob();
+  hrv.props.availableStaticPa = 5;
+  const res = computeAll(store.project);
+  const total = res.supply.indexStaticPa + res.outdoor.indexStaticPa;
+  assert.ok(Math.abs(res.supply.fanStaticPa - total) < 1e-9);
+  assert.ok(Math.abs(res.outdoor.marginPa - (5 - total)) < 1e-9);
+  assert.ok(res.supply.warnings.some((w) => /Supply fan: fresh air/.test(w)));
+});
+
+test("tracing fresh air snaps to the unit's ODA connection, not the supply one", () => {
+  const { store, canvas } = setup();
+  const hrv = store.addComponentAt({ x: 0, y: 0 }, "hrv", "both");
+  store.activeSystem = "outdoor";
+  const t = canvas.traceTarget({ x: 0, y: 0 });
+  assert.equal(t.snap?.node?.id, hrv.outdoorNodeId);
+  store.activeSystem = "exhaust";
+  assert.equal(canvas.traceTarget({ x: 0, y: 0 }).snap?.node?.id, hrv.exhaustNodeId);
+});
+
+test("a unit drawn with two connections keeps them where they were", () => {
+  const { store } = setup();
+  const p = store.project;
+  p.nodes.push({ id: "s", x: 60, y: 0, z: 0.3 }, { id: "r", x: -60, y: 0, z: 0.3 });
+  p.components.push({ id: "c", kind: "ahu", system: "both", nodeId: "s", returnNodeId: "r", x: 0, y: 0, widthM: 2.4, depthM: 1.2, rot: 0, heightM: 0.3, props: {} });
+  const m = migrateProject(JSON.parse(JSON.stringify(p)));
+  const c = m.components[0];
+  assert.equal(c.portLayout, "sides");
+  const s = m.nodes.find((n) => n.id === "s"), r = m.nodes.find((n) => n.id === "r");
+  assert.ok(Math.abs(s.x - 60) < 1e-6 && Math.abs(r.x + 60) < 1e-6, "supply and extract did not move");
+  assert.ok(c.outdoorNodeId && c.exhaustNodeId, "fresh air and exhaust were added");
 });

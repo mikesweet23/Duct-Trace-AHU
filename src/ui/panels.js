@@ -14,6 +14,7 @@ import { renderFabrication } from "./fab-panel.js";
 import { renderTakeoff } from "./takeoff-panel.js";
 import { FITTINGS as FAB_FITTINGS } from "../standards/fittings.js";
 import { setPieceOverride } from "../fab/change.js";
+import { SYSTEMS, SYSTEM_KEYS } from "../systems.js";
 import { PROJECT_CONSTRUCTIONS, SECTION_CONSTRUCTIONS, projectConstructionLabel, sectionConstructionKey } from "../construction.js";
 
 const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
@@ -136,7 +137,7 @@ export class Panels {
     const override = hasLengthOverride(s) || res?.lengthOverride;
     const lengthVal = s.engineeringLengthM == null || s.engineeringLengthM === "" ? "" : s.engineeringLengthM;
     return h`
-      <div class="section-title">Duct segment <span class="pill ${s.system}">${s.system}</span></div>
+      <div class="section-title">Duct segment <span class="pill ${s.system}">${SYSTEMS[s.system]?.label || s.system} · ${SYSTEMS[s.system]?.code || ""}</span></div>
       <div class="length-box">
         <label for="engLength">Length</label>
         <input id="engLength" class="length-input" type="text" data-length="engineering" value="${lengthVal === "" ? num(engM, 2) : lengthVal}" placeholder="${num(graphM, 2)} m" />
@@ -149,8 +150,7 @@ export class Panels {
       </div>
       <div class="field"><label>System</label>
         <select data-k="system">
-          <option value="supply" ${s.system === "supply" ? "selected" : ""}>Supply</option>
-          <option value="extract" ${s.system === "extract" ? "selected" : ""}>Extract / return</option>
+          ${SYSTEM_KEYS.map((k) => `<option value="${k}" ${s.system === k ? "selected" : ""}>${SYSTEMS[k].label} (${SYSTEMS[k].code})</option>`).join("")}
         </select></div>
       <div class="field"><label>Role</label>
         <select data-k="roleOverride">
@@ -357,14 +357,21 @@ export class Panels {
       .join("");
     const dual = isDualPort(c.kind);
     return h`
-      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "supply + return" : c.system}</span></div>
+      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "SUP · ETA · ODA · EHA" : (SYSTEMS[c.system]?.label || c.system)}</span></div>
       <div class="field"><label>Custom label</label><input type="text" data-k="label" value="${c.label || ""}" placeholder="${def.label}"/></div>
-      <div class="field"><label>System</label>
+      ${def.system ? `<div class="field"><label>System</label><span class="badge">${SYSTEMS[def.system].label} (${SYSTEMS[def.system].code})</span></div>` : `<div class="field"><label>System</label>
         <select data-k="system">
           <option value="supply" ${c.system === "supply" ? "selected" : ""}>Supply</option>
           <option value="extract" ${c.system === "extract" ? "selected" : ""}>Extract / return</option>
-          ${dual ? `<option value="both" ${c.system === "both" ? "selected" : ""}>Both (supply + return)</option>` : ""}
+          ${dual ? `<option value="both" ${c.system === "both" ? "selected" : ""}>Both — supply, extract, fresh air in, exhaust out</option>` : ""}
+          ${def.role === "inline" ? `<option value="outdoor" ${c.system === "outdoor" ? "selected" : ""}>Fresh air (ODA)</option><option value="exhaust" ${c.system === "exhaust" ? "selected" : ""}>Exhaust (EHA)</option>` : ""}
+        </select></div>`}
+      ${dual && c.system === "both" ? `<div class="field"><label>Connections</label>
+        <select data-k="portLayout">
+          <option value="inline" ${c.portLayout !== "sides" ? "selected" : ""}>Building side right (SUP, ETA) · outside left (ODA, EHA)</option>
+          <option value="sides" ${c.portLayout === "sides" ? "selected" : ""}>Supply right · extract left · fresh air top · exhaust bottom</option>
         </select></div>
+      <p class="small-note">Four connections: <b style="color:#1f6fd1">SUP</b> supply into the building, <b style="color:#c2410c">ETA</b> extract back from it, <b style="color:#15803d">ODA</b> fresh air in from outside, <b style="color:#7c4a1e">EHA</b> exhaust out. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box.</p>` : ""}
       <div class="field"><label>Type</label>
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
@@ -506,6 +513,9 @@ export class Panels {
           store.resizeComponent(obj, key === "widthM" ? val : null, key === "depthM" ? val : null, key === "rot" ? val : null);
         } else if (sel.type === "component" && key === "heightM") {
           obj.heightM = val;
+          store.syncComponentPorts(obj);
+        } else if (sel.type === "component" && key === "portLayout") {
+          obj.portLayout = val;
           store.syncComponentPorts(obj);
         } else if (sel.type === "component" && key === "kind") {
           // keep what was typed, add whatever the new kind needs
@@ -709,7 +719,7 @@ export class Panels {
         </h3>
         <div class="metric-grid">
           <div class="metric"><div class="m-val">${formatFlow(sys.totalFlowM3s, unit)}</div><div class="m-label">Terminal total</div></div>
-          <div class="metric"><div class="m-val">${num(sys.indexStaticPa, 0)} <small>Pa</small></div><div class="m-label">Index static (ESP)</div><div class="m-sub">${sys.plant ? "avail " + num(sys.availableStaticPa, 0) + " Pa" : "add fan/AHU"}</div></div>
+          <div class="metric"><div class="m-val">${num(sys.indexStaticPa, 0)} <small>Pa</small></div><div class="m-label">Index static (ESP)</div><div class="m-sub">${sys.plant ? (sys.fanStaticPa != null && Math.abs(sys.fanStaticPa - sys.indexStaticPa) > 0.5 ? `fan ${num(sys.fanStaticPa, 0)} of ${num(sys.availableStaticPa, 0)} Pa, both sides` : "avail " + num(sys.availableStaticPa, 0) + " Pa") : "add fan/AHU"}</div></div>
           <div class="metric"><div class="m-val">${num(sys.maxVelocity, 2)} <small>m/s</small></div><div class="m-label">Max velocity</div></div>
           <div class="metric"><div class="m-val">${num(sys.minVelocity, 2)} <small>m/s</small></div><div class="m-label">Min velocity</div></div>
         </div>
@@ -793,6 +803,9 @@ export class Panels {
       <div class="section-title">Air conditions</div>
       <div class="field"><label>Supply temp (°C)</label><input type="number" data-s="supplyTempC" value="${s.supplyTempC}"/></div>
       <div class="field"><label>Extract temp (°C)</label><input type="number" data-s="extractTempC" value="${s.extractTempC}"/></div>
+      <div class="field"><label>Fresh air (outdoor) temp (°C)</label><input type="number" data-s="outdoorTempC" value="${s.outdoorTempC ?? 5}"/></div>
+      <div class="field"><label>Exhaust temp (°C)</label><input type="number" data-s="exhaustTempC" value="${s.exhaustTempC ?? 12}"/></div>
+      <p class="small-note">Air density for each airstream comes from its temperature. Fresh air and exhaust ducts take their flow from the unit they serve.</p>
       <div class="field"><label>Flow display unit</label>
         <select data-s="flowUnit">
           <option value="l/s" ${s.flowUnit === "l/s" ? "selected" : ""}>l/s</option>

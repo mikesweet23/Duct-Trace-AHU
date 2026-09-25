@@ -22,7 +22,8 @@ import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
 import { findSegResult, isIndexSegment } from "../calc/network.js";
 import { snapAt, hitSegment, EQUIP_HIT_PX } from "../snap.js";
 import { uid } from "../state.js";
-import { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX } from "../layout.js";
+import { systemColor, systemInfo, SYSTEM_KEYS } from "../systems.js";
+import { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, connPoint, componentNodeIds } from "../layout.js";
 
 const COL = {
   supply: "#1f6fd1",
@@ -213,7 +214,7 @@ export class CanvasView {
       if (Math.abs(lx) <= box.w / 2 && Math.abs(ly) <= box.d / 2) return { type: "component", id: c.id };
     }
     for (const n of p.nodes) {
-      if (p.components.some((c) => c.nodeId === n.id || c.returnNodeId === n.id)) continue;
+      if (p.components.some((c) => componentNodeIds(c).includes(n.id))) continue;
       if (dist(n, world) <= 8 / z) return { type: "node", id: n.id };
     }
     for (const m of p.measures || []) {
@@ -488,7 +489,7 @@ export class CanvasView {
     store.snapshot();
     const { node, off, joined } = this.connect(tgt);
     if (!this.draft) {
-      const anchored = p.components.some((c) => c.nodeId === node.id || c.returnNodeId === node.id);
+      const anchored = p.components.some((c) => componentNodeIds(c).includes(node.id));
       if (!anchored && !joined) node.z = store.traceHeight;
       if (joined && !anchored && Number.isFinite(Number(node.z))) store.traceHeight = round(node.z, 2);
       this.draft = { lastNodeId: node.id, lastOff: off, count: 0 };
@@ -791,7 +792,7 @@ export class CanvasView {
       const res = this.segResult(s.id);
       const selected = (sel?.type === "segment" && sel.id === s.id)
         || (sel?.type === "piece" && this.store.getSelected()?.segmentId === s.id);
-      const base = s.system === "extract" ? COL.extract : COL.supply;
+      const base = systemColor(s.system);
       const noFlow = !res || res.flowM3s <= 0;
       const shape = res?.section?.shape || s.shapeOverride || p.settings.ductType || "round";
       if (isVerticalRiser(a, b, px)) { this.drawRiserMarker(ctx, a, b, s, selected); continue; }
@@ -865,7 +866,7 @@ export class CanvasView {
     ctx.fillStyle = "#fff";
     ctx.fill();
     ctx.lineWidth = 2 / z;
-    ctx.strokeStyle = selected ? COL.sel : (seg.system === "extract" ? COL.extract : COL.supply);
+    ctx.strokeStyle = selected ? COL.sel : systemColor(seg.system);
     ctx.stroke();
     ctx.beginPath();
     const s = dz >= 0 ? -1 : 1;
@@ -880,7 +881,7 @@ export class CanvasView {
     const z = this.zoom;
     const sel = this.store.selection;
     for (const n of p.nodes) {
-      if (p.components.some((c) => c.nodeId === n.id || c.returnNodeId === n.id)) continue;
+      if (p.components.some((c) => componentNodeIds(c).includes(n.id))) continue;
       const selected = sel?.type === "node" && sel.id === n.id;
       const touching = p.segments.filter((s) => s.a === n.id || s.b === n.id);
       if (touching.length === 2 && !n.tee && !selected) continue; // a plain corner
@@ -891,7 +892,7 @@ export class CanvasView {
         ctx.fillStyle = "#fff";
         ctx.fill();
         ctx.lineWidth = 2 / z;
-        ctx.strokeStyle = selected ? COL.sel : (sys === "extract" ? COL.extract : COL.supply);
+        ctx.strokeStyle = selected ? COL.sel : systemColor(sys);
         ctx.stroke();
       } else if (touching.length <= 1) {
         // an open end — worth seeing, it usually means a run that stops short
@@ -927,13 +928,12 @@ export class CanvasView {
       this.roundRect(ctx, -box.w / 2, -box.d / 2, box.w, box.d, Math.min(4 / z, Math.min(box.w, box.d) * 0.12));
       ctx.fillStyle = def.color;
       ctx.fill();
-      if (isDualPort(c.kind) && c.system === "both") {
+      if (isFourPort(c)) {
         ctx.save();
         ctx.clip();
-        ctx.fillStyle = "rgba(31,111,209,0.55)";
-        ctx.fillRect(box.w / 2 - box.w * 0.18, -box.d / 2, box.w * 0.18, box.d);
-        ctx.fillStyle = "rgba(194,65,12,0.7)";
-        ctx.fillRect(-box.w / 2, -box.d / 2, box.w * 0.18, box.d);
+        // building side and outside of the casing, lightly tinted
+        ctx.fillStyle = "rgba(255,255,255,0.10)";
+        ctx.fillRect(0, -box.d / 2, box.w / 2, box.d);
         if (c.kind === "hrv") {
           // the cross of a plate heat exchanger
           ctx.strokeStyle = "rgba(255,255,255,0.45)";
@@ -970,15 +970,36 @@ export class CanvasView {
       ctx.fillStyle = COL.soft;
       ctx.font = `500 ${9.5 / z}px ${MONO}`;
       ctx.fillText(bits.join(" · "), c.x, bottom + 23 / z);
-      if (isDualPort(c.kind) && c.system === "both" && z * box.w > 60) {
-        ctx.font = `600 ${9 / z}px ${MONO}`;
-        const rot = (box.rot * Math.PI) / 180;
-        const sx = c.x + Math.cos(rot) * (box.w / 2 + 12 / z), sy = c.y + Math.sin(rot) * (box.w / 2 + 12 / z);
-        const ex = c.x - Math.cos(rot) * (box.w / 2 + 12 / z), ey = c.y - Math.sin(rot) * (box.w / 2 + 12 / z);
-        ctx.fillStyle = COL.supply; ctx.fillText("SA", sx, sy - 6 / z);
-        ctx.fillStyle = COL.extract; ctx.fillText("EA", ex, ey - 6 / z);
-      }
+      if (isFourPort(c)) this.drawUnitPorts(ctx, c, z);
       if (selected) this.drawHandles(ctx, c);
+    }
+  }
+
+  // The four connections of an AHU or HRV serving both sides: a coloured
+  // stub and its code at each port, so it is obvious where fresh air comes
+  // in, where exhaust leaves, and which face is the building side.
+  drawUnitPorts(ctx, c, z) {
+    const px = this.pxPerMeter();
+    const drawn = componentBox(c, px, z);
+    const rot = ((Number(c.rot) || 0) * Math.PI) / 180;
+    for (const key of SYSTEM_KEYS) {
+      const off = portOffset(key, c.portLayout);
+      if (!off) continue;
+      // exactly where a trace joins — the true casing, not the grown one
+      const { x, y } = connPoint(c, off, px);
+      const col = systemColor(key);
+      ctx.beginPath();
+      ctx.arc(x, y, 4.2 / z, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff"; ctx.fill();
+      ctx.lineWidth = 2.2 / z; ctx.strokeStyle = col; ctx.stroke();
+      if (z * drawn.w > 44) {
+        // label outside the casing, in the direction of the face
+        let dx = off.u, dy = off.v;
+        if (Math.abs(off.u) === 1) dy = 0; else dx = 0;
+        const ox = (dx * Math.cos(rot) - dy * Math.sin(rot)) * 17 / z;
+        const oy = (dx * Math.sin(rot) + dy * Math.cos(rot)) * 12 / z;
+        this.chip(ctx, systemInfo(key).code, x + ox, y + oy, { size: 8.5, mono: true, bold: true, bg: col, color: "#fff" });
+      }
     }
   }
 
@@ -1037,7 +1058,7 @@ export class CanvasView {
     const tool = this.store.tool;
     if (tool === "duct" && this.pointer && !this.dragging) {
       const tgt = this.traceTarget(this.pointer);
-      const col = this.store.activeSystem === "extract" ? COL.extract : COL.supply;
+      const col = systemColor(this.store.activeSystem);
       if (this.draft) {
         const a = p.nodes.find((n) => n.id === this.draft.lastNodeId);
         if (a) {

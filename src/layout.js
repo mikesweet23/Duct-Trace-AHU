@@ -117,17 +117,43 @@ export function hitHandle(c, p, pxPerMeter, zoom) {
   return best;
 }
 
-// Dual-system AHU: supply lands on the right, return/extract on the left.
-export function portOffset(system) {
-  if (system === "extract") return { u: -1, v: 0 };
-  if (system === "supply") return { u: 1, v: 0 };
-  return null;
+// A two-port unit (AHU, HRV) serving supply and extract has four
+// connections. `portLayout` says where they are on the casing, in the
+// unit's own frame (u across its width, v across its depth):
+//
+//   "inline" (new units) — building side on the right, outside on the left,
+//     each airstream running straight through the box:
+//         ODA (-1,-0.5) ──► SUP (1,-0.5)
+//         EHA (-1, 0.5) ◄── ETA (1, 0.5)
+//   "sides" (units drawn before there were four) — supply right, extract
+//     left as they always were, fresh air on top, exhaust underneath, so
+//     nothing already traced moves.
+export const PORT_LAYOUTS = {
+  inline: { supply: { u: 1, v: -0.5 }, extract: { u: 1, v: 0.5 }, outdoor: { u: -1, v: -0.5 }, exhaust: { u: -1, v: 0.5 } },
+  sides: { supply: { u: 1, v: 0 }, extract: { u: -1, v: 0 }, outdoor: { u: 0, v: -1 }, exhaust: { u: 0, v: 1 } },
+};
+
+export function portOffset(system, layout = "inline") {
+  const L = PORT_LAYOUTS[layout] || PORT_LAYOUTS.inline;
+  return L[system] ? { ...L[system] } : null;
+}
+
+// The node a unit presents to one airstream.
+export const PORT_NODE_KEY = { supply: "nodeId", extract: "returnNodeId", outdoor: "outdoorNodeId", exhaust: "exhaustNodeId" };
+
+export function isFourPort(c) {
+  return isDualPort(c.kind) && c.system === "both";
 }
 
 export function preferredPort(c, system) {
-  if (isDualPort(c.kind) && c.system === "both") {
-    if (system === "extract") return { nodeId: c.returnNodeId || c.nodeId, off: portOffset("extract") };
-    return { nodeId: c.nodeId, off: portOffset("supply") };
+  if (isFourPort(c)) {
+    const key = PORT_NODE_KEY[system] || "nodeId";
+    return { nodeId: c[key] || c.nodeId, off: portOffset(system in PORT_NODE_KEY ? system : "supply", c.portLayout) };
   }
   return { nodeId: c.nodeId, off: null };
+}
+
+// Every node id a component owns.
+export function componentNodeIds(c) {
+  return [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean);
 }
