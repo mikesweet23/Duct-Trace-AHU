@@ -1337,6 +1337,18 @@ const PORT_LAYOUTS = {
   flipped: { supply: { u: -1, v: -0.5 }, extract: { u: -1, v: 0.5 }, outdoor: { u: 1, v: -0.5 }, exhaust: { u: 1, v: 0.5 } },
 };
 
+// Where one airstream joins a particular unit: its layout, then the two
+// per-face swaps a manufacturer's handing may need — `swapInternal` puts
+// extract where supply was (and supply where extract was) on the internal
+// face, `swapExternal` does the same for fresh air and exhaust on the
+// external face. Each face swaps on its own.
+const SWAP_PARTNER = { supply: "extract", extract: "supply", outdoor: "exhaust", exhaust: "outdoor" };
+function unitPortOffset(c, system) {
+  const outside = system === "outdoor" || system === "exhaust";
+  const swapped = outside ? !!c?.swapExternal : !!c?.swapInternal;
+  return portOffset(swapped ? SWAP_PARTNER[system] || system : system, c?.portLayout);
+}
+
 function portOffset(system, layout = "inline") {
   const L = PORT_LAYOUTS[layout] || PORT_LAYOUTS.inline;
   return L[system] ? { ...L[system] } : null;
@@ -1352,7 +1364,7 @@ function isFourPort(c) {
 function preferredPort(c, system) {
   if (isFourPort(c)) {
     const key = PORT_NODE_KEY[system] || "nodeId";
-    return { nodeId: c[key] || c.nodeId, off: portOffset(system in PORT_NODE_KEY ? system : "supply", c.portLayout) };
+    return { nodeId: c[key] || c.nodeId, off: unitPortOffset(c, system in PORT_NODE_KEY ? system : "supply") };
   }
   return { nodeId: c.nodeId, off: null };
 }
@@ -1361,7 +1373,7 @@ function preferredPort(c, system) {
 function componentNodeIds(c) {
   return [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean);
 }
-return { MIN_FOOT_M, HANDLE_PX, defaultFootprint, defaultHeightM, componentFoot, pxPerMeterOf, componentBoxTrue, componentBox, connPoint, snapOnComponent, distToComponentBox, handlesOf, hitHandle, PORT_LAYOUTS, portOffset, PORT_NODE_KEY, isFourPort, preferredPort, componentNodeIds };
+return { MIN_FOOT_M, HANDLE_PX, defaultFootprint, defaultHeightM, componentFoot, pxPerMeterOf, componentBoxTrue, componentBox, connPoint, snapOnComponent, distToComponentBox, handlesOf, hitHandle, PORT_LAYOUTS, unitPortOffset, portOffset, PORT_NODE_KEY, isFourPort, preferredPort, componentNodeIds };
 })();
 
 // ---- src/snap.js ----
@@ -2038,7 +2050,7 @@ __m["src/state.js"] = (() => {
 
 const { dist } = __m["src/geom.js"];
 const { defaultProps, componentDef, isDualPort } = __m["src/standards/components.js"];
-const { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } = __m["src/layout.js"];
+const { connPoint, defaultFootprint, defaultHeightM, portOffset, unitPortOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } = __m["src/layout.js"];
 const { heightAlong } = __m["src/snap.js"];
 const { normalizeFlowUnit } = __m["src/units.js"];
 const { RECOMMENDED_VELOCITY } = __m["src/standards/dw144.js"];
@@ -2190,7 +2202,7 @@ function syncPorts(project, c) {
   const z = Number.isFinite(Number(c.heightM)) ? c.heightM : project.settings.defaultAhuHeight;
   for (const [system, key] of Object.entries(PORT_NODE_KEY)) {
     if (!four && system !== "supply") continue;
-    const at = connPoint(c, four ? portOffset(system, c.portLayout) : null, px);
+    const at = connPoint(c, four ? unitPortOffset(c, system) : null, px);
     let n = c[key] ? project.nodes.find((x) => x.id === c[key]) : null;
     if (!n) {
       if (system === "supply") continue;
@@ -4043,7 +4055,7 @@ const { findSegResult, isIndexSegment } = __m["src/calc/network.js"];
 const { snapAt, hitSegment, EQUIP_HIT_PX } = __m["src/snap.js"];
 const { uid } = __m["src/state.js"];
 const { systemColor, systemInfo, SYSTEM_KEYS } = __m["src/systems.js"];
-const { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, connPoint, componentNodeIds } = __m["src/layout.js"];
+const { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, unitPortOffset, connPoint, componentNodeIds } = __m["src/layout.js"];
 
 const COL = {
   supply: "#1f6fd1",
@@ -5003,7 +5015,7 @@ class CanvasView {
     const drawn = componentBox(c, px, z);
     const rot = ((Number(c.rot) || 0) * Math.PI) / 180;
     for (const key of SYSTEM_KEYS) {
-      const off = portOffset(key, c.portLayout);
+      const off = unitPortOffset(c, key);
       if (!off) continue;
       // exactly where a trace joins — the true casing, not the grown one
       const { x, y } = connPoint(c, off, px);
@@ -7969,7 +7981,7 @@ class Panels {
       .join("");
     const dual = isDualPort(c.kind);
     return h`
-      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "SUP · ETA · ODA · EHA" : (SYSTEMS[c.system]?.label || c.system)}</span></div>
+      <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "IN supply · extract — EX fresh air · exhaust" : (SYSTEMS[c.system]?.label || c.system)}</span></div>
       <div class="field"><label>Custom label</label><input type="text" data-k="label" value="${c.label || ""}" placeholder="${def.label}"/></div>
       ${def.system ? `<div class="field"><label>System</label><span class="badge">${SYSTEMS[def.system].label} (${SYSTEMS[def.system].code})</span></div>` : `<div class="field"><label>System</label>
         <select data-k="system">
@@ -7983,7 +7995,21 @@ class Panels {
           <option value="inline" ${c.portLayout !== "flipped" ? "selected" : ""}>Internal (IN) on the right · external (EX) on the left</option>
           <option value="flipped" ${c.portLayout === "flipped" ? "selected" : ""}>Internal (IN) on the left · external (EX) on the right</option>
         </select></div>
-      <p class="small-note">Two connections on each face. <b>IN</b> (internal, to the building): <b style="color:#1f6fd1">supply</b> and <b style="color:#c2410c">extract</b>. <b>EX</b> (external, to outside): <b style="color:#15803d">fresh air in</b> and <b style="color:#7c4a1e">exhaust out</b>. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box.</p>` : ""}
+      <div class="field"><label>Internal face — which is on top</label>
+        <select data-k="swapInternal">
+          <option value="false" ${!c.swapInternal ? "selected" : ""}>Supply first, extract second</option>
+          <option value="true" ${c.swapInternal ? "selected" : ""}>Extract first, supply second (swapped)</option>
+        </select></div>
+      <div class="field"><label>External face — which is on top</label>
+        <select data-k="swapExternal">
+          <option value="false" ${!c.swapExternal ? "selected" : ""}>Fresh air first, exhaust second</option>
+          <option value="true" ${c.swapExternal ? "selected" : ""}>Exhaust first, fresh air second (swapped)</option>
+        </select></div>
+      <div class="row-actions">
+        <button class="btn ghost tiny" data-act="swapInternal">&#8645; Swap supply / extract</button>
+        <button class="btn ghost tiny" data-act="swapExternal">&#8645; Swap fresh air / exhaust</button>
+      </div>
+      <p class="small-note">Two connections on each face. <b>IN</b> (internal, to the building): <b style="color:#1f6fd1">supply</b> and <b style="color:#c2410c">extract</b>. <b>EX</b> (external, to outside): <b style="color:#15803d">fresh air in</b> and <b style="color:#7c4a1e">exhaust out</b>. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box. If the model has supply and extract (or fresh air and exhaust) the other way round, swap that face below — each face swaps on its own, and ducts already on the unit move with their connection.</p>` : ""}
       <div class="field"><label>Type</label>
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
@@ -8126,6 +8152,9 @@ class Panels {
         } else if (sel.type === "component" && key === "heightM") {
           obj.heightM = val;
           store.syncComponentPorts(obj);
+        } else if (sel.type === "component" && (key === "swapInternal" || key === "swapExternal")) {
+          obj[key] = val === "true";
+          store.syncComponentPorts(obj);
         } else if (sel.type === "component" && key === "portLayout") {
           obj.portLayout = val;
           store.syncComponentPorts(obj);
@@ -8251,6 +8280,11 @@ class Panels {
           store.snapshot();
           const copy = store.duplicateComponent(obj);
           if (copy) store.select("component", copy.id);
+          commit();
+        } else if (act === "swapInternal" || act === "swapExternal") {
+          store.snapshot();
+          obj[act] = !obj[act];
+          store.syncComponentPorts(obj);
           commit();
         } else if (act === "levelRun") {
           store.snapshot();
@@ -9168,6 +9202,8 @@ const HELP = [
     b: "<b>AHU</b> <kbd>A</kbd> or <b>HRV</b> <kbd>E</kbd>, then click. Two connections on each face: <b>IN</b> (internal) on the right — supply and extract to the building; <b>EX</b> (external) on the left — fresh air in and exhaust out. Turn it with the handle above the box." },
   { sec: "place", tools: ["ahu", "hrv", "duct"], t: "I need fresh air in and stale air out, not just supply and extract",
     b: "An AHU or HRV serving both sides has <b>four connections</b>, two on each face: <b>IN</b> (internal) — supply and extract; <b>EX</b> (external) — fresh air in and exhaust out. The colour of the ring says which airstream. In <b>Trace</b> pick <b>Fresh air in</b> or <b>Exhaust out</b> and start on that ring. <b>Connections</b> in the inspector swaps which face is internal." },
+  { sec: "place", tools: ["ahu", "hrv", "select"], t: "The unit has supply and extract (or fresh air and exhaust) the other way round",
+    b: "Pick the unit. Under <b>Connections</b>, <b>&#8645; Swap supply / extract</b> swaps the two on the internal (IN) face and <b>&#8645; Swap fresh air / exhaust</b> the two on the external (EX) face — each on its own, to match the model's handing. Ducts already on the unit move with their connection. <b>Connections</b> itself puts the internal face on the left or right." },
   { sec: "place", tools: ["terminal"], t: "I want an intake louvre or an exhaust louvre / cowl",
     b: "<b>Terminal</b> → <i>Outside</i>: fresh-air intake louvre, roof intake, exhaust louvre, roof cowl. Leave the flow at 0 and it takes the unit's own airflow — supply for fresh air, extract for exhaust — shared if there are several." },
   { sec: "size", tools: ["select"], t: "Does the fan's static include the fresh air and exhaust ducts?",

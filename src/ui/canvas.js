@@ -23,7 +23,7 @@ import { findSegResult, isIndexSegment } from "../calc/network.js";
 import { snapAt, hitSegment, EQUIP_HIT_PX } from "../snap.js";
 import { uid } from "../state.js";
 import { systemColor, systemInfo, SYSTEM_KEYS } from "../systems.js";
-import { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, connPoint, componentNodeIds } from "../layout.js";
+import { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, unitPortOffset, connPoint, componentNodeIds } from "../layout.js";
 
 const COL = {
   supply: "#1f6fd1",
@@ -983,7 +983,7 @@ export class CanvasView {
     const drawn = componentBox(c, px, z);
     const rot = ((Number(c.rot) || 0) * Math.PI) / 180;
     for (const key of SYSTEM_KEYS) {
-      const off = portOffset(key, c.portLayout);
+      const off = unitPortOffset(c, key);
       if (!off) continue;
       // exactly where a trace joins — the true casing, not the grown one
       const { x, y } = connPoint(c, off, px);

@@ -92,7 +92,10 @@ box: the **internal** face (labelled **IN** on the plan) carries supply and
 extract, the **external** face (**EX**) fresh air in and exhaust out. The
 ring colour says which airstream. Internal is on the right by default;
 **Connections** in the inspector mirrors it, and the rotate handle turns the
-unit. A unit saved with the earlier layout (a connection on every face)
+unit. For a model handed the other way, **Swap supply / extract** swaps the
+two internal connections and **Swap fresh air / exhaust** the two external
+ones — each face on its own (`swapInternal`, `swapExternal`,
+`unitPortOffset()` in `src/layout.js`); ducts already on the unit follow. A unit saved with the earlier layout (a connection on every face)
 opens with this one, and its ducts follow the connections round.
 
 **Trace** asks which of the four to draw. Outside terminals — fresh-air
