@@ -2,7 +2,7 @@
 // Sizes are real metres on the scaled drawing — the same rule as ac-trace.
 
 import { clamp, fromLocal, toLocal } from "./geom.js";
-import { componentDef } from "./standards/components.js";
+import { componentDef, isDualPort } from "./standards/components.js";
 
 export const MIN_FOOT_M = 0.08;
 export const HANDLE_PX = 5;
@@ -50,7 +50,7 @@ export function componentBoxTrue(c, pxPerMeter) {
 export function componentBox(c, pxPerMeter, zoom) {
   const trueBox = componentBoxTrue(c, pxPerMeter);
   const k = 1 / (zoom || 1);
-  const min = (c.kind === "ahu" ? 46 : 32) * k;
+  const min = (componentDef(c.kind)?.role === "plant" ? 46 : 32) * k;
   const f = Math.max(1, min / Math.max(trueBox.w, trueBox.d, 1e-6));
   return { w: trueBox.w * f, d: trueBox.d * f, rot: trueBox.rot, foot: trueBox.foot, grown: f > 1.01 };
 }
@@ -125,7 +125,7 @@ export function portOffset(system) {
 }
 
 export function preferredPort(c, system) {
-  if (c.kind === "ahu" && c.system === "both") {
+  if (isDualPort(c.kind) && c.system === "both") {
     if (system === "extract") return { nodeId: c.returnNodeId || c.nodeId, off: portOffset("extract") };
     return { nodeId: c.nodeId, off: portOffset("supply") };
   }

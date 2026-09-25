@@ -109,7 +109,7 @@ export function downloadText(filename, text, mime) {
   a.href = URL.createObjectURL(blob);
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 }
 
 export function takeoffNarrative(takeoff) {

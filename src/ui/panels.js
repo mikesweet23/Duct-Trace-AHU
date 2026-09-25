@@ -1,6 +1,6 @@
 // Right-hand panel rendering: Properties, Results and Settings tabs.
 
-import { componentDef, COMPONENTS } from "../standards/components.js";
+import { componentDef, COMPONENTS, defaultProps, isDualPort, HRV_RECOVERY_TYPES, recoveredSupplyTempC, recoveredHeatKw } from "../standards/components.js";
 import { FITTINGS } from "../standards/fittings.js";
 import { CIRCULAR_DIAMETERS, RECTANGULAR_SIDES, VELOCITY_GUIDANCE, VELOCITY_ROLES } from "../standards/dw144.js";
 import { formatFlow, formatFlowLs, lsToDisplay, displayToLs, flowUnitLabel, normalizeFlowUnit, plantDutyLs, plantStaticPa, round } from "../units.js";
@@ -18,6 +18,7 @@ import { PROJECT_CONSTRUCTIONS, SECTION_CONSTRUCTIONS, projectConstructionLabel,
 
 const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
 const SKIP_GENERIC = new Set(["designFlow", "designFlow_ls", "extractFlow_ls", "supplyFlow_ls", "availableStaticPa", "extractStaticPa", "supplyStaticPa"]);
+const HRV_KEYS = new Set(["recoveryType", "recoveryEfficiencyPct", "sfp_WperLs", "summerBypass", "frostProtection", "filterSupply", "filterExtract", "winterOutdoorC"]);
 
 const PROP_LABELS = {
   availableStaticPa: "Available static (Pa)",
@@ -32,6 +33,12 @@ const PROP_LABELS = {
   supplyTempC: "Supply temp (°C)",
   returnTempC: "Return temp (°C)",
   throw_m: "Throw (m)",
+  recoveryEfficiencyPct: "Temperature efficiency (%)",
+  sfp_WperLs: "Specific fan power (W/(l/s))",
+  frostProtection: "Frost protection",
+  filterSupply: "Supply filter",
+  filterExtract: "Extract filter",
+  winterOutdoorC: "Winter outdoor design (°C)",
   note: "Note",
 };
 
@@ -247,7 +254,7 @@ export class Panels {
   plantFields(c, def) {
     const unit = unitOf(this.store);
     const ul = flowUnitLabel(unit);
-    const dual = c.kind === "ahu" && c.system === "both";
+    const dual = isDualPort(c.kind) && c.system === "both";
     const supplyFlow = lsToDisplay(plantDutyLs(c.props, "supply"), unit);
     const extractFlow = lsToDisplay(plantDutyLs(c.props, "extract") || (c.props?.extractFlow_ls || 0), unit);
     const supplyPa = plantStaticPa(c.props, "supply");
@@ -276,6 +283,51 @@ export class Panels {
       <p class="small-note">Set different supply and extract flow and Pa on a combined AHU. Leave a flow blank to follow the connected terminals. A warning appears if duty does not match inlets / outlets.</p>
       ` : `<p class="small-note">Leave flow blank to follow the connected terminals. A warning appears if the set duty does not match those terminals.</p>`}
       ${uniq.length ? `<ul class="warn-list">${uniq.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
+      ${c.kind === "hrv" ? this.hrvFields(c) : ""}
+    `;
+  }
+
+  // Heat recovery: the figures a schedule and a Part L check ask for. They do
+  // not change the duct sizes; the flows and the available static do that.
+  hrvFields(c) {
+    const pr = c.props || {};
+    const unit = unitOf(this.store);
+    const s = this.store.project.settings;
+    let supplyLs = plantDutyLs(pr, "supply");
+    if (!supplyLs && this.results) {
+      const sys = allComputedSystems(this.results).find((x) => x.systemType === "supply" && x.plant?.id === c.id);
+      if (sys) supplyLs = sys.totalFlowM3s * 1000;
+    }
+    const tOut = Number.isFinite(Number(pr.winterOutdoorC)) ? Number(pr.winterOutdoorC) : -4;
+    const tEx = Number(s.extractTempC ?? 22);
+    const eff = Number(pr.recoveryEfficiencyPct) || 0;
+    const tSup = recoveredSupplyTempC(tOut, tEx, eff);
+    const kw = recoveredHeatKw(supplyLs, tOut, tEx, eff);
+    const fanW = (Number(pr.sfp_WperLs) || 0) * supplyLs;
+    const types = Object.entries(HRV_RECOVERY_TYPES).map(([k, v]) => `<option value="${k}" ${pr.recoveryType === k ? "selected" : ""}>${v}</option>`).join("");
+    return h`
+      <div class="section-title">Heat recovery</div>
+      <div class="field"><label>Heat exchanger</label><select data-prop-text="recoveryType">${types}</select></div>
+      <div class="field"><label>Temperature efficiency (%)</label><input type="number" step="any" data-prop="recoveryEfficiencyPct" value="${eff}"/></div>
+      <div class="field"><label>Specific fan power (W/(l/s))</label><input type="number" step="any" data-prop="sfp_WperLs" value="${pr.sfp_WperLs ?? ""}"/></div>
+      <div class="field"><label>Winter outdoor design (°C)</label><input type="number" step="any" data-prop="winterOutdoorC" value="${tOut}"/></div>
+      <div class="field"><label>Summer bypass</label>
+        <select data-prop-bool="summerBypass">
+          <option value="true" ${pr.summerBypass !== false ? "selected" : ""}>Yes — 100% bypass</option>
+          <option value="false" ${pr.summerBypass === false ? "selected" : ""}>No</option>
+        </select></div>
+      <div class="field"><label>Frost protection</label><input type="text" data-prop-text="frostProtection" value="${pr.frostProtection || ""}"/></div>
+      <div class="field"><label>Supply / extract filter</label>
+        <span><input type="text" data-prop-text="filterSupply" value="${pr.filterSupply || ""}"/>
+        <input type="text" data-prop-text="filterExtract" value="${pr.filterExtract || ""}"/></span></div>
+      <div class="hrv-box"><dl>
+        <dt>Outdoor air</dt><dd>${num(tOut, 1)} °C</dd>
+        <dt>Extract air</dt><dd>${num(tEx, 1)} °C</dd>
+        <dt>Supply after recovery</dt><dd>${num(tSup, 1)} °C</dd>
+        <dt>Heat recovered at ${lsToDisplay(supplyLs, unit)} ${flowUnitLabel(unit)}</dt><dd>${num(kw, 2)} kW</dd>
+        <dt>Fan power at SFP</dt><dd>${num(fanW / 1000, 2)} kW</dd>
+      </dl></div>
+      <p class="small-note">Dry temperature efficiency, sensible heat only, at the extract temperature in Duct &amp; basis. Replace with the selected unit's data. Supply lands on the right of the box, extract on the left — trace each from its own side.</p>
     `;
   }
 
@@ -285,11 +337,17 @@ export class Panels {
     const ul = flowUnitLabel(unit);
     const isPlant = def.role === "plant";
     const props = Object.entries(c.props || {})
-      .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)))
+      .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k)))
       .map(([k, v]) => {
         const label = PROP_LABELS[k] || k;
         if (k === "note") {
           return `<div class="field full"><label>${label}</label><textarea data-prop="${k}" rows="2">${v || ""}</textarea></div>`;
+        }
+        if (typeof v === "boolean") {
+          return `<div class="field"><label>${label}</label><select data-prop-bool="${k}"><option value="true" ${v ? "selected" : ""}>Yes</option><option value="false" ${v ? "" : "selected"}>No</option></select></div>`;
+        }
+        if (typeof v === "string") {
+          return `<div class="field"><label>${label}</label><input type="text" data-prop-text="${k}" value="${v}"/></div>`;
         }
         if (FLOW_PROP_KEYS.has(k)) {
           return `<div class="field"><label>${label} (${ul})</label><input type="number" step="any" data-flow-prop="${k}" value="${lsToDisplay(v, unit)}"/></div>`;
@@ -297,7 +355,7 @@ export class Panels {
         return `<div class="field"><label>${label}</label><input type="number" step="any" data-prop="${k}" value="${v}"/></div>`;
       })
       .join("");
-    const dual = c.kind === "ahu";
+    const dual = isDualPort(c.kind);
     return h`
       <div class="section-title">${c.label || def.label} <span class="pill ${c.system}">${c.system === "both" ? "supply + return" : c.system}</span></div>
       <div class="field"><label>Custom label</label><input type="text" data-k="label" value="${c.label || ""}" placeholder="${def.label}"/></div>
@@ -373,7 +431,7 @@ export class Panels {
       <div class="field"><label>Position</label><span class="badge">${Math.round(n.x)}, ${Math.round(n.y)}</span></div>
       <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="z" value="${num(n.z, 2)}"/></div>
       <div class="field"><label>Connected ducts</label><span class="badge">${segs}</span></div>
-      <p class="small-note">Drag to move. Use the <b>T-piece</b> tool to cut a branch into a run already traced. Changing height here is a riser if the other end stays put on plan.</p>
+      <p class="small-note">Drag to move. To branch off a run, arm <b>Trace</b>, hover the run and click the dot that appears on it. Changing height here is a riser if the other end stays put on plan.</p>
       <div class="row-actions">
         <button class="btn tiny" data-act="levelRun">Level connected run to this height</button>
         <button class="btn ghost tiny" data-act="delete">Delete node &amp; ducts</button>
@@ -449,6 +507,12 @@ export class Panels {
         } else if (sel.type === "component" && key === "heightM") {
           obj.heightM = val;
           store.syncComponentPorts(obj);
+        } else if (sel.type === "component" && key === "kind") {
+          // keep what was typed, add whatever the new kind needs
+          obj.props = { ...defaultProps(val), ...(obj.props || {}) };
+          obj.kind = val;
+          if (!isDualPort(val) && obj.system === "both") store.setComponentSystem(obj, "supply");
+          else store.syncComponentPorts(obj);
         } else if (sel.type === "node" && key === "z") {
           store.setNodeHeight(obj, val);
         } else {
@@ -486,6 +550,20 @@ export class Panels {
         store.snapshot();
         const key = input.dataset.prop;
         obj.props[key] = input.type === "number" || input.step === "any" ? (input.value === "" ? 0 : Number(input.value)) : input.value;
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-prop-text]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        obj.props[input.dataset.propText] = input.value;
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-prop-bool]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        obj.props[input.dataset.propBool] = input.value === "true";
         commit();
       });
     });
@@ -664,7 +742,7 @@ export class Panels {
     a.href = URL.createObjectURL(blob);
     a.download = `duct-schedule-${(sys.name || sys.systemType).replace(/\s+/g, "-").toLowerCase()}.csv`;
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1500);
   }
 
   segResult(id) {
@@ -686,6 +764,9 @@ export class Panels {
         <input type="number" step="0.5" style="width:64px" data-vmax="${role}" value="${cap}"/></span></div>`;
     }).join("");
     el.innerHTML = h`
+      <div class="section-title">Project</div>
+      <div class="field"><label>Project name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
+      <p class="small-note">Goes on the saved file, the PDF report and the take-off.</p>
       <div class="section-title">Sizing method</div>
       <div class="field"><label>Method</label>
         <select data-s="sizingMethod">
@@ -722,7 +803,7 @@ export class Panels {
       <div class="field"><label>Snap to equipment / joints</label>
         <select data-s="snapPoints">
           <option value="true" ${s.snapPoints !== false ? "selected" : ""}>On — only nearby points</option>
-          <option value="false" ${s.snapPoints === false ? "selected" : ""}>Off — Alt still cuts a T-piece</option>
+          <option value="false" ${s.snapPoints === false ? "selected" : ""}>Off</option>
         </select></div>
       <div class="field"><label>Square corners</label>
         <select data-s="ortho">
@@ -734,7 +815,7 @@ export class Panels {
           <option value="true" ${s.showActualDucts !== false ? "selected" : ""}>Circular / rectangular body</option>
           <option value="false" ${s.showActualDucts === false ? "selected" : ""}>Centreline only</option>
         </select></div>
-      <p class="small-note">Snap only pulls to an outlet, AHU or existing corner when you are already nearby. Parallel supply and return can sit close without being yanked together. Use <b>T-piece</b> (J) to branch off a run.</p>
+      <p class="small-note">Snap only pulls to a terminal, unit or existing corner when you are already nearby, so a close parallel supply and extract are not yanked together. To branch, hover a run while tracing and click the dot on it — only runs of the system you are tracing show one.</p>
 
       <div class="section-title">Default heights (m AFFL)</div>
       <div class="field"><label>Duct run</label><input type="number" step="0.05" data-s="defaultDuctHeight" value="${s.defaultDuctHeight}"/></div>
@@ -799,6 +880,13 @@ export class Panels {
   bindSettings(el) {
     const store = this.store;
     const s = store.project.settings;
+    el.querySelectorAll("[data-meta]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        store.project.meta[input.dataset.meta] = input.value;
+        store.commit();
+      });
+    });
     el.querySelectorAll("[data-s]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();

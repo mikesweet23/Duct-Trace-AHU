@@ -19,7 +19,8 @@ export const COMPONENTS = {
     category: "plant",
     role: "plant",
     symbol: "AHU",
-    color: "#2563eb",
+    color: "#1e3a8a",
+    dualPort: true,
     foot: { w: 2.0, d: 1.2, t: 1.3 },
     props: {
       availableStaticPa: 250, // supply ESP
@@ -28,6 +29,35 @@ export const COMPONENTS = {
       extractFlow_ls: 0, // extract duty; 0 = follow connected inlets
       supplyTempC: 18,
       returnTempC: 22,
+      note: "",
+    },
+  },
+  // Heat recovery ventilation unit (MVHR / HRV). A balanced supply + extract
+  // unit, so it has two ports like a combined AHU. The heat recovery figures
+  // are for the schedule and the report; the duct solve only needs the flows
+  // and the available static either side.
+  hrv: {
+    kind: "hrv",
+    label: "Heat recovery unit (MVHR)",
+    category: "plant",
+    role: "plant",
+    symbol: "HRV",
+    color: "#0f766e",
+    dualPort: true,
+    foot: { w: 1.2, d: 0.7, t: 0.6 },
+    props: {
+      availableStaticPa: 150,
+      extractStaticPa: 150,
+      designFlow_ls: 0,
+      extractFlow_ls: 0,
+      recoveryType: "plate",
+      recoveryEfficiencyPct: 85,
+      sfp_WperLs: 0.9,
+      winterOutdoorC: -4,
+      summerBypass: true,
+      frostProtection: "pre-heater",
+      filterSupply: "ePM1 55%",
+      filterExtract: "ePM10 50%",
       note: "",
     },
   },
@@ -175,6 +205,32 @@ export const COMPONENTS = {
 
 export function componentDef(kind) {
   return COMPONENTS[kind] || null;
+}
+
+// Plant with a separate supply and extract connection (AHU, HRV).
+export function isDualPort(kind) {
+  return !!COMPONENTS[kind]?.dualPort;
+}
+
+export const HRV_RECOVERY_TYPES = {
+  plate: "Counterflow plate",
+  crossflow: "Cross-flow plate",
+  rotary: "Rotary wheel",
+  runaround: "Run-around coil",
+  heatpipe: "Heat pipe",
+};
+
+// Supply air temperature leaving a heat recovery unit: outdoor air warmed
+// towards the extract air by the dry temperature efficiency.
+export function recoveredSupplyTempC(outdoorC, extractC, efficiencyPct) {
+  const e = Math.max(0, Math.min(100, Number(efficiencyPct) || 0)) / 100;
+  return outdoorC + e * (extractC - outdoorC);
+}
+
+// Heat recovered (kW) on the supply airflow (l/s) — sensible only.
+export function recoveredHeatKw(flowLs, outdoorC, extractC, efficiencyPct, rho = 1.2, cp = 1.006) {
+  const t = recoveredSupplyTempC(outdoorC, extractC, efficiencyPct);
+  return (Math.max(0, Number(flowLs) || 0) / 1000) * rho * cp * (t - outdoorC);
 }
 
 export function defaultProps(kind) {

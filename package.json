@@ -6,6 +6,8 @@
   "private": true,
   "scripts": {
     "test": "node --test",
+    "build": "node tools/build.mjs",
+    "check-build": "node tools/build.mjs --check",
     "start": "python3 -m http.server 8000 --bind 0.0.0.0"
   },
   "license": "MIT"

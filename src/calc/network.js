@@ -9,7 +9,7 @@ import { flowToM3s, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { airDensity, airViscosity } from "../units.js";
 import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizing.js";
 import { totalFittingK } from "../standards/fittings.js";
-import { componentDef, inlineLossPa } from "../standards/components.js";
+import { componentDef, inlineLossPa, isDualPort } from "../standards/components.js";
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
 
 const FLOW_MATCH_ABS_LS = 2;
@@ -401,7 +401,7 @@ function nameSystems(systems) {
 function dualAhuWarnings(project, systems) {
   const warnings = [];
   for (const c of project.components || []) {
-    if (c.kind !== "ahu" || c.system !== "both") continue;
+    if (!isDualPort(c.kind) || c.system !== "both") continue;
     const supply = systems.find((s) => s.systemType === "supply" && s.plant?.id === c.id);
     const extract = systems.find((s) => s.systemType === "extract" && s.plant?.id === c.id);
     if (!supply || !extract) continue;

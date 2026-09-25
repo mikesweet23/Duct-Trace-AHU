@@ -15,16 +15,16 @@ export function pressureColor(pa, max = 200) {
 }
 
 export function systemColor(system) {
-  return system === "extract" ? "#d97706" : "#3b82f6";
+  return system === "extract" ? "#c2410c" : "#1f6fd1";
 }
 
 export function pieceFill(piece, mode, selected) {
-  if (selected) return "#38bdf8";
+  if (selected) return "#e0a422";
   if (mode === "velocity") return velColor(piece.velocity, 8);
   if (mode === "pressure") return pressureColor(piece.dpPa, 80);
   if (mode === "airflow") return systemColor(piece.system);
   if (piece.kind === "coupler") return "#cbd5e1";
-  if (piece.kind === "elbow") return piece.system === "extract" ? "#f59e0b" : "#60a5fa";
+  if (piece.kind === "elbow") return piece.system === "extract" ? "#e0662d" : "#4b8fe0";
   if (piece.kind === "reducer" || piece.kind === "enlarger" || piece.kind === "transition" || piece.kind === "sqr_to_round") {
     return "#a78bfa";
   }

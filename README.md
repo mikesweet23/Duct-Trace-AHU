@@ -2,66 +2,101 @@
 
 A browser-based **commercial / industrial ductwork tracing and HVAC duct-sizing
 tool** for supply and extract systems, working to **DW144 / BESA** standard duct
-sizes and **CIBSE** sizing guidance. It runs entirely client-side (no backend,
-no build step) as ES modules on a static server.
+sizes and **CIBSE** sizing guidance. It runs entirely client-side from one self-contained
+`index.html` — on GitHub Pages or straight off a hard disk.
 
-## What it does
+## How it looks and works
 
-- **Concept mode** — sketch indicative layouts and airflows with no drawing.
-- **Drawing mode** — upload a floor-plan image, **calibrate the scale** from a
-  known dimension, and trace ductwork over it.
-- **Rooms & airflows** — outline rooms and set supply / extract targets, with a
-  live balance against the terminals placed inside them.
-- **Duct tracing** — draw connected supply and extract runs. Ducts snap to
-  nearby outlets and AHUs only (they will not yank a close parallel run).
-  Cut a **T-piece** (J) to branch off a run already traced. Outlets can be
-  **duplicated** (Ctrl+D) and both outlets and AHUs can be **resized** on the
-  plan. An AHU can be **supply, extract, or both**.
-- **Heights & risers** — every point has a height (m AFFL). Changing height
-  and clicking the same point drops a **riser** that does not draw as a run
-  on the plan. Open **3D** to review the whole layout, including risers.
-- **Actual ducts** — once a run is sized it is drawn as a circular or
-  rectangular body at the real DW144 size, not just a centreline.
-- **Engineering length override** — each section between two nodes is its
-  own object. Type `12.5 m` on a duct to set the real installed length
-  while leaving the sketch short. Pressure loss, index run, insulation and
-  takeoff all use the engineering length, not the graphical length.
-- **Physical simulator (Stage 2)** — **Generate model** turns the centreline
-  into fabricated straight lengths, joints, elbows, tees, reducers,
-  square-to-round pieces, boots and riser drops. Stage 1 stays the
-  calculation source; Stage 2 is the physical interpretation of the same
-  network. Engineering edits can update the model, with a review step so
-  manual fitting choices are not destroyed.
-- **Takeoff** — bill of materials from the physical pieces (standard + cut
-  lengths, fittings, joints, insulation, estimated supports), filterable by
-  system / AHU / floor / zone / size, exportable as CSV, Excel, PDF,
-  procurement and fabrication schedules. Each item carries costing fields
-  for a later estimating module.
-- **Components** — AHUs, centrifugal / axial / EC plug fans, supply & extract
-  diffusers/grilles/valves/louvres, fire dampers, VCDs, attenuators, plenums,
-  heaters and filters. Every parameter is editable and you can add custom
-  parameters or custom outlets.
-- **Construction per project, branch or length** — set a project default
-  (spiral / square / rectangular). Then override one length, or apply the
-  change to a whole downstream branch, without rewriting the rest of the
-  system. Typical use: rectangular trunk, spiral legs.
-- **Delete one item** — removing a damper, outlet or AHU deletes only that
-  item. The duct run it sits on stays.
-- **Automatic sizing** — spiral/circular, **square** and rectangular ducts sized
-  to the full DW144 / EN 1506 / EN 1505 range, by equal-friction (target Pa/m)
-  or velocity method, with per-role **min and max** velocities (main / **riser** /
-  branch / run-out) from CIBSE Guide B Tables 2.16–2.18, capped by DW144 class.
-- **AHU duty** — a combined AHU can take **different supply and extract flow**
-  and **different available static (Pa)**. A warning is raised if plant duty
-  does not match the connected inlets and outlets.
-- **Flow units** — toggle **l/s ↔ m³/h** everywhere (AHUs, inlets, outlets,
-  rooms, schedules, status). Internal calc stays SI (m³/s).
-- **Pressure & velocity** — per-segment velocity, friction gradient and pressure
-  drop; min/max velocity; **index run** and total **system static pressure (ESP)**
-  for each supply / extract system, DW144 pressure class, and fan-duty margin.
-- **Schedules & PDF** — duct schedule per system, CSV, JSON save / load, and a
-  **PDF report** with AHU/fan details, fittings, each system listed separately,
-  plus plan and 3D layout figures.
+Duct Trace is laid out and driven the same way as adi's **Pipe Trace**
+(`mikesweet23/Alternative-pipe-sizer`, `trace.html`), with a dark blue
+identity of its own so it is obvious which one you are in:
+
+- **Top bar** — Open drawing, Concept, Duct & basis, How to use, ? Help,
+  Undo / Redo, then Check, 3D check, Schedule, PDF, New, Save, Open.
+- **Tool rail** down the left — Select `V`, Pan `H`, Scale `S`, Tape `M`,
+  Room `R`, AHU `A`, HRV `E`, Fan `F`, Terminal `G`, In-line `I`, Trace `T`.
+- **Start board** when nothing is loaded — choose a drawing, start a concept
+  or open the worked example, with every tip listed underneath.
+- **Hint card** docked top-right while a tool is armed, with *Square up*, the
+  live angle and length, the **Height** box and *Finish*. × hides the tip and
+  leaves the tool armed.
+- **Status strip** bottom-left (scale, terminals, flow unit, each system's
+  flow and ESP, corners, lengths, Check) and **zoom** bottom-right.
+- **Inspector** on the right opens when something is picked.
+- **Schedule drawer** from the bottom: systems & ducts, fabrication model,
+  take-off. **3D check** lays over the plan with Iso / Front / Side / Plan.
+- **Duct & basis** slides in from the right: project name, sizing method,
+  velocities, construction, air, tracing, heights, fabrication, insulation.
+
+## Drawings
+
+**Open drawing** takes a **PDF** (its first page, rendered with pdf.js) or an
+image, or drop the file on the board. A drawing without a scale stops at a
+locked *Set the scale* dialog — nothing can be placed or traced until two
+points and a real dimension are given. Replacing the sheet under an existing
+take-off asks whether the scale still holds. **Concept** works on a metre grid
+with no drawing; type the installed length on each run.
+
+## Tracing
+
+- **Trace** `T` asks **Supply** or **Extract**. Start on a unit's ring, click
+  each corner, and finish on a terminal's ring — that click joins and drops
+  the pencil. Double-click, `Enter` or *Finish* stops in mid-air; `Esc` ends.
+- **Branch off a run** by hovering it: a dot appears on the duct; click it.
+  The tee is cut exactly on the duct. Only runs of the system being traced
+  show a dot, so supply and extract cannot be joined by accident. There is no
+  T-piece tool.
+- Corners lock to 90° and 45°. `Alt` frees one corner; `O` turns the lock off.
+- Change **Height** (or `[` `]`) and click the same point again for a riser.
+- Drag empty paper to pan in any tool, `Space`-drag, or the middle button.
+  Wheel zooms to the cursor; double-click empty paper zooms in there. On an
+  iPad, tap to trace and pinch to zoom.
+- **In-line** devices (fire damper, VCD, attenuator, plenum, heater, filter)
+  clicked onto a duct sit on that duct.
+
+### What was wrong with tracing before
+
+1. The tool was ES modules loaded by `index.html`. Opened from a hard disk
+   (`file://`) the browser refuses module scripts, so nothing ran at all.
+   `index.html` is now a single self-contained file (see *Build*).
+2. Clicking onto an existing duct to branch did not join it: the click either
+   pulled to a far end or dropped a loose node on top of the duct that looked
+   joined and was not, so the branch read *no flow*. It now cuts a tee on the
+   duct.
+3. The canvas had no `touch-action`, so on a tablet a drag scrolled the page
+   instead of tracing.
+
+## Units
+
+- **AHU** — supply and extract in one box, or supply-only / extract-only.
+- **HRV — heat recovery unit (MVHR)** — a balanced supply + extract unit with
+  its own two ports (supply leaves the right-hand side, extract comes in on
+  the left). Carries the exchanger type, temperature efficiency, SFP, summer
+  bypass, frost protection and filters; the inspector gives the supply
+  temperature after recovery, the heat recovered and the fan power, and they
+  go on the PDF. The duct sizes come from the flows and available static,
+  exactly as for an AHU.
+- **Fans** — centrifugal, axial, EC plug, serving the system that is armed.
+- **Terminals** — diffusers, supply and extract grilles, extract valves,
+  louvres.
+
+## What it calculates
+
+- **Automatic sizing** — spiral, square and rectangular to DW144 / EN 1506 /
+  EN 1505, by equal friction or velocity, with per-role min and max
+  velocities (main / riser / branch / run-out) from CIBSE Guide B.
+- **Pressure & velocity** — per-duct velocity, Pa/m and pressure drop; the
+  **index run** and **system static (ESP)** per supply / extract system;
+  DW144 pressure class; fan-duty margin; supply vs extract mismatch on a
+  two-port unit.
+- **Engineering length override** — type `12.5 m` on a duct.
+- **Physical model and take-off** — straights, bends, tees, reducers,
+  joints, supports; CSV, Excel and PDF schedules.
+- **Rooms** — supply / extract targets balanced against the terminals inside.
+- **Check** — unconnected terminals and units, runs that stop in mid-air,
+  ducts that carry no air, missing flows, static shortfalls, duty mismatches.
+- **PDF report** — plan, 3D, systems, index run, plant (HRV figures
+  included) and fittings.
 
 ## Engineering basis
 
@@ -90,37 +125,62 @@ Changes flow Stage 1 → physical generator → fabrication model → takeoff.
 Engineering centreline length (pressure) is kept distinct from fabricated
 material length (cut pieces + fittings).
 
-## Local development
+## Files and build
 
-No dependencies or build step. Serve the folder with any static server:
+`index.html` is **the whole tool in one file** — HTML, CSS, JavaScript and the
+logo inline — so it runs from GitHub Pages *and* straight off a hard disk,
+the same as Pipe Trace. The only thing it fetches is pdf.js, to read PDF
+drawings; without a connection images still load and a PDF asks for a PNG.
+
+It is **built**, not edited:
+
+```bash
+node tools/build.mjs          # writes index.html from dev.html + styles.css + src/
+node tools/build.mjs --check  # fails if index.html is out of date
+```
+
+The source is ES modules under `src/` (the tests import them) and
+`dev.html` runs them directly from a local server while developing:
 
 ```bash
 python3 -m http.server 8000 --bind 0.0.0.0
-# open http://localhost:8000/
+# http://localhost:8000/dev.html  — the source, live
+# http://localhost:8000/          — the built file
 ```
 
-## Tests
+`test/build.test.mjs` fails if `index.html` is not the current build, so a
+change to `src/` without a rebuild does not get past `npm test`.
 
-Calculation-core unit tests (no dependencies, Node's built-in runner):
+## Tests
 
 ```bash
 npm test        # == node --test
 ```
 
+`test/trace.test.mjs` covers branching off a run onto the pipe, joining a
+terminal dropping the pencil, supply and extract not joining, the corner lock,
+risers, in-line devices landing on a duct, and the HRV as a two-port plant.
+
 ## Project layout
 
 | Path | Purpose |
 | --- | --- |
-| `index.html`, `styles.css` | App shell and styling |
-| `src/main.js` | Wiring: palette, toolbar, compute-on-change loop |
+| `index.html` | **Built** single-file tool — what Pages serves and what opens from disk |
+| `dev.html`, `styles.css` | App shell and styling (source for the build) |
+| `tools/build.mjs` | Dependency-free bundler that writes `index.html` |
+| `assets/adi-logo.png` | Logo, inlined by the build |
+| `src/main.js` | Wiring: rail, palettes, hint, status, drawings, Check, files |
 | `src/state.js` | Project model, persistence, undo, demo seed |
-| `src/ui/` | Canvas editor, 3D review, side panels, modals |
-| `src/snap.js`, `src/layout.js` | Nearby-only snap (ac-trace discipline) and equipment footprints |
-| `src/standards/` | DW144 data, sizing engine, fittings, component library |
+| `src/ui/canvas.js` | Plan editor: tracing, snapping, placing, drawing |
+| `src/ui/help.js` | The "What do I do when…" tips and How to use steps |
+| `src/ui/` | Inspector panels, 3D check, modals, fabrication / take-off panels |
+| `src/snap.js`, `src/layout.js` | Nearby-only snap, branch dots and equipment footprints |
+| `src/standards/` | DW144 data, sizing engine, fittings, component library (AHU, HRV…) |
 | `src/calc/network.js` | System solver (flows, index run, static pressure) |
 | `src/fab/` | Physical model generator, takeoff, change review, export |
-| `test/` | Node unit tests for the calculation core |
+| `test/` | Node unit tests |
 
 ## Cloud Agent environment
 
-`.cursor/environment.json` serves the app on port `8000` and runs no build step.
+`.cursor/environment.json` serves the folder on port `8000` and runs no build
+step; run `node tools/build.mjs` after changing anything under `src/`.

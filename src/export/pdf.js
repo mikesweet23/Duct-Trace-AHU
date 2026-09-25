@@ -418,7 +418,13 @@ function writeSystem(w, project, sys, unit, unitLabel) {
       !["designFlow_ls", "extractFlow_ls", "availableStaticPa", "extractStaticPa", "designFlow", "supplyFlow_ls", "supplyStaticPa"].includes(k)
     );
     if (extra.length) {
-      w.kv(extra.map(([k, v]) => [k, v]));
+      const LBL = {
+        recoveryType: "Heat recovery", recoveryEfficiencyPct: "Temperature efficiency (%)",
+        sfp_WperLs: "Specific fan power (W/(l/s))", summerBypass: "Summer bypass",
+        frostProtection: "Frost protection", filterSupply: "Supply filter", filterExtract: "Extract filter",
+        winterOutdoorC: "Winter outdoor design (C)", supplyTempC: "Supply temp (C)", returnTempC: "Return temp (C)", note: "Note",
+      };
+      w.kv(extra.filter(([, v]) => v !== "" && v != null).map(([k, v]) => [LBL[k] || k, typeof v === "boolean" ? (v ? "Yes" : "No") : v]));
     }
   } else {
     w.para("No AHU or fan on this system.");
@@ -545,6 +551,9 @@ export function downloadBlob(blob, filename) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+  a.remove();
+  // revoked a moment later: revoking at once can lose the file name
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 }

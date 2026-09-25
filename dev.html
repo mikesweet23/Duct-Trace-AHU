@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Duct Trace AHU — adi</title>
+<link rel="icon" href="assets/adi-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=Azeret+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<!-- PDF reader for drawings supplied as PDF. Images need nothing. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar adi-bar">
+    <img class="brand-logo" src="assets/adi-logo.png" alt="adi">
+    <div class="title-block">
+      <h1>Duct Trace AHU</h1>
+      <div class="sub">adi Climate Systems &middot; ductwork take-off &amp; sizing &middot; DW144 / CIBSE</div>
+    </div>
+    <button class="tb dwg" id="bOpenDwg" title="Load a PDF or image of the layout">Open drawing</button>
+    <button class="tb" id="bConcept" title="Concept layout — place the AHU and terminals on a grid, type duct lengths. No drawing needed.">Concept</button>
+    <button class="tb" id="bBasis" title="Sizing method, velocities, construction, heights and fabrication">Duct &amp; basis</button>
+    <button class="tb" id="bSteps">How to use</button>
+    <button class="tb" id="bHelp" title="What do I do when&hellip; — searchable tips (? or F1)">? Help</button>
+    <button class="tb" id="bUndo" disabled title="Undo (Ctrl+Z)">&#8630; Undo</button>
+    <button class="tb" id="bRedo" disabled title="Redo (Ctrl+Y)">&#8631; Redo</button>
+    <div class="sp"></div>
+    <button class="tb" id="bCheck" title="Look for terminals and runs that are not connected the way they look">Check</button>
+    <button class="tb" id="b3d" title="Check the heights and the duct in three dimensions">3D check</button>
+    <button class="tb" id="bSched" title="Duct schedule, fabrication model and take-off">Schedule</button>
+    <button class="tb" id="bPdf" title="PDF report — plan, 3D, systems and fittings">PDF</button>
+    <button class="tb" id="bNew" title="Start again with an empty project">New</button>
+    <button class="tb" id="bSave" title="Save this take-off as a file (Ctrl+S)">Save</button>
+    <button class="tb" id="bLoad" title="Open a saved Duct Trace file">Open</button>
+    <input type="file" id="fDwg" accept="application/pdf,.pdf,image/*" hidden>
+    <input type="file" id="fProj" accept=".json,application/json" hidden>
+  </div>
+
+  <div class="body" id="body">
+    <div class="rail" id="rail"></div>
+
+    <div class="stage" id="stage">
+      <canvas id="canvas"></canvas>
+
+      <div class="board" id="board">
+        <div class="board-in">
+          <div class="drop" id="drop">
+            <h1>Trace the ductwork off the drawing</h1>
+            <p>Load a PDF or image of the layout, set the scale from a known dimension,
+               then place the AHU or heat recovery unit and the terminals and trace the
+               supply and extract runs between them. Lengths come off the drawing, so the
+               sizing and the static pressure are real.</p>
+            <button class="btn go" id="bPick">Choose a drawing</button>
+            <button class="btn ghost" id="bPickConcept" style="margin-left:8px">Start a concept</button>
+            <button class="btn ghost" id="bPickDemo" style="margin-left:8px">Open the worked example</button>
+            <div style="margin-top:12px;font-size:12px;color:var(--muted)">or drop a PDF or image here</div>
+          </div>
+          <div class="board-help" id="boardHelp"></div>
+        </div>
+      </div>
+
+      <div class="helpPane" id="helpPane" aria-label="Help">
+        <div class="help-hd">
+          <h3>What do I do when&hellip;</h3>
+          <input id="helpQ" type="search" placeholder="Search — e.g. riser, branch, HRV, scale&hellip;" autocomplete="off">
+          <button class="btn ghost sm" id="helpClose">Close</button>
+        </div>
+        <div class="help-bd" id="helpBody"></div>
+      </div>
+
+      <div class="hint" id="hint">
+        <span id="hintTxt"></span>
+        <label class="hopt" title="On, corners lock to horizontal, vertical and 45°. Off, every corner is a free angle. Hold Alt to flip it for one click.">
+          <input type="checkbox" id="orthoChk" checked> Square up <kbd>O</kbd></label>
+        <span class="hopt" id="hintAngle" title="The angle of the leg you are drawing"></span>
+        <span class="hgt hopt" title="The height the next point is traced at. Change it before a click and that click starts a riser.">
+          Height <input type="number" id="hgtIn" step="0.1"> m
+        </span>
+        <button class="hfin" id="hintFin" title="End here (or double-click, or press Enter)">Finish</button>
+        <button type="button" class="hshow" id="hintShow" title="Show the tip again">Tip</button>
+        <button type="button" class="xmin" id="hintX" title="Hide this tip — the tool stays armed">&times;</button>
+      </div>
+
+      <div class="tpal" id="tpal" aria-label="Trace supply or extract">
+        <b>Trace as</b>
+        <button type="button" data-tsys="supply">Supply<span class="sub">to the terminals</span></button>
+        <button type="button" data-tsys="extract">Extract<span class="sub">back to the unit</span></button>
+      </div>
+
+      <div class="vpal" id="cpal">
+        <div class="vpal-hd">
+          <b id="cpalTitle">Terminals</b>
+          <span>pick one, then click the plan</span>
+        </div>
+        <div class="vpal-bd" id="cpalBody"></div>
+        <div class="vpal-ft">
+          <span class="cpal-note" id="cpalNote"></span>
+          <button class="btn ghost sm" id="cpalDone">Done</button>
+        </div>
+      </div>
+
+      <div class="status" id="status"></div>
+
+      <div class="zoomer" id="zoomer">
+        <button id="zOut" title="Zoom out">&minus;</button>
+        <div class="lvl" id="zLvl">100%</div>
+        <button id="zIn" title="Zoom in">+</button>
+        <button id="zFit" title="Fit the take-off">Fit</button>
+        <button id="zSize" class="on" title="Draw the duct at its real size once it is sized">Size</button>
+        <button id="zFade" title="Fade the drawing behind the trace">Dim</button>
+      </div>
+
+      <div class="drawer" id="drawer">
+        <div class="drawer-hd">
+          <h3 id="schedTitle">Duct schedule</h3>
+          <div class="segbtn" id="schedTabs">
+            <button data-tab="results" class="on">Systems &amp; ducts</button>
+            <button data-tab="fabrication">Fabrication</button>
+            <button data-tab="takeoff">Take-off</button>
+          </div>
+          <div style="flex:1"></div>
+          <button class="btn ghost sm" id="bSchedClose">Close</button>
+        </div>
+        <div class="drawer-bd">
+          <section id="tab-results" class="tab-pane on"></section>
+          <section id="tab-fabrication" class="tab-pane"></section>
+          <section id="tab-takeoff" class="tab-pane"></section>
+        </div>
+      </div>
+
+      <div class="three" id="three">
+        <div class="three-hd">
+          <h3>3D check</h3>
+          <div style="flex:1"></div>
+          <div class="segbtn" id="threeViews">
+            <button data-v="iso">Iso</button>
+            <button data-v="front">Front</button>
+            <button data-v="side">Side</button>
+            <button data-v="plan">Plan</button>
+            <button data-v="fit">Fit</button>
+          </div>
+          <span class="lbl">Show</span>
+          <select id="threeMode" title="What the 3D view draws"></select>
+          <span class="lbl">Height</span>
+          <select id="threeEx" title="Exaggerate the vertical, to read small height differences">
+            <option value="1">&times;1 true</option>
+            <option value="1.6" selected>&times;1.6</option>
+            <option value="3">&times;3</option>
+            <option value="6">&times;6</option>
+          </select>
+          <button class="btn ghost sm" id="threeExplode">Exploded</button>
+          <button class="btn go sm" id="three2d">Back to plan</button>
+        </div>
+        <div class="three-stage">
+          <canvas id="view3d"></canvas>
+          <div class="three-legend" id="threeLegend"></div>
+          <div class="three-tip">Drag to orbit &middot; shift-drag to pan &middot; scroll to zoom &middot;
+            click a duct to select it.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="inspector" id="inspector">
+      <div class="ins-hd">
+        <div style="flex:1">
+          <div class="k" id="insKind">&nbsp;</div>
+          <h3 id="insName">&nbsp;</h3>
+        </div>
+        <button class="btn ghost sm" id="insClose">Done</button>
+      </div>
+      <div class="ins-bd" id="tab-properties"></div>
+    </div>
+  </div>
+</div>
+
+<div class="basis" id="basis">
+  <div class="basis-in">
+    <div class="basis-hd">
+      <h3>Duct &amp; basis</h3>
+      <div class="segbtn" id="unitSeg" title="How flow is typed and shown. Stored as l/s.">
+        <button data-flowunit="l/s">l/s</button>
+        <button data-flowunit="m3/h">m³/h</button>
+      </div>
+      <button class="btn go sm" id="basisClose">Done</button>
+    </div>
+    <div class="basis-bd" id="tab-settings"></div>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div class="toast" id="toast"></div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
