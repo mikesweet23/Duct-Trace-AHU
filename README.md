@@ -37,6 +37,15 @@ points and a real dimension are given. Replacing the sheet under an existing
 take-off asks whether the scale still holds. **Concept** works on a metre grid
 with no drawing; type the installed length on each run.
 
+**Rotate** (&#8635; by the zoom, or `Shift`+`R`): quarter turns, 180° and a
+fine straighten for a scan that is a degree or two off. The turn is baked
+into the image and everything traced turns with it, so it is safe at any
+point and the scale is unaffected (rotation cannot change a distance). Each
+turn is worked from the sheet as it was loaded, held in memory, so repeated
+nudges do not soften it; corners opened up off square are filled white.
+*Back as loaded* returns to 0°, `Ctrl`+`Z` steps a turn back. Code:
+`src/rotate.js`, `rotateDrawing()` in `src/main.js`.
+
 ## Tracing
 
 - **Trace** `T` asks **Supply** or **Extract**. Start on a unit's ring, click

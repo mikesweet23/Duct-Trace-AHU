@@ -13,6 +13,8 @@ export const HELP_SECTIONS = [
 export const HELP = [
   { sec: "start", tools: ["select"], t: "I have a drawing to trace",
     b: "<b>Open drawing</b> takes a PDF (its first page) or an image, or drop the file on the board. The scale is asked for straight away — nothing can be placed until it is set." },
+  { sec: "start", tools: ["select", "scale"], t: "The drawing is sideways, or the scan is not square",
+    b: "<b>&#8635;</b> by the zoom (or <kbd>Shift</kbd>+<kbd>R</kbd>) turns the sheet: 90° either way, 180°, or a fine straighten a degree or a tenth at a time. Anything already traced turns with it and the scale does not change, so it is safe at any point. <b>Back as loaded</b> undoes the lot; <kbd>Ctrl</kbd>+<kbd>Z</kbd> steps one turn back." },
   { sec: "start", tools: ["scale"], t: "I need to set or reset the scale",
     b: "<b>Scale</b> <kbd>S</kbd>: click two points a known distance apart and type the real figure in metres. Use the longest dimension on the sheet — a grid line or a bay is ideal." },
   { sec: "start", tools: ["select"], t: "I have no drawing yet — just a concept",
@@ -72,6 +74,7 @@ export const HELP = [
 
 export const STEPS = [
   { t: "Load the drawing — or start a concept", b: "A PDF (first page) or an image of the layout. No drawing yet? <b>Concept</b> gives a metre grid to lay out on." },
+  { t: "Turn it the right way up", b: "<b>&#8635;</b> by the zoom rotates the sheet a quarter turn or straightens a scan. The trace turns with it, so this can be done at any point." },
   { t: "Set the scale — before anything else", b: "Two points a known distance apart, and the real figure. Every length and every size comes off it." },
   { t: "Place the unit", b: "<b>AHU</b> or <b>HRV</b> for a supply and extract unit, or a <b>Fan</b>. Supply leaves the right-hand side, extract the left." },
   { t: "Place the terminals and their flows", b: "Diffusers, grilles and extract valves from <b>Terminal</b>. Type each design flow. Rooms are optional, for a balance check." },
