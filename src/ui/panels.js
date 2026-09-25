@@ -368,10 +368,10 @@ export class Panels {
         </select></div>`}
       ${dual && c.system === "both" ? `<div class="field"><label>Connections</label>
         <select data-k="portLayout">
-          <option value="inline" ${c.portLayout !== "sides" ? "selected" : ""}>Building side right (SUP, ETA) · outside left (ODA, EHA)</option>
-          <option value="sides" ${c.portLayout === "sides" ? "selected" : ""}>Supply right · extract left · fresh air top · exhaust bottom</option>
+          <option value="inline" ${c.portLayout !== "flipped" ? "selected" : ""}>Internal (IN) on the right · external (EX) on the left</option>
+          <option value="flipped" ${c.portLayout === "flipped" ? "selected" : ""}>Internal (IN) on the left · external (EX) on the right</option>
         </select></div>
-      <p class="small-note">Four connections: <b style="color:#1f6fd1">SUP</b> supply into the building, <b style="color:#c2410c">ETA</b> extract back from it, <b style="color:#15803d">ODA</b> fresh air in from outside, <b style="color:#7c4a1e">EHA</b> exhaust out. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box.</p>` : ""}
+      <p class="small-note">Two connections on each face. <b>IN</b> (internal, to the building): <b style="color:#1f6fd1">supply</b> and <b style="color:#c2410c">extract</b>. <b>EX</b> (external, to outside): <b style="color:#15803d">fresh air in</b> and <b style="color:#7c4a1e">exhaust out</b>. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box.</p>` : ""}
       <div class="field"><label>Type</label>
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}

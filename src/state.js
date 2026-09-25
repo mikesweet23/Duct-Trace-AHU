@@ -3,7 +3,7 @@
 
 import { dist } from "./geom.js";
 import { defaultProps, componentDef, isDualPort } from "./standards/components.js";
-import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY } from "./layout.js";
+import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } from "./layout.js";
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
 import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
@@ -140,7 +140,7 @@ export function migrateProject(raw) {
       // a unit drawn before it had four connections keeps supply right and
       // extract left, so nothing already traced moves; fresh air and exhaust
       // are added top and bottom
-      if (!c.portLayout) c.portLayout = c.returnNodeId ? "sides" : "inline";
+      if (!PORT_LAYOUTS[c.portLayout]) c.portLayout = "inline"; // "sides" and anything unknown
       syncPorts(p, c);
     }
   }
@@ -762,13 +762,13 @@ export function seedDemo(store) {
     };
   };
   p.components = [
-    comp("cAHU", "ahu", "nAHU", "both", 120, 380, {
+    comp("cAHU", "ahu", "nAHU", "both", 120, 394, {
       availableStaticPa: 350,
       extractStaticPa: 280,
       designFlow_ls: 480,
       extractFlow_ls: 420,
       supplyTempC: 18,
-    }, { returnNodeId: "nAHUr", outdoorNodeId: "nODAp", exhaustNodeId: "nEHAp", portLayout: "sides", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
+    }, { returnNodeId: "nAHUr", outdoorNodeId: "nODAp", exhaustNodeId: "nEHAp", portLayout: "inline", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
     comp("cODA", "intake_louvre", "nODA", "outdoor", 120, 150, {}, { heightM: 3.0 }),
     comp("cEHA", "exhaust_louvre", "nEHA", "exhaust", 120, 640, {}, { heightM: 3.0 }),
     comp("cFD", "fire_damper", "nT1", "supply", 320, 380, { lossPa: 15 }, { heightM: 3.2 }),
@@ -796,10 +796,14 @@ export function seedDemo(store) {
   if (ret && rise) { rise.x = ret.x; rise.y = ret.y; }
   const ec = p.nodes.find((n) => n.id === "nEc");
   if (ret && ec) ec.x = ret.x;
-  // the outside ducts drop straight off the ODA / EHA connections
-  for (const [port, corner] of [["nODAp", "nODAc"], ["nEHAp", "nEHAc"]]) {
+  // the external ducts rise off the fresh-air / exhaust connections and run
+  // straight to their louvres
+  for (const [port, corner, end, comp] of [["nODAp", "nODAc", "nODA", "cODA"], ["nEHAp", "nEHAc", "nEHA", "cEHA"]]) {
     const a = p.nodes.find((n) => n.id === port), b = p.nodes.find((n) => n.id === corner);
+    const e = p.nodes.find((n) => n.id === end), c = p.components.find((x) => x.id === comp);
     if (a && b) { b.x = a.x; b.y = a.y; }
+    if (a && e) e.x = a.x;
+    if (a && c) c.x = a.x;
   }
   store.commit();
 }

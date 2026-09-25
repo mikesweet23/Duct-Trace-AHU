@@ -11,12 +11,16 @@
 //
 // Colours follow the usual schematic convention: outdoor green, supply blue,
 // extract yellow-orange, exhaust brown.
+//
+// On screen the codes are IN (internal — supply and extract, the building
+// side of the unit) and EX (external — fresh air and exhaust, the outside
+// side); `en` keeps the EN 16798-3 abbreviation for reference.
 
 export const SYSTEMS = {
-  supply:  { key: "supply",  code: "SUP", label: "Supply",    long: "Supply air — into the building",   color: "#1f6fd1", fan: "supply",  outside: false, towardUnit: false },
-  extract: { key: "extract", code: "ETA", label: "Extract",   long: "Extract air — back from the building", color: "#c2410c", fan: "extract", outside: false, towardUnit: true },
-  outdoor: { key: "outdoor", code: "ODA", label: "Fresh air", long: "Outdoor air — fresh air in from outside", color: "#15803d", fan: "supply",  outside: true,  towardUnit: true },
-  exhaust: { key: "exhaust", code: "EHA", label: "Exhaust",   long: "Exhaust air — stale air out to outside", color: "#7c4a1e", fan: "extract", outside: true,  towardUnit: false },
+  supply:  { key: "supply",  code: "IN", en: "SUP", label: "Supply",    long: "Supply air — into the building",   color: "#1f6fd1", fan: "supply",  outside: false, towardUnit: false },
+  extract: { key: "extract", code: "IN", en: "ETA", label: "Extract",   long: "Extract air — back from the building", color: "#c2410c", fan: "extract", outside: false, towardUnit: true },
+  outdoor: { key: "outdoor", code: "EX", en: "ODA", label: "Fresh air", long: "Outdoor air — fresh air in from outside", color: "#15803d", fan: "supply",  outside: true,  towardUnit: true },
+  exhaust: { key: "exhaust", code: "EX", en: "EHA", label: "Exhaust",   long: "Exhaust air — stale air out to outside", color: "#7c4a1e", fan: "extract", outside: true,  towardUnit: false },
 };
 
 export const SYSTEM_KEYS = ["supply", "extract", "outdoor", "exhaust"];
