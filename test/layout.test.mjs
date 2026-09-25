@@ -168,7 +168,7 @@ test("a combined AHU is plant for both supply and extract", () => {
   assert.equal(all.extract.rootNode, ahu.returnNodeId);
 });
 
-test("dual AHU snap lands supply and extract on opposite sides", () => {
+test("dual AHU snap lands on a separate supply and extract connection", () => {
   const store = emptyStore();
   const ahu = store.addComponentAt({ x: 0, y: 0 }, "ahu", "both");
   store.setComponentSystem(ahu, "both");
@@ -176,7 +176,8 @@ test("dual AHU snap lands supply and extract on opposite sides", () => {
   const extract = snapAt(store.project, { x: 0, y: 0 }, { zoom: 1, system: "extract" });
   assert.equal(supply.node.id, ahu.nodeId);
   assert.equal(extract.node.id, ahu.returnNodeId);
-  assert.ok(supply.at.x > extract.at.x);
+  assert.ok(supply.at.y < extract.at.y, "supply above extract on the building side");
+  assert.ok(Math.abs(supply.at.x - extract.at.x) < 1e-6);
 });
 
 test("offset poly keeps a constant width (no flare)", () => {

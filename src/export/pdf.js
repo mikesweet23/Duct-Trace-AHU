@@ -401,15 +401,17 @@ function writeSystem(w, project, sys, unit, unitLabel) {
 
   if (sys.plant) {
     const def = componentDef(sys.plant.kind);
-    const side = sys.systemType;
+    const side = { outdoor: "supply", exhaust: "extract" }[sys.systemType] || sys.systemType;
     w.heading("Plant / AHU / fan", 11);
     w.kv([
       ["Item", sys.plant.label || def?.label || sys.plant.kind],
       ["Kind", def?.label || sys.plant.kind],
-      ["System", sys.plant.system === "both" ? "Supply + extract" : sys.plant.system],
+      ["System", sys.plant.system === "both" ? "Supply + extract, fresh air in, exhaust out" : sys.plant.system],
       [`Duty (${unitLabel})`, formatFlowLs(plantDutyLs(sys.plant.props, side), unit)],
       ["Available static (Pa)", round(plantStaticPa(sys.plant.props, side), 0)],
       ["Index ESP (Pa)", round(sys.indexStaticPa, 0)],
+      ...(sys.fanStaticPa != null && Math.abs(sys.fanStaticPa - sys.indexStaticPa) > 0.5
+        ? [["Fan static, both sides (Pa)", round(sys.fanStaticPa, 0)]] : []),
       ["Margin (Pa)", sys.marginPa == null ? "-" : round(sys.marginPa, 0)],
       ["Connected terminals", formatFlow(sys.totalFlowM3s, unit)],
       ["Match", sys.balance?.matched ? "Duty matches terminals" : (sys.balance?.plantDutyLs > 0 ? "MISMATCH - duty vs terminals" : "Duty not set (follows terminals)")],

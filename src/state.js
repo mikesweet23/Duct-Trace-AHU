@@ -3,7 +3,7 @@
 
 import { dist } from "./geom.js";
 import { defaultProps, componentDef, isDualPort } from "./standards/components.js";
-import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf } from "./layout.js";
+import { connPoint, defaultFootprint, defaultHeightM, portOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY } from "./layout.js";
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
 import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
@@ -28,6 +28,8 @@ export function defaultSettings() {
     roughnessMm: 0.15,
     supplyTempC: 18,
     extractTempC: 22,
+    outdoorTempC: 5,
+    exhaustTempC: 12,
     velocityCaps: {
       main: RECOMMENDED_VELOCITY.main.max,
       riser: RECOMMENDED_VELOCITY.riser.max,
@@ -134,17 +136,37 @@ export function migrateProject(raw) {
     const n = p.nodes.find((x) => x.id === c.nodeId);
     if (n && !Number.isFinite(Number(n.z))) n.z = c.heightM;
     if (componentDef(c.kind)?.role === "plant") c.props = migratePlantFlow(c.props);
-    if (c.system === "both" && isDualPort(c.kind) && !c.returnNodeId) {
-      const off = portOffset("extract");
-      const at = connPoint(c, off, pxPerMeterOf(p));
-      const rn = { id: uid("n"), x: at.x, y: at.y, z: c.heightM };
-      p.nodes.push(rn);
-      c.returnNodeId = rn.id;
-      const supplyAt = connPoint(c, portOffset("supply"), pxPerMeterOf(p));
-      if (n) { n.x = supplyAt.x; n.y = supplyAt.y; n.z = c.heightM; }
+    if (isFourPort(c)) {
+      // a unit drawn before it had four connections keeps supply right and
+      // extract left, so nothing already traced moves; fresh air and exhaust
+      // are added top and bottom
+      if (!c.portLayout) c.portLayout = c.returnNodeId ? "sides" : "inline";
+      syncPorts(p, c);
     }
   }
   return p;
+}
+
+// Puts every connection node of a component on its casing. A four-port unit
+// (AHU or HRV serving supply and extract) gets its missing port nodes made.
+function syncPorts(project, c) {
+  const px = pxPerMeterOf(project);
+  const four = isFourPort(c);
+  const z = Number.isFinite(Number(c.heightM)) ? c.heightM : project.settings.defaultAhuHeight;
+  for (const [system, key] of Object.entries(PORT_NODE_KEY)) {
+    if (!four && system !== "supply") continue;
+    const at = connPoint(c, four ? portOffset(system, c.portLayout) : null, px);
+    let n = c[key] ? project.nodes.find((x) => x.id === c[key]) : null;
+    if (!n) {
+      if (system === "supply") continue;
+      n = { id: uid("n"), x: at.x, y: at.y, z };
+      project.nodes.push(n);
+      c[key] = n.id;
+    }
+    n.x = at.x;
+    n.y = at.y;
+    n.z = z;
+  }
 }
 
 export class Store {
@@ -339,32 +361,7 @@ export class Store {
   }
 
   syncComponentPorts(c) {
-    const px = pxPerMeterOf(this.project);
-    const supplyOff = c.system === "both" && isDualPort(c.kind) ? portOffset("supply") : null;
-    const extractOff = c.system === "both" && isDualPort(c.kind) ? portOffset("extract") : null;
-    const n = this.project.nodes.find((x) => x.id === c.nodeId);
-    if (n) {
-      const at = connPoint(c, supplyOff, px);
-      n.x = at.x;
-      n.y = at.y;
-      n.z = Number.isFinite(Number(c.heightM)) ? c.heightM : n.z;
-    }
-    if (c.system === "both" && isDualPort(c.kind)) {
-      if (!c.returnNodeId) {
-        const at = connPoint(c, extractOff, px);
-        const rn = { id: uid("n"), x: at.x, y: at.y, z: c.heightM ?? this.project.settings.defaultAhuHeight };
-        this.project.nodes.push(rn);
-        c.returnNodeId = rn.id;
-      } else {
-        const rn = this.project.nodes.find((x) => x.id === c.returnNodeId);
-        if (rn) {
-          const at = connPoint(c, extractOff, px);
-          rn.x = at.x;
-          rn.y = at.y;
-          rn.z = Number.isFinite(Number(c.heightM)) ? c.heightM : rn.z;
-        }
-      }
-    }
+    syncPorts(this.project, c);
   }
 
   addComponentAt(point, kind, system = this.activeSystem) {
@@ -372,14 +369,14 @@ export class Store {
     if (!def) return null;
     const foot = defaultFootprint(kind);
     const heightM = defaultHeightM(kind, this.project.settings);
-    if (def.role === "terminal" && (kind === "grille_extract" || kind === "valve_extract")) {
-      system = "extract";
-    }
+    if (def.system) system = def.system; // an extract grille is extract, an intake louvre is fresh air
+    else if (def.role === "terminal" && (system === "outdoor" || system === "exhaust")) system = "supply";
     const c = {
       id: uid("c"),
       kind,
       nodeId: null,
       returnNodeId: null,
+      portLayout: isDualPort(kind) ? "inline" : undefined,
       system: isDualPort(kind) && system === "both" ? "both" : system,
       x: point.x,
       y: point.y,
@@ -416,17 +413,19 @@ export class Store {
 
   setComponentSystem(c, system) {
     c.system = system;
-    if (isDualPort(c.kind) && system === "both") {
-      this.syncComponentPorts(c);
-    } else if (c.returnNodeId && system !== "both") {
-      const rid = c.returnNodeId;
-      c.returnNodeId = null;
-      const stillUsed = this.project.segments.some((s) => s.a === rid || s.b === rid);
-      if (!stillUsed) this.project.nodes = this.project.nodes.filter((n) => n.id !== rid);
-      this.syncComponentPorts(c);
-    } else {
-      this.syncComponentPorts(c);
+    if (!isFourPort(c)) {
+      // only the supply node stays; the other ports go if nothing uses them
+      for (const key of ["returnNodeId", "outdoorNodeId", "exhaustNodeId"]) {
+        const rid = c[key];
+        if (!rid) continue;
+        c[key] = null;
+        const stillUsed = this.project.segments.some((s) => s.a === rid || s.b === rid);
+        if (!stillUsed) this.project.nodes = this.project.nodes.filter((n) => n.id !== rid);
+      }
+    } else if (!c.portLayout) {
+      c.portLayout = "inline";
     }
+    this.syncComponentPorts(c);
   }
 
   addRoom(points) {
@@ -547,7 +546,7 @@ export class Store {
 
   setNodeHeight(node, z) {
     node.z = Number(z) || 0;
-    const c = this.project.components.find((x) => x.nodeId === node.id || x.returnNodeId === node.id);
+    const c = this.project.components.find((x) => componentNodeIds(x).includes(node.id));
     if (c) c.heightM = node.z;
   }
 
@@ -567,7 +566,7 @@ export class Store {
       }
     }
     for (const c of this.project.components) {
-      if (seen.has(c.nodeId) || seen.has(c.returnNodeId)) c.heightM = z;
+      if (componentNodeIds(c).some((id) => seen.has(id))) c.heightM = z;
     }
   }
 
@@ -603,7 +602,7 @@ export class Store {
     } else if (sel.type === "node") {
       p.nodes = p.nodes.filter((n) => n.id !== sel.id);
       p.segments = p.segments.filter((s) => s.a !== sel.id && s.b !== sel.id);
-      p.components = p.components.filter((c) => c.nodeId !== sel.id && c.returnNodeId !== sel.id);
+      p.components = p.components.filter((c) => !componentNodeIds(c).includes(sel.id));
     }
     this.pruneOrphans();
     this.selection = null;
@@ -617,8 +616,7 @@ export class Store {
       used.add(s.b);
     }
     for (const c of this.project.components) {
-      used.add(c.nodeId);
-      if (c.returnNodeId) used.add(c.returnNodeId);
+      for (const id of componentNodeIds(c)) used.add(id);
     }
     this.project.nodes = this.project.nodes.filter((n) => used.has(n.id));
   }
@@ -692,7 +690,7 @@ export { serveSystem };
 // four rooms, with a riser on one extract run.
 export function seedDemo(store) {
   store.snapshot();
-  const p = newProject("Demo — Office floor (supply + extract)");
+  const p = newProject("Demo — Office floor (supply, extract, fresh air, exhaust)");
   p.mode = "concept";
   p.scale = { pxPerMeter: 40, calib: null };
   p.settings = defaultSettings();
@@ -712,6 +710,13 @@ export function seedDemo(store) {
     mk("nE1", 400, 700, 3.2),
     mk("nE2", 400, 560, 2.7),
     mk("nE3", 680, 700, 2.7),
+    mk("nEc", 20, 700, 3.2),
+    mk("nODA", 120, 150, 3.0),
+    mk("nODAp", 120, 352, 0.3),
+    mk("nODAc", 120, 330, 3.0),
+    mk("nEHA", 120, 640, 3.0),
+    mk("nEHAp", 120, 408, 0.3),
+    mk("nEHAc", 120, 430, 3.0),
   ];
   p.nodes = nodes;
 
@@ -731,7 +736,12 @@ export function seedDemo(store) {
     seg("sB3", "nT2", "nB3", "supply", [{ type: "tee_branch", qty: 1 }]),
     seg("sB4", "nT2", "nB4", "supply"),
     seg("sRise", "nAHUr", "nRise", "extract"),
-    seg("sE0", "nRise", "nE1", "extract", [{ type: "bend90_radius", qty: 1 }]),
+    seg("sE0", "nRise", "nEc", "extract", [{ type: "bend90_radius", qty: 1 }]),
+    seg("sE0b", "nEc", "nE1", "extract", [{ type: "bend90_radius", qty: 1 }]),
+    seg("sO1", "nODA", "nODAc", "outdoor"),
+    seg("sO2", "nODAc", "nODAp", "outdoor", [{ type: "bend90_radius", qty: 1 }]),
+    seg("sX1", "nEHAp", "nEHAc", "exhaust", [{ type: "bend90_radius", qty: 1 }]),
+    seg("sX2", "nEHAc", "nEHA", "exhaust"),
     seg("sE1", "nE1", "nE2", "extract", [{ type: "tee_branch", qty: 1 }]),
     seg("sE2", "nE1", "nE3", "extract"),
   ];
@@ -741,6 +751,9 @@ export function seedDemo(store) {
     return {
       id, kind, nodeId, system, x, y,
       returnNodeId: extra.returnNodeId || null,
+      outdoorNodeId: extra.outdoorNodeId || null,
+      exhaustNodeId: extra.exhaustNodeId || null,
+      portLayout: extra.portLayout,
       widthM: extra.widthM ?? foot.w,
       depthM: extra.depthM ?? foot.d,
       rot: extra.rot ?? 0,
@@ -755,7 +768,9 @@ export function seedDemo(store) {
       designFlow_ls: 480,
       extractFlow_ls: 420,
       supplyTempC: 18,
-    }, { returnNodeId: "nAHUr", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
+    }, { returnNodeId: "nAHUr", outdoorNodeId: "nODAp", exhaustNodeId: "nEHAp", portLayout: "sides", widthM: 2.4, depthM: 1.4, heightM: 0.3 }),
+    comp("cODA", "intake_louvre", "nODA", "outdoor", 120, 150, {}, { heightM: 3.0 }),
+    comp("cEHA", "exhaust_louvre", "nEHA", "exhaust", 120, 640, {}, { heightM: 3.0 }),
     comp("cFD", "fire_damper", "nT1", "supply", 320, 380, { lossPa: 15 }, { heightM: 3.2 }),
     comp("cD1", "diffuser", "nB1", "supply", 320, 200, { designFlow_ls: 120, terminalLossPa: 25 }, { heightM: 2.7 }),
     comp("cD2", "diffuser", "nB2", "supply", 560, 200, { designFlow_ls: 120, terminalLossPa: 25 }, { heightM: 2.7 }),
@@ -779,5 +794,12 @@ export function seedDemo(store) {
   const ret = p.nodes.find((n) => n.id === "nAHUr");
   const rise = p.nodes.find((n) => n.id === "nRise");
   if (ret && rise) { rise.x = ret.x; rise.y = ret.y; }
+  const ec = p.nodes.find((n) => n.id === "nEc");
+  if (ret && ec) ec.x = ret.x;
+  // the outside ducts drop straight off the ODA / EHA connections
+  for (const [port, corner] of [["nODAp", "nODAc"], ["nEHAp", "nEHAc"]]) {
+    const a = p.nodes.find((n) => n.id === port), b = p.nodes.find((n) => n.id === corner);
+    if (a && b) { b.x = a.x; b.y = a.y; }
+  }
   store.commit();
 }

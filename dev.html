@@ -84,10 +84,13 @@
         <button type="button" class="xmin" id="hintX" title="Hide this tip — the tool stays armed">&times;</button>
       </div>
 
-      <div class="tpal" id="tpal" aria-label="Trace supply or extract">
-        <b>Trace as</b>
-        <button type="button" data-tsys="supply">Supply<span class="sub">to the terminals</span></button>
-        <button type="button" data-tsys="extract">Extract<span class="sub">back to the unit</span></button>
+      <div class="tpal" id="tpal" aria-label="Which airstream to trace">
+        <b>Inside the building</b>
+        <button type="button" data-tsys="supply"><i class="sw"></i>Supply<span class="sub">SUP · unit to the rooms</span></button>
+        <button type="button" data-tsys="extract"><i class="sw"></i>Extract<span class="sub">ETA · rooms back to unit</span></button>
+        <b>To and from outside</b>
+        <button type="button" data-tsys="outdoor"><i class="sw"></i>Fresh air in<span class="sub">ODA · outside to unit</span></button>
+        <button type="button" data-tsys="exhaust"><i class="sw"></i>Exhaust out<span class="sub">EHA · unit to outside</span></button>
       </div>
 
       <div class="vpal" id="cpal">

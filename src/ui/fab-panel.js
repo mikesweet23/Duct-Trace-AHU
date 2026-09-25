@@ -99,10 +99,8 @@ function renderPieceList(model, store) {
   }).join("");
   return h`
     <div class="section-title">Components</div>
-    <div class="field"><label>Hide supply</label>
-      <select data-hide="supply"><option value="no" ${hide.has("supply") ? "" : "selected"}>Show</option><option value="yes" ${hide.has("supply") ? "selected" : ""}>Hide</option></select></div>
-    <div class="field"><label>Hide extract</label>
-      <select data-hide="extract"><option value="no" ${hide.has("extract") ? "" : "selected"}>Show</option><option value="yes" ${hide.has("extract") ? "selected" : ""}>Hide</option></select></div>
+    ${[["supply", "supply"], ["extract", "extract"], ["outdoor", "fresh air"], ["exhaust", "exhaust"]].map(([k, l]) => `<div class="field"><label>Hide ${l}</label>
+      <select data-hide="${k}"><option value="no" ${hide.has(k) ? "" : "selected"}>Show</option><option value="yes" ${hide.has(k) ? "selected" : ""}>Hide</option></select></div>`).join("")}
     <table class="schedule">
       <thead><tr><th>Ref</th><th>Item</th><th>Size</th><th>m</th></tr></thead>
       <tbody>${rows}</tbody>

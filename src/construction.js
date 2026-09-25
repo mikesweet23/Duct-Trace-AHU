@@ -76,7 +76,8 @@ function plantRoots(project, system) {
     const def = componentDef(c.kind);
     if (def?.role !== "plant") continue;
     if (c.system !== system && c.system !== "both") continue;
-    if (c.system === "both" && system === "extract" && c.returnNodeId) ids.push(c.returnNodeId);
+    const key = { extract: "returnNodeId", outdoor: "outdoorNodeId", exhaust: "exhaustNodeId" }[system];
+    if (c.system === "both" && key && c[key]) ids.push(c[key]);
     else if (c.nodeId) ids.push(c.nodeId);
   }
   return ids;

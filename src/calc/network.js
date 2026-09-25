@@ -11,6 +11,8 @@ import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizi
 import { totalFittingK } from "../standards/fittings.js";
 import { componentDef, inlineLossPa, isDualPort } from "../standards/components.js";
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
+import { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem } from "../systems.js";
+import { PORT_NODE_KEY } from "../layout.js";
 
 const FLOW_MATCH_ABS_LS = 2;
 const FLOW_MATCH_REL = 0.02;
@@ -26,7 +28,10 @@ function velocityLimits(role, settings) {
 }
 
 function plantServes(c, systemType) {
-  return c.system === systemType || c.system === "both";
+  if (c.system === systemType) return true;
+  if (c.system !== "both") return false;
+  // fresh air and exhaust only exist on a unit that serves both sides
+  return !isOutsideSystem(systemType) || isDualPort(c.kind);
 }
 
 function plantsFor(project, systemType) {
@@ -38,9 +43,9 @@ function plantsFor(project, systemType) {
 
 function plantRoot(plant, systemType) {
   if (!plant) return null;
-  return plant.system === "both" && systemType === "extract" && plant.returnNodeId
-    ? plant.returnNodeId
-    : plant.nodeId;
+  if (plant.system !== "both") return plant.nodeId;
+  const key = PORT_NODE_KEY[systemType] || "nodeId";
+  return plant[key] || (isOutsideSystem(systemType) ? null : plant.nodeId);
 }
 
 function flowMatchTolLs(a, b) {
@@ -73,7 +78,7 @@ function inferRole(s, a, b, px, parentNode, terminalNodes, adj, segFlow) {
 function emptySystem(systemType, extra = {}) {
   return {
     id: extra.id || systemType,
-    name: extra.name || (systemType === "supply" ? "Supply" : "Extract"),
+    name: extra.name || systemLabel(systemType),
     systemType,
     tempC: extra.tempC ?? (systemType === "extract" ? 22 : 18),
     density: extra.density ?? airDensity(extra.tempC),
@@ -96,10 +101,19 @@ function emptySystem(systemType, extra = {}) {
   };
 }
 
-export function computeSystem(project, systemType, plantFilter = undefined) {
+function systemTempC(settings, systemType) {
+  if (systemType === "extract") return settings.extractTempC ?? 22;
+  if (systemType === "outdoor") return settings.outdoorTempC ?? 5;
+  if (systemType === "exhaust") return settings.exhaustTempC ?? 12;
+  return settings.supplyTempC ?? 18;
+}
+
+// opts.autoFlowLs — for fresh air and exhaust: the unit's airflow on that
+// side, shared between the outside terminals that have no flow typed.
+export function computeSystem(project, systemType, plantFilter = undefined, opts = {}) {
   const settings = project.settings || {};
   const pxPerMeter = (project.scale && project.scale.pxPerMeter) || settings.conceptPxPerMeter || 50;
-  const tempC = systemType === "extract" ? settings.extractTempC ?? 22 : settings.supplyTempC ?? 18;
+  const tempC = systemTempC(settings, systemType);
   const density = airDensity(tempC);
   const viscosity = airViscosity(tempC);
   const commonOpts = {
@@ -179,6 +193,24 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
         }
       }
     }
+    // Outside terminals left at 0 share the unit's own airflow: the fresh
+    // air in is what the supply fan delivers, the exhaust is what the
+    // extract fan takes out.
+    if (isOutsideSystem(systemType) && opts.autoFlowLs > 0) {
+      let typed = 0;
+      const auto = [];
+      for (const [nodeId, list] of terminalNodes) {
+        if (!visited.has(nodeId)) continue;
+        const t = list.reduce((a, c) => a + (Number(c.props?.designFlow_ls) || 0), 0);
+        if (t > 0) typed += t;
+        else auto.push(nodeId);
+      }
+      const share = auto.length ? Math.max(0, opts.autoFlowLs - typed) / auto.length : 0;
+      for (const nodeId of auto) demand.set(nodeId, flowToM3s(share, "l/s"));
+      if (!auto.length && typed > 0 && !flowsMatch(typed, opts.autoFlowLs)) {
+        warnings.push(`${systemLabel(systemType)} terminals are set to ${round(typed, 0)} l/s but the unit moves ${round(opts.autoFlowLs, 0)} l/s on that side.`);
+      }
+    }
     const subtree = new Map();
     for (let i = order.length - 1; i >= 0; i--) {
       const n = order[i];
@@ -194,7 +226,9 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
       warnings.push("Some ducts are not connected to the plant and were ignored in flow accumulation.");
     }
   } else if (segs.length) {
-    warnings.push(`No plant (fan/AHU) placed on the ${systemType} system — flows use per-segment overrides only.`);
+    warnings.push(isOutsideSystem(systemType)
+      ? `${systemLabel(systemType)} ducts are not joined to an AHU or HRV serving supply and extract — start them on the unit's ${systemType === "outdoor" ? "fresh-air (ODA)" : "exhaust (EHA)"} connection.`
+      : `No plant (fan/AHU) placed on the ${systemType} system — flows use per-segment overrides only.`);
   }
 
   const segsToSize = plantFilter ? segs.filter((s) => reachableSegs.has(s.id) || s.flowOverride != null) : segs;
@@ -330,8 +364,8 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
   }
 
   const totalFlowM3s = terminals.reduce((a, t) => a + t.flowM3s, 0);
-  const availableStaticPa = plant ? plantStaticPa(plant.props, systemType) : 0;
-  const dutyLs = plant ? plantDutyLs(plant.props, systemType) : 0;
+  const availableStaticPa = plant ? plantStaticPa(plant.props, fanSide(systemType)) : 0;
+  const dutyLs = plant && !isOutsideSystem(systemType) ? plantDutyLs(plant.props, systemType) : 0;
   const terminalLs = totalFlowM3s * 1000;
   const balance = {
     plantDutyLs: dutyLs,
@@ -360,7 +394,7 @@ export function computeSystem(project, systemType, plantFilter = undefined) {
 
   return {
     id: plant ? `${systemType}-${plant.id}` : systemType,
-    name: systemType === "supply" ? "Supply" : "Extract",
+    name: systemLabel(systemType),
     systemType,
     tempC,
     density,
@@ -392,7 +426,7 @@ function nameSystems(systems) {
     const n = counts.get(sys.systemType) || 1;
     const i = (seen.get(sys.systemType) || 0) + 1;
     seen.set(sys.systemType, i);
-    const side = sys.systemType === "supply" ? "Supply" : "Extract";
+    const side = systemLabel(sys.systemType);
     if (n === 1) sys.name = sys.plantLabel ? `${side} — ${sys.plantLabel}` : side;
     else sys.name = `${side} ${i}${sys.plantLabel ? ` — ${sys.plantLabel}` : ""}`;
   }
@@ -421,25 +455,60 @@ function dualAhuWarnings(project, systems) {
 
 export function computeAll(project) {
   const systems = [];
-  for (const systemType of ["supply", "extract"]) {
+  // supply and extract first: fresh air and exhaust take their flow from them
+  for (const systemType of SYSTEM_KEYS) {
     const plants = plantsFor(project, systemType);
+    const outside = isOutsideSystem(systemType);
     if (!plants.length) {
       const sys = computeSystem(project, systemType);
       if (sys.segments.length || sys.terminals.length) systems.push(sys);
-    } else {
-      for (const plant of plants) systems.push(computeSystem(project, systemType, plant));
+      continue;
+    }
+    for (const plant of plants) {
+      let autoFlowLs = 0;
+      if (outside) {
+        const side = fanSide(systemType);
+        const inside = systems.find((x) => x.systemType === side && x.plant?.id === plant.id);
+        autoFlowLs = plantDutyLs(plant.props, side) || (inside ? inside.totalFlowM3s * 1000 : 0);
+        const hasDucts = project.segments.some((sg) => sg.system === systemType);
+        if (!hasDucts) continue;
+      }
+      systems.push(computeSystem(project, systemType, plant, { autoFlowLs }));
     }
   }
+  pairFanSides(systems);
   nameSystems(systems);
   const projectWarnings = dualAhuWarnings(project, systems);
-  const supply = systems.find((s) => s.systemType === "supply") || emptySystem("supply");
-  const extract = systems.find((s) => s.systemType === "extract") || emptySystem("extract");
-  return { supply, extract, systems, projectWarnings };
+  const pick = (t) => systems.find((s) => s.systemType === t) || emptySystem(t);
+  return { supply: pick("supply"), extract: pick("extract"), outdoor: pick("outdoor"), exhaust: pick("exhaust"), systems, projectWarnings };
+}
+
+// One fan pushes fresh air and supply in series, the other pulls extract and
+// exhaust, so the static a fan needs is the index run on both sides of it.
+function pairFanSides(systems) {
+  for (const sys of systems) {
+    sys.fanStaticPa = sys.indexStaticPa;
+  }
+  for (const [inside, outside] of [["supply", "outdoor"], ["extract", "exhaust"]]) {
+    for (const o of systems.filter((x) => x.systemType === outside && x.plant)) {
+      const i = systems.find((x) => x.systemType === inside && x.plant?.id === o.plant.id);
+      const total = o.indexStaticPa + (i ? i.indexStaticPa : 0);
+      for (const sys of [o, i].filter(Boolean)) {
+        sys.fanStaticPa = total;
+        sys.marginPa = sys.availableStaticPa - total;
+      }
+      if (o.availableStaticPa > 0 && total > o.availableStaticPa) {
+        const msg = `${inside === "supply" ? "Supply" : "Extract"} fan: ${systemLabel(outside).toLowerCase()} ${round(o.indexStaticPa, 0)} Pa + ${inside} ${round(i ? i.indexStaticPa : 0, 0)} Pa = ${round(total, 0)} Pa, more than the ${round(o.availableStaticPa, 0)} Pa the unit has.`;
+        o.warnings.push(msg);
+        if (i) i.warnings.push(msg);
+      }
+    }
+  }
 }
 
 export function allComputedSystems(results) {
   if (results?.systems?.length) return results.systems;
-  return [results?.supply, results?.extract].filter(Boolean);
+  return [results?.supply, results?.extract, results?.outdoor, results?.exhaust].filter(Boolean);
 }
 
 export function findSegResult(results, id) {

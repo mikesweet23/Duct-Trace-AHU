@@ -23,6 +23,8 @@
   --muted:     #8a8f9d;
   --supply:    #1f6fd1;
   --extract:   #c2410c;
+  --outdoor:   #15803d;
+  --exhaust:   #7c4a1e;
   --measure:   #d97706;
   --live:      #2f8f5b;
   --alarm:     #bb3b2e;
@@ -189,6 +191,8 @@ kbd {
 .status .st span { font-family: 'Azeret Mono', monospace; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .status .st.sup span { color: var(--supply); }
 .status .st.ext span { color: var(--extract); }
+.status .st.oda span { color: var(--outdoor); }
+.status .st.eha span { color: var(--exhaust); }
 .status .st.warn { background: #fff6e4; }
 .status .st.warn span { color: #8a5d00; }
 .status .st.bad { background: #fdecea; }
@@ -252,8 +256,18 @@ kbd {
 .tpal b { font-family: 'Azeret Mono', monospace; font-size: 8.5px; letter-spacing: .12em; text-transform: uppercase; color: #9fb0cf; padding: 1px 5px 3px; }
 .tpal button { background: transparent; border: 1px solid transparent; border-radius: 4px; color: #eef3fb; text-align: left; padding: 7px 9px; font-size: 12.5px; font-weight: 600; min-height: 34px; }
 .tpal button:hover { background: var(--rail-2); }
+.tpal b + button { margin-top: 0; }
+.tpal button ~ b { margin-top: 6px; }
+.tpal button .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 7px; vertical-align: -1px; background: currentColor; }
+.tpal button[data-tsys=supply] .sw { background: var(--supply); }
+.tpal button[data-tsys=extract] .sw { background: var(--extract); }
+.tpal button[data-tsys=outdoor] .sw { background: var(--outdoor); }
+.tpal button[data-tsys=exhaust] .sw { background: var(--exhaust); }
+.tpal button.on .sw { background: #fff !important; }
 .tpal button[data-tsys=supply].on { background: var(--supply); border-color: #5b9be6; }
 .tpal button[data-tsys=extract].on { background: var(--extract); border-color: #e0733f; }
+.tpal button[data-tsys=outdoor].on { background: var(--outdoor); border-color: #3fa566; }
+.tpal button[data-tsys=exhaust].on { background: var(--exhaust); border-color: #a4724a; }
 .tpal button .sub { display: block; font-family: 'Azeret Mono', monospace; font-size: 9px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; opacity: .75; margin-top: 1px; }
 
 /* ---- component palette (terminals, in-line devices, fans) ---- */
@@ -336,6 +350,10 @@ kbd {
 .pill.supply { background: #e6f0fc; color: #174f95; border-color: #b8d2f3; }
 .pill.extract { background: #fdeee6; color: #9a3412; border-color: #f4c6ad; }
 .pill.both { background: var(--accent-soft); color: var(--accent); border-color: #b9ccf7; }
+.pill.outdoor { background: #e7f5ec; color: #15803d; border-color: #b4dfc3; }
+.pill.exhaust { background: #f4ece5; color: #6b3f18; border-color: #dcc4ad; }
+.rcard.outdoor { box-shadow: inset 3px 0 0 var(--outdoor); }
+.rcard.exhaust { box-shadow: inset 3px 0 0 var(--exhaust); }
 .warn-list { margin: 10px 0; padding: 8px 10px 8px 26px; background: #fff6e4; border: 1px solid #f0d69b; border-radius: 4px; font-size: 12px; color: #7a5300; }
 .warn-list li { margin: 2px 0; }
 .metric-grid {
