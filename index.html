@@ -1487,9 +1487,10 @@ function hitComponentAt(project, p, opts = {}) {
     const onIcon = insideBox(c, p, drawn);
     const d = dist(p, tgt.at);
     if (!onIcon && d > magnet) continue;
-    // Magnet hits must match the active system so a supply diffuser does not
-    // steal an extract run. A click on the visible icon always wins.
-    if (!onIcon && !systemOk(c, system)) continue;
+    // The visible icon must obey the same system rule as its magnet. Otherwise
+    // an extract run can appear to join an exhaust louvre but has no terminal
+    // on the extract network, so the run is drawn with zero flow.
+    if (!systemOk(c, system)) continue;
     // fresh air and exhaust only join an outside terminal of their own kind,
     // or a unit that serves both sides (it has the ODA / EHA connection)
     if ((system === "outdoor" || system === "exhaust") && !systemOk(c, system)) continue;
@@ -3799,6 +3800,7 @@ function computeSystem(project, systemType, plantFilter = undefined, opts = {}) 
     segResults.push({
       id: s.id,
       system: systemType,
+      connectedToPlant: reachableSegs.has(s.id),
       role,
       flowM3s: flow,
       lengthM,
@@ -4052,7 +4054,7 @@ const { componentDef, isDualPort } = __m["src/standards/components.js"];
 const { showPrompt, toast } = __m["src/ui/modal.js"];
 const { formatFlowLs, normalizeFlowUnit, round } = __m["src/units.js"];
 const { findSegResult, isIndexSegment } = __m["src/calc/network.js"];
-const { snapAt, hitSegment, EQUIP_HIT_PX } = __m["src/snap.js"];
+const { snapAt, hitSegment, hitComponentAt, EQUIP_HIT_PX } = __m["src/snap.js"];
 const { uid } = __m["src/state.js"];
 const { systemColor, systemInfo, SYSTEM_KEYS } = __m["src/systems.js"];
 const { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, unitPortOffset, connPoint, componentNodeIds } = __m["src/layout.js"];
@@ -4071,6 +4073,20 @@ const COL = {
 const FONT = "Archivo, system-ui, sans-serif";
 const MONO = "'Azeret Mono', ui-monospace, monospace";
 const CLICK_SLOP = 5; // screen px a press can wander and still be a click
+
+function noFlowHint(segment, result, project) {
+  if (result?.flowM3s > 0) return null;
+  const wrongTerminal = project?.components?.find((c) =>
+    componentDef(c.kind)?.role === "terminal"
+    && c.system !== segment.system
+    && (c.nodeId === segment.a || c.nodeId === segment.b));
+  if (wrongTerminal) {
+    const target = systemInfo(wrongTerminal.system);
+    return `wrong air path — retrace ${target.label} (${target.en})`;
+  }
+  if (result?.connectedToPlant) return `connected — set ${systemInfo(segment.system).fan} airflow`;
+  return "not fed — join it to a unit";
+}
 
 class CanvasView {
   constructor(canvas, store, hooks = {}) {
@@ -4501,6 +4517,12 @@ class CanvasView {
   traceClick(world) {
     const store = this.store;
     const p = store.project;
+    const equipment = hitComponentAt(p, world, { zoom: this.zoom });
+    if (equipment && SYSTEM_KEYS.includes(equipment.component.system) && equipment.component.system !== store.activeSystem) {
+      const wanted = systemInfo(equipment.component.system);
+      toast(`${equipment.component.label || equipment.what} uses ${wanted.label} (${wanted.en}). Pick ${wanted.label} and trace from the matching unit connection.`);
+      return;
+    }
     const tgt = this.traceTarget(world);
     const last = this.draft ? p.nodes.find((n) => n.id === this.draft.lastNodeId) : null;
 
@@ -4845,7 +4867,7 @@ class CanvasView {
         this.chip(ctx, `${size} · ${round(res.velocity, 1)} m/s`, lx, ly, { mono: true, color: res.withinVelocity ? COL.ink : "#b42318", border: "rgba(29,36,51,0.15)" });
         if (res.lengthOverride) this.chip(ctx, `${round(res.lengthM, 2)} m typed`, lx, ly + 14 / z, { size: 9.5, bg: "#fff4e0", color: "#8a5d00" });
       } else if (noFlow && segLenScr > 60) {
-        this.chip(ctx, "not fed — join it to a unit", lx, ly, { size: 9.5, bg: "#fff4e0", color: "#8a5d00" });
+        this.chip(ctx, noFlowHint(L.s, res, p), lx, ly, { size: 9.5, bg: "#fff4e0", color: "#8a5d00" });
       }
       const picked = this.store.selection?.type === "segment" && this.store.selection.id === L.s.id;
       if (picked && Math.abs((a.z || 0) - (b.z || 0)) > 0.05) {
@@ -5197,7 +5219,7 @@ class CanvasView {
     ctx.closePath();
   }
 }
-return { CanvasView };
+return { noFlowHint, CanvasView };
 })();
 
 // ---- src/ui/fab3d.js ----

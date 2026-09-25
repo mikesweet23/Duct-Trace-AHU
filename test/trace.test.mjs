@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Store, newProject, migrateProject } from "../src/state.js";
-import { CanvasView } from "../src/ui/canvas.js";
+import { CanvasView, noFlowHint } from "../src/ui/canvas.js";
 import { computeAll, findSegResult } from "../src/calc/network.js";
 import { isDualPort, recoveredSupplyTempC, recoveredHeatKw, COMPONENTS } from "../src/standards/components.js";
 
@@ -173,6 +173,62 @@ test("tracing fresh air snaps to the unit's ODA connection, not the supply one",
   assert.equal(t.snap?.node?.id, hrv.outdoorNodeId);
   store.activeSystem = "exhaust";
   assert.equal(canvas.traceTarget({ x: 0, y: 0 }).snap?.node?.id, hrv.exhaustNodeId);
+});
+
+test("extract tracing cannot appear to join an exhaust louvre", () => {
+  const { store, canvas } = setup();
+  const hrv = store.addComponentAt({ x: 0, y: 0 }, "hrv", "both");
+  const louvre = store.addComponentAt({ x: -400, y: 100 }, "exhaust_louvre", "extract");
+  store.activeSystem = "extract";
+  canvas.traceClick({ x: 0, y: 0 });
+  assert.equal(canvas.draft.lastNodeId, hrv.returnNodeId);
+  assert.equal(canvas.traceTarget({ x: louvre.x, y: louvre.y }).snap, null);
+  canvas.traceClick({ x: louvre.x, y: louvre.y });
+  assert.equal(store.project.segments.length, 0, "wrong-system click must not make a loose or misleading join");
+  assert.equal(canvas.draft.lastNodeId, hrv.returnNodeId);
+});
+
+test("HRV exhaust port feeds an exhaust louvre from the extract duty", () => {
+  const { store, canvas } = setup();
+  const hrv = store.addComponentAt({ x: 0, y: 0 }, "hrv", "both");
+  hrv.props.extractFlow_ls = 110;
+  const louvre = store.addComponentAt({ x: -400, y: 100 }, "exhaust_louvre", "exhaust");
+  store.activeSystem = "exhaust";
+  canvas.traceClick({ x: 0, y: 0 });
+  assert.equal(canvas.draft.lastNodeId, hrv.exhaustNodeId);
+  canvas.traceClick({ x: louvre.x, y: louvre.y });
+  const segment = store.project.segments[0];
+  assert.equal(canvas.draft, null);
+  assert.equal(segment.system, "exhaust");
+  assert.ok([segment.a, segment.b].includes(hrv.exhaustNodeId));
+  assert.ok([segment.a, segment.b].includes(louvre.nodeId));
+  const result = findSegResult(computeAll(store.project), segment.id);
+  assert.equal(result.connectedToPlant, true);
+  assert.ok(Math.abs(result.flowM3s - 0.11) < 1e-9);
+  assert.equal(noFlowHint(segment, result), null);
+});
+
+test("a connected exhaust run without design flow asks for airflow, not a join", () => {
+  const { store, hrv } = fourPortJob();
+  const segment = store.project.segments.find((s) => s.system === "exhaust");
+  hrv.props.extractFlow_ls = 0;
+  const grille = store.project.components.find((c) => c.kind === "grille_extract");
+  grille.props.designFlow_ls = 0;
+  const result = findSegResult(computeAll(store.project), segment.id);
+  assert.equal(result.connectedToPlant, true);
+  assert.equal(result.flowM3s, 0);
+  assert.equal(noFlowHint(segment, result), "connected — set extract airflow");
+});
+
+test("an existing extract run ending at an exhaust louvre identifies the wrong air path", () => {
+  const { store } = setup();
+  const hrv = store.addComponentAt({ x: 0, y: 0 }, "hrv", "both");
+  const louvre = store.addComponentAt({ x: -400, y: 100 }, "exhaust_louvre", "exhaust");
+  const node = (id) => store.project.nodes.find((n) => n.id === id);
+  const segment = store.addSegment(node(hrv.returnNodeId), node(louvre.nodeId), "extract");
+  const result = findSegResult(computeAll(store.project), segment.id);
+  assert.equal(result.flowM3s, 0);
+  assert.equal(noFlowHint(segment, result, store.project), "wrong air path — retrace Exhaust (EHA)");
 });
 
 test("every AHU and HRV has internal on one face and external on the other, old files included", () => {

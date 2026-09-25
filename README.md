@@ -108,6 +108,12 @@ exhaust temperatures are in Duct & basis. Code: `src/systems.js`,
 `PORT_LAYOUTS` in `src/layout.js`, `pairFanSides()` in
 `src/calc/network.js`.
 
+To run from an HRV to an exhaust louvre, select **Exhaust out (EHA)** and
+start at the unit's **EX exhaust** ring. **Extract (ETA)** is the separate
+building-side connection. A louvre on the wrong airstream is rejected; an
+existing run on that path is marked for retracing. A run connected to the unit
+with zero calculated flow asks for extract airflow rather than another join.
+
 ## Units
 
 - **AHU** — supply and extract in one box, or supply-only / extract-only.

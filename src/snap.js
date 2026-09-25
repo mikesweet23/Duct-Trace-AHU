@@ -113,9 +113,10 @@ export function hitComponentAt(project, p, opts = {}) {
     const onIcon = insideBox(c, p, drawn);
     const d = dist(p, tgt.at);
     if (!onIcon && d > magnet) continue;
-    // Magnet hits must match the active system so a supply diffuser does not
-    // steal an extract run. A click on the visible icon always wins.
-    if (!onIcon && !systemOk(c, system)) continue;
+    // The visible icon must obey the same system rule as its magnet. Otherwise
+    // an extract run can appear to join an exhaust louvre but has no terminal
+    // on the extract network, so the run is drawn with zero flow.
+    if (!systemOk(c, system)) continue;
     // fresh air and exhaust only join an outside terminal of their own kind,
     // or a unit that serves both sides (it has the ODA / EHA connection)
     if ((system === "outdoor" || system === "exhaust") && !systemOk(c, system)) continue;

@@ -296,6 +296,7 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
     segResults.push({
       id: s.id,
       system: systemType,
+      connectedToPlant: reachableSegs.has(s.id),
       role,
       flowM3s: flow,
       lengthM,
