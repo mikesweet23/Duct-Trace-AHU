@@ -134,6 +134,14 @@ with zero calculated flow asks for extract airflow rather than another join.
   range of circular and rectangular sizes and the velocity each gives, in the
   inspector and the report. `src/standards/louvres.js`.
 
+**Report branding.** The PDF report and the take-off open with the adi
+Climate Systems logo and a job block — client name, job name, engineer
+reference, date and revision — set in Duct & basis → Project. Every page
+after the cover carries the job, client and reference in its header with
+the logo, and the footer repeats the job and reference. The logo is the one
+in the top bar, converted to JPEG when the report is built. File names start
+with the engineer reference.
+
 ## Units
 
 - **AHU** — supply and extract in one box, or supply-only / extract-only.

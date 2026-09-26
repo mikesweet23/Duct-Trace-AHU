@@ -867,8 +867,10 @@ export class Panels {
     }).join("");
     el.innerHTML = h`
       <div class="section-title">Project</div>
-      <div class="field"><label>Project name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
-      <p class="small-note">Goes on the saved file, the PDF report and the take-off.</p>
+      <div class="field"><label>Client name</label><input type="text" data-meta="client" value="${(p.meta.client || "").replace(/"/g, "&quot;")}" placeholder="e.g. Acme Developments Ltd"/></div>
+      <div class="field"><label>Job name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
+      <div class="field"><label>Engineer reference</label><input type="text" data-meta="engineerRef" value="${(p.meta.engineerRef || "").replace(/"/g, "&quot;")}" placeholder="e.g. ADI-2026-041 / MS"/></div>
+      <p class="small-note">On the cover and every page of the PDF report and the take-off, with the adi Climate Systems logo, and on the saved file name.</p>
       <div class="section-title">Sizing method</div>
       <div class="field"><label>Method</label>
         <select data-s="sizingMethod">

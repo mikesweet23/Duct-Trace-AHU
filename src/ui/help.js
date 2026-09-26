@@ -74,6 +74,8 @@ export const HELP = [
     b: "<b>Schedule → Fabrication</b> generates the physical model — straights, bends, tees, reducers, joints — and <b>Take-off</b> gives the bill of materials, as CSV, Excel or PDF." },
   { sec: "size", tools: ["select"], t: "I want a report",
     b: "<b>PDF</b> builds the report with the plan, a 3D view, each system, the index run, the plant, the fittings, the outside louvre sizes and the <b>commissioning sheets</b>." },
+  { sec: "size", tools: ["select"], t: "I want the client, job and our reference on the report",
+    b: "<b>Duct &amp; basis</b> → <i>Project</i>: client name, job name and engineer reference. They go on the report's cover with the adi Climate Systems logo, in the header and footer of every page, on the take-off PDF and in the file names." },
   { sec: "size", tools: ["select"], t: "I need commissioning sheets",
     b: "The PDF report ends with them, to CIBSE Commissioning Code A / BSRIA BG 49: per system the design total and accepted band, the main-duct traverse (size, velocity, Pv, traverse points), every terminal with its design flow, accepted range and duct velocity, the index terminal (IDX), regulating dampers, the DW143 leakage test, the unit test record, room balance and sign-off — with blank columns for what is measured. Tolerances are in <b>Duct &amp; basis</b>." },
   { sec: "size", tools: ["select"], t: "The flow is in the wrong unit",

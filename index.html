@@ -8667,8 +8667,10 @@ class Panels {
     }).join("");
     el.innerHTML = h`
       <div class="section-title">Project</div>
-      <div class="field"><label>Project name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
-      <p class="small-note">Goes on the saved file, the PDF report and the take-off.</p>
+      <div class="field"><label>Client name</label><input type="text" data-meta="client" value="${(p.meta.client || "").replace(/"/g, "&quot;")}" placeholder="e.g. Acme Developments Ltd"/></div>
+      <div class="field"><label>Job name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
+      <div class="field"><label>Engineer reference</label><input type="text" data-meta="engineerRef" value="${(p.meta.engineerRef || "").replace(/"/g, "&quot;")}" placeholder="e.g. ADI-2026-041 / MS"/></div>
+      <p class="small-note">On the cover and every page of the PDF report and the take-off, with the adi Climate Systems logo, and on the saved file name.</p>
       <div class="section-title">Sizing method</div>
       <div class="field"><label>Method</label>
         <select data-s="sizingMethod">
@@ -9195,10 +9197,24 @@ class PdfDoc {
   }
 }
 
+// Client, job and engineer's reference, from the project.
+function jobInfo(project) {
+  const m = project?.meta || {};
+  return {
+    client: String(m.client || "").trim(),
+    job: String(m.name || "").trim() || "Untitled",
+    ref: String(m.engineerRef || "").trim(),
+    rev: m.rev || 0,
+  };
+}
+
 class PageWriter {
-  constructor(doc, title) {
+  // opts.logo: a JPEG data URL of the company logo; opts.job: jobInfo()
+  constructor(doc, title, opts = {}) {
     this.doc = doc;
     this.title = title;
+    this.logo = opts.logo ? doc.addJpeg(opts.logo) : null;
+    this.job = opts.job || null;
     this.ops = [];
     this.y = PAGE_H - MARGIN;
     this.xobjects = {};
@@ -9223,16 +9239,65 @@ class PageWriter {
   newPage() {
     this.flush();
     this.pageNo += 1;
-    if (this.title) {
-      this.text(this.title, MARGIN, this.y, { font: "F2", size: 9, color: [0.35, 0.4, 0.5] });
-      this.y -= 16;
-      this.rule();
+    this.pageHeader();
+  }
+
+  // Every page after the first: job and client on the left, the engineer's
+  // reference under it, the logo on the right.
+  pageHeader() {
+    const j = this.job;
+    const line1 = j ? [j.job, j.client].filter(Boolean).join("  -  ") : this.title;
+    if (!line1 && !this.logo) return;
+    this.text(line1 || "", MARGIN, this.y, { font: "F2", size: 9, color: [0.35, 0.4, 0.5] });
+    if (j?.ref) this.text(`Ref: ${j.ref}`, MARGIN, this.y - 11, { size: 8, color: [0.45, 0.5, 0.58] });
+    if (this.logo) this.drawLogo(PAGE_W - MARGIN, this.y + 9, 20, "right");
+    this.y -= j?.ref ? 26 : 16;
+    this.rule();
+  }
+
+  // Draws the logo with its top at `top`; align "left" from x, "right" to x.
+  drawLogo(x, top, height, align = "left") {
+    if (!this.logo) return 0;
+    const w = this.logo.w * (height / this.logo.h);
+    const x0 = align === "right" ? x - w : x;
+    this.xobjects.Logo = this.logo.id;
+    this.ops.push(`q ${round(w, 2)} 0 0 ${round(height, 2)} ${round(x0, 2)} ${round(top - height, 2)} cm /Logo Do Q`);
+    return w;
+  }
+
+  // The first page: logo, report title, then the job block.
+  cover(title, subtitle) {
+    const top = this.y + 8;
+    const lw = this.drawLogo(MARGIN, top, 46, "left");
+    const tx = this.logo ? MARGIN + lw + 16 : MARGIN;
+    this.text(title, tx, top - 18, { font: "F2", size: 17, color: [0.07, 0.16, 0.32] });
+    if (subtitle) this.text(subtitle, tx, top - 34, { size: 9, color: [0.35, 0.4, 0.5] });
+    this.y = top - 62;
+    this.rule();
+    const j = this.job || {};
+    const rows = [
+      ["Client", j.client || "-"],
+      ["Job", j.job || "-"],
+      ["Engineer reference", j.ref || "-"],
+      ["Date", new Date().toISOString().slice(0, 10)],
+    ];
+    if (j.rev) rows.push(["Revision", `rev ${j.rev}`]);
+    for (const [k, v] of rows) {
+      this.ensure(15);
+      this.text(k, MARGIN, this.y, { size: 10, color: [0.35, 0.4, 0.5] });
+      this.text(String(v), MARGIN + 130, this.y, { font: "F2", size: 11 });
+      this.y -= 15;
     }
+    this.y -= 4;
+    this.rule();
   }
 
   footer() {
     const n = this.doc.pages.length + 1;
-    this.ops.push(`BT /F1 8 Tf 0.45 0.5 0.58 rg ${MARGIN} 22 Td (Page ${n}  -  Duct Trace AHU  -  DW144 / CIBSE) Tj ET`);
+    const j = this.job;
+    const who = j ? [j.job, j.ref ? `Ref ${j.ref}` : ""].filter(Boolean).join("  -  ") : "";
+    const line = `Page ${n}${who ? `  -  ${who}` : ""}  -  adi Climate Systems  -  Duct Trace AHU`;
+    this.ops.push(`BT /F1 8 Tf 0.45 0.5 0.58 rg ${MARGIN} 22 Td (${pdfSafe(line)}) Tj ET`);
   }
 
   text(str, x, y, opts = {}) {
@@ -9362,20 +9427,17 @@ function plantOn(sys, c) {
   return sys.plant && c.id === sys.plant.id;
 }
 
-function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
+function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg = null }) {
   const unit = project.settings?.flowUnit || "l/s";
   const unitLabel = flowUnitLabel(unit);
   const systems = allComputedSystems(results);
   const doc = new PdfDoc();
-  const w = new PageWriter(doc, project.meta?.name || "Duct project");
+  const job = jobInfo(project);
+  const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
   w.pageNo = 1;
 
-  w.heading("Duct Trace AHU  -  design report", 18);
-  w.para("Commercial / industrial ductwork sizing to DW144 / BESA standard sizes and CIBSE Guide B velocity guidance.");
-  w.y -= 4;
+  w.cover("Ductwork design report", "adi Climate Systems  -  ductwork sizing to DW144 / BESA and CIBSE Guide B");
   w.kv([
-    ["Project", project.meta?.name || "Untitled"],
-    ["Date", new Date().toISOString().slice(0, 10)],
     ["Mode", project.mode === "drawing" ? "Drawing" : "Concept"],
     ["Flow unit", unitLabel],
     ["Default duct", sectionShapeLabel(project.settings?.ductType)],
@@ -9684,10 +9746,11 @@ function writeSystem(w, project, sys, unit, unitLabel) {
   w.y -= 8;
 }
 
-function buildTakeoffPdf({ project, takeoff }) {
+function buildTakeoffPdf({ project, takeoff, logoJpeg = null }) {
   const doc = new PdfDoc();
-  const w = new PageWriter(doc, pdfSafe(project.meta?.name || "Takeoff"));
-  w.heading(project.meta?.name || "Project", 16);
+  const job = jobInfo(project);
+  const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
+  w.cover("Ductwork take-off", "adi Climate Systems  -  fabrication take-off from the physical model");
   w.para("Fabrication takeoff generated from the physical model. Component references map back to the model.");
   w.heading("Circular duct", 12);
   const circ = (takeoff.circular || []).map((g) => [
@@ -9732,7 +9795,7 @@ function downloadBlob(blob, filename) {
   // revoked a moment later: revoking at once can lose the file name
   setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 }
-return { buildProjectPdf, buildTakeoffPdf, downloadBlob };
+return { jobInfo, buildProjectPdf, buildTakeoffPdf, downloadBlob };
 })();
 
 // ---- src/ui/help.js ----
@@ -9813,6 +9876,8 @@ const HELP = [
     b: "<b>Schedule → Fabrication</b> generates the physical model — straights, bends, tees, reducers, joints — and <b>Take-off</b> gives the bill of materials, as CSV, Excel or PDF." },
   { sec: "size", tools: ["select"], t: "I want a report",
     b: "<b>PDF</b> builds the report with the plan, a 3D view, each system, the index run, the plant, the fittings, the outside louvre sizes and the <b>commissioning sheets</b>." },
+  { sec: "size", tools: ["select"], t: "I want the client, job and our reference on the report",
+    b: "<b>Duct &amp; basis</b> → <i>Project</i>: client name, job name and engineer reference. They go on the report's cover with the adi Climate Systems logo, in the header and footer of every page, on the take-off PDF and in the file names." },
   { sec: "size", tools: ["select"], t: "I need commissioning sheets",
     b: "The PDF report ends with them, to CIBSE Commissioning Code A / BSRIA BG 49: per system the design total and accepted band, the main-duct traverse (size, velocity, Pv, traverse points), every terminal with its design flow, accepted range and duct velocity, the index terminal (IDX), regulating dampers, the DW143 leakage test, the unit test record, room balance and sign-off — with blank columns for what is measured. Tolerances are in <b>Duct &amp; basis</b>." },
   { sec: "size", tools: ["select"], t: "The flow is in the wrong unit",
@@ -10434,7 +10499,9 @@ $("#stage").addEventListener("dragleave", () => $("#drop").classList.remove("hot
 function fileStem() {
   const d = new Date();
   const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return `${(store.project.meta.name || "Untitled").replace(/[\\/:*?"<>|—–]+/g, "-")} - ${date}`;
+  const clean = (v) => String(v || "").replace(/[\\/:*?"<>|—–]+/g, "-").trim();
+  const ref = clean(store.project.meta.engineerRef);
+  return `${ref ? ref + " - " : ""}${clean(store.project.meta.name) || "Untitled"} - ${date}`;
 }
 function saveProject() {
   const p = store.project;
@@ -10586,7 +10653,7 @@ async function exportPdfReport() {
   try {
     const results = computeAll(store.project);
     const { planJpeg, isoJpeg } = await captureViews();
-    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg });
+    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg, logoJpeg: await logoJpeg() });
     downloadBlob(blob, `Duct Trace report - ${fileStem()}.pdf`);
     toast("PDF report downloaded");
   } catch (err) {
@@ -10598,8 +10665,30 @@ async function exportPdfReport() {
     store.emit();
   }
 }
-function exportTakeoffPdf(takeoff) {
-  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project) });
+// The adi logo from the top bar, as a JPEG the PDF writer can embed.
+let logoCache = null;
+async function logoJpeg() {
+  if (logoCache) return logoCache;
+  try {
+    const src = document.querySelector(".brand-logo")?.src;
+    if (!src) return null;
+    const img = await loadImage(src);
+    const cv = document.createElement("canvas");
+    cv.width = img.naturalWidth;
+    cv.height = img.naturalHeight;
+    const cx = cv.getContext("2d");
+    cx.fillStyle = "#fff";
+    cx.fillRect(0, 0, cv.width, cv.height);
+    cx.drawImage(img, 0, 0);
+    logoCache = cv.toDataURL("image/jpeg", 0.95);
+  } catch (e) {
+    logoCache = null;
+  }
+  return logoCache;
+}
+
+async function exportTakeoffPdf(takeoff) {
+  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project), logoJpeg: await logoJpeg() });
   downloadBlob(blob, `Duct Trace take-off - ${fileStem()}.pdf`);
 }
 $("#bPdf").addEventListener("click", exportPdfReport);

@@ -103,3 +103,28 @@ test("the PDF report carries the commissioning sheets and the louvre sizing", as
   }
   void findSegResult;
 });
+
+// A 1 × 1 JPEG, standing in for the logo the browser converts from the page.
+const TINY_JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+
+test("the report carries the adi logo, client, job and engineer reference on the cover and every page", async () => {
+  const store = new Store();
+  seedDemo(store);
+  const p = store.project;
+  p.meta.client = "Acme Developments Ltd";
+  p.meta.name = "Riverside Offices";
+  p.meta.engineerRef = "ADI-2026-041";
+  const res = computeAll(p);
+  const blob = buildProjectPdf({ project: p, results: res, planJpeg: null, isoJpeg: null, logoJpeg: TINY_JPEG });
+  const text = new TextDecoder("latin1").decode(new Uint8Array(await blob.arrayBuffer()));
+  const pages = (text.match(/\/Type \/Page /g) || []).length;
+  const logos = (text.match(/\/Logo Do/g) || []).length;
+  assert.ok(pages >= 3);
+  assert.equal(logos, pages, "the logo is on every page");
+  assert.equal((text.match(/\/Subtype \/Image/g) || []).length, 1, "embedded once, referenced on each page");
+  for (const s of ["Acme Developments Ltd", "Riverside Offices", "ADI-2026-041", "Engineer reference", "Client", "Ref: ADI-2026-041"]) {
+    assert.ok(text.includes(s), `report contains "${s}"`);
+  }
+  // pages after the cover carry the job and client in their header
+  assert.ok((text.match(/Riverside Offices  -  Acme Developments Ltd/g) || []).length >= pages - 1);
+});
