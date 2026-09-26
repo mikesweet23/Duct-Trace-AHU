@@ -143,6 +143,34 @@ export const COMPONENTS = {
     foot: { w: 0.6, d: 0.3, t: 0.2 },
     props: { designFlow_ls: 100, terminalLossPa: 15, note: "" },
   },
+  // An open duct end, supply or extract. Its loss is the velocity pressure
+  // at the duct times a K: a supply open end throws its velocity pressure
+  // away (K = 1.0, flared or not); an extract open end loses 0.5 on a plain
+  // sharp entry and about 0.04 with a bell mouth (CIBSE Guide C, entries).
+  open_end_supply: {
+    kind: "open_end_supply",
+    label: "Supply open end",
+    category: "terminal",
+    role: "terminal",
+    symbol: "OE",
+    color: "#059669",
+    system: "supply",
+    openEnd: true,
+    foot: { w: 0.3, d: 0.3, t: 0.3 },
+    props: { designFlow_ls: 50, bellMouth: false, terminalLossPa: 0, note: "" },
+  },
+  open_end_extract: {
+    kind: "open_end_extract",
+    label: "Extract open end",
+    category: "terminal",
+    role: "terminal",
+    symbol: "OE",
+    color: "#d97706",
+    system: "extract",
+    openEnd: true,
+    foot: { w: 0.3, d: 0.3, t: 0.3 },
+    props: { designFlow_ls: 50, bellMouth: false, terminalLossPa: 0, note: "" },
+  },
   // Outside terminals. Their flow follows the unit they serve: fresh air in
   // is the unit's supply airflow, exhaust out is its extract airflow, shared
   // between the terminals on that duct. Type a flow to override it.
@@ -156,7 +184,7 @@ export const COMPONENTS = {
     system: "outdoor",
     outside: true,
     foot: { w: 1.0, d: 0.25, t: 0.8 },
-    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, designVelocity: 1.5, note: "" },
   },
   exhaust_louvre: {
     kind: "exhaust_louvre",
@@ -168,7 +196,7 @@ export const COMPONENTS = {
     system: "exhaust",
     outside: true,
     foot: { w: 1.0, d: 0.25, t: 0.8 },
-    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, designVelocity: 5.0, note: "" },
   },
   roof_cowl: {
     kind: "roof_cowl",
@@ -180,7 +208,7 @@ export const COMPONENTS = {
     system: "exhaust",
     outside: true,
     foot: { w: 0.6, d: 0.6, t: 0.6 },
-    props: { designFlow_ls: 0, terminalLossPa: 25, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 25, freeAreaPct: 50, designVelocity: 5.0, note: "" },
   },
   roof_intake: {
     kind: "roof_intake",
@@ -192,7 +220,7 @@ export const COMPONENTS = {
     system: "outdoor",
     outside: true,
     foot: { w: 0.6, d: 0.6, t: 0.6 },
-    props: { designFlow_ls: 0, terminalLossPa: 25, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 25, freeAreaPct: 50, designVelocity: 1.5, note: "" },
   },
   fire_damper: {
     kind: "fire_damper",
@@ -263,6 +291,27 @@ export function componentDef(kind) {
 // Plant with a separate supply and extract connection (AHU, HRV).
 export function isDualPort(kind) {
   return !!COMPONENTS[kind]?.dualPort;
+}
+
+// Loss coefficient on the duct velocity pressure at a terminal, added to its
+// fixed terminalLossPa. Open ends only; everything else is a fixed figure.
+export const OPEN_END_K = {
+  supply: { plain: 1.0, bell: 1.0 },
+  extract: { plain: 0.5, bell: 0.04 },
+};
+export function terminalK(c) {
+  const def = COMPONENTS[c?.kind];
+  if (!def?.openEnd) return 0;
+  const side = def.system === "extract" ? "extract" : "supply";
+  return OPEN_END_K[side][c.props?.bellMouth ? "bell" : "plain"];
+}
+
+// The symbol drawn on a component — an open end with a bell mouth reads BM.
+export function symbolOf(c) {
+  const def = COMPONENTS[c?.kind];
+  if (!def) return "?";
+  if (def.openEnd && c.props?.bellMouth) return "BM";
+  return def.symbol;
 }
 
 export const HRV_RECOVERY_TYPES = {

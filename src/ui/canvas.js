@@ -16,7 +16,7 @@
 //     traces instead of scrolling the page away.
 
 import { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVerticalRiser, clamp, pointSegment } from "../geom.js";
-import { componentDef, isDualPort } from "../standards/components.js";
+import { componentDef, isDualPort, symbolOf } from "../standards/components.js";
 import { showPrompt, toast } from "./modal.js";
 import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
 import { findSegResult, isIndexSegment } from "../calc/network.js";
@@ -973,7 +973,7 @@ export class CanvasView {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.rotate(-(box.rot * Math.PI) / 180); // turn the symbol, never the text
-      ctx.fillText(def.symbol, 0, 0);
+      ctx.fillText(symbolOf(c), 0, 0);
       ctx.restore();
       ctx.textBaseline = "alphabetic";
 

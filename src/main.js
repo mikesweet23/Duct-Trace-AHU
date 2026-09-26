@@ -70,7 +70,7 @@ const TOOLS = [
 ];
 const PALETTES = {
   fan: { title: "Fans", kinds: ["fan_centrifugal", "fan_axial", "fan_plug"], note: "A fan is the plant for the system you are tracing." },
-  terminal: { title: "Terminals", groups: [["In the building", ["diffuser", "grille_supply", "louvre", "grille_extract", "valve_extract"]], ["Outside", ["intake_louvre", "roof_intake", "exhaust_louvre", "roof_cowl"]]], note: "Extract grilles are always extract, intake louvres fresh air and exhaust louvres exhaust. An outside terminal takes the unit's own airflow unless you type one." },
+  terminal: { title: "Terminals", groups: [["In the building", ["diffuser", "grille_supply", "louvre", "open_end_supply", "grille_extract", "valve_extract", "open_end_extract"]], ["Outside", ["intake_louvre", "roof_intake", "exhaust_louvre", "roof_cowl"]]], note: "Extract grilles are always extract, intake louvres fresh air and exhaust louvres exhaust. An outside terminal takes the unit's own airflow unless you type one." },
   inline: { title: "In-line devices", kinds: ["fire_damper", "vcd", "attenuator", "plenum", "heater", "filter"], note: "Click on a duct to put the device on it." },
 };
 let paletteOpen = null; // "fan" | "terminal" | "inline"

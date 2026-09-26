@@ -1,5 +1,7 @@
 // Right-hand panel rendering: Properties, Results and Settings tabs.
 
+import { terminalK, OPEN_END_K } from "../standards/components.js";
+import { sizeLouvre, louvreBasis } from "../standards/louvres.js";
 import { componentDef, COMPONENTS, defaultProps, isDualPort, HRV_RECOVERY_TYPES, recoveredSupplyTempC, recoveredHeatKw } from "../standards/components.js";
 import { FITTINGS } from "../standards/fittings.js";
 import { CIRCULAR_DIAMETERS, RECTANGULAR_SIDES, VELOCITY_GUIDANCE, VELOCITY_ROLES } from "../standards/dw144.js";
@@ -287,6 +289,71 @@ export class Panels {
     `;
   }
 
+  terminalResult(c) {
+    for (const sys of allComputedSystems(this.results)) {
+      const t = (sys.terminals || []).find((x) => x.nodeId === c.nodeId);
+      if (t) return { sys, t };
+    }
+    return null;
+  }
+
+  // Outside terminals: the size the flow needs at the design velocity through
+  // the free area, as a range of standard circular and rectangular sizes.
+  louvreFields(c) {
+    const unit = unitOf(this.store);
+    const b = louvreBasis(c);
+    const tr = this.terminalResult(c);
+    const flowLs = tr ? tr.t.flowM3s * 1000 : Number(c.props?.designFlow_ls) || 0;
+    const r = sizeLouvre(flowLs, { velocity: b.velocity, freeAreaPct: b.freeAreaPct });
+    const rows = (list) => list.map((o) => `<tr><td>${o.label}</td><td class="n">${num(o.grossAreaM2, 3)}</td><td class="n">${num(o.freeVelocity, 2)}</td><td class="n">${num(o.faceVelocity, 2)}</td></tr>`).join("");
+    const isEx = b.side === "exhaust";
+    return h`
+      <div class="section-title">${isEx ? "Exhaust discharge sizing" : "Fresh-air intake sizing"}</div>
+      <div class="field"><label>Design velocity through the free area (m/s)${isEx ? " — up to 5" : ""}</label>
+        <input type="number" step="0.1" min="0.5" max="${b.maxVelocity}" data-prop="designVelocity" value="${b.velocity}"/></div>
+      <div class="field"><label>Free area of the grille / louvre (%)</label>
+        <input type="number" step="1" min="10" max="100" data-prop="freeAreaPct" value="${b.freeAreaPct}"/></div>
+      ${flowLs > 0 ? `
+      <div class="hrv-box"><dl>
+        <dt>Airflow</dt><dd>${lsToDisplay(flowLs, unit)} ${flowUnitLabel(unit)}</dd>
+        <dt>Free area needed</dt><dd>${num(r.freeAreaM2, 3)} m²</dd>
+        <dt>Gross face area at ${num(b.freeAreaPct, 0)}% free</dt><dd>${num(r.grossAreaM2, 3)} m²</dd>
+      </dl></div>
+      <table class="schedule"><thead><tr><th>Circular</th><th>Face m²</th><th>Free m/s</th><th>Face m/s</th></tr></thead><tbody>${rows(r.circular)}</tbody></table>
+      <table class="schedule"><thead><tr><th>Rectangular mm</th><th>Face m²</th><th>Free m/s</th><th>Face m/s</th></tr></thead><tbody>${rows(r.rectangular)}</tbody></table>
+      <p class="small-note">${isEx
+        ? "Exhaust may run up to 5 m/s through the free area to throw stale air clear of the building and away from any intake; larger sizes run slower."
+        : "Intake is sized at 1.5 m/s through the free area so rain and snow are not drawn in and it runs quietly."} Smallest first; each size shows the velocity it would actually give. Replace the free area with the chosen product's figure.</p>`
+      : `<p class="small-note">Join this terminal to its unit (or type a flow) and the size it needs appears here.</p>`}
+    `;
+  }
+
+  // Open ends: bell mouth or plain, and the loss that gives at this duct.
+  openEndFields(c) {
+    const def = componentDef(c.kind);
+    const extract = def.system === "extract";
+    const tr = this.terminalResult(c);
+    const v = tr?.t?.runoutVelocity || 0;
+    const pv = 0.6 * v * v;
+    const k = terminalK(c);
+    return h`
+      <div class="section-title">Open end</div>
+      <div class="field"><label>End</label>
+        <select data-prop-bool="bellMouth">
+          <option value="false" ${!c.props?.bellMouth ? "selected" : ""}>Plain open end — K ${extract ? OPEN_END_K.extract.plain : OPEN_END_K.supply.plain}</option>
+          <option value="true" ${c.props?.bellMouth ? "selected" : ""}>Bell mouth — K ${extract ? OPEN_END_K.extract.bell : OPEN_END_K.supply.bell}</option>
+        </select></div>
+      <div class="hrv-box"><dl>
+        <dt>Duct velocity at the end</dt><dd>${num(v, 2)} m/s</dd>
+        <dt>Velocity pressure</dt><dd>${num(pv, 1)} Pa</dd>
+        <dt>End loss (K ${k} × Pv)</dt><dd>${num(k * pv, 1)} Pa</dd>
+      </dl></div>
+      <p class="small-note">${extract
+        ? "A bell mouth on an extract open end cuts the entry loss from about half a velocity pressure to almost nothing."
+        : "A supply open end discharges its whole velocity pressure (K 1.0) whether plain or bell-mouthed; the bell mouth is recorded for the schedule."} Any fixed terminal loss above is added to this.</p>
+    `;
+  }
+
   // Heat recovery: the figures a schedule and a Part L check ask for. They do
   // not change the duct sizes; the flows and the available static do that.
   hrvFields(c) {
@@ -337,7 +404,8 @@ export class Panels {
     const ul = flowUnitLabel(unit);
     const isPlant = def.role === "plant";
     const props = Object.entries(c.props || {})
-      .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k)))
+      .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k))
+        && !(def.outside && (k === "freeAreaPct" || k === "designVelocity")) && !(def.openEnd && k === "bellMouth"))
       .map(([k, v]) => {
         const label = PROP_LABELS[k] || k;
         if (k === "note") {
@@ -398,6 +466,8 @@ export class Panels {
       <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
       <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>
       ${isPlant ? this.plantFields(c, def) : ""}
+      ${def.outside ? this.louvreFields(c) : ""}
+      ${def.openEnd ? this.openEndFields(c) : ""}
       <div class="section-title">Parameters</div>
       ${props}
       <button class="link-btn" data-act="addParam">+ Add custom parameter</button>
@@ -851,6 +921,13 @@ export class Panels {
           <option value="false" ${s.showActualDucts === false ? "selected" : ""}>Centreline only</option>
         </select></div>
       <p class="small-note">Snap only pulls to a terminal, unit or existing corner when you are already nearby, so a close parallel supply and extract are not yanked together. To branch, hover a run while tracing and click the dot on it — only runs of the system you are tracing show one.</p>
+
+      <div class="section-title">Commissioning tolerances</div>
+      <div class="field"><label>Each terminal within ± (% of design)</label><input type="number" step="1" data-s="commTerminalTolPct" value="${s.commTerminalTolPct ?? 10}"/></div>
+      <div class="field"><label>System total — lowest / highest (% of design)</label>
+        <span><input type="number" step="1" data-s="commSystemMinPct" value="${s.commSystemMinPct ?? 100}"/>
+        <input type="number" step="1" data-s="commSystemMaxPct" value="${s.commSystemMaxPct ?? 110}"/></span></div>
+      <p class="small-note">Used on the commissioning sheets in the PDF report. Typical figures to CIBSE Commissioning Code A / BSRIA BG 49; the project specification governs.</p>
 
       <div class="section-title">Default heights (m AFFL)</div>
       <div class="field"><label>Duct run</label><input type="number" step="0.05" data-s="defaultDuctHeight" value="${s.defaultDuctHeight}"/></div>

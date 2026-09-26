@@ -30,6 +30,9 @@ export function defaultSettings() {
     extractTempC: 22,
     outdoorTempC: 5,
     exhaustTempC: 12,
+    commTerminalTolPct: 10, // commissioning: each terminal within ±% of design
+    commSystemMinPct: 100, // system total, lowest accepted % of design
+    commSystemMaxPct: 110, // system total, highest accepted % of design
     velocityCaps: {
       main: RECOMMENDED_VELOCITY.main.max,
       riser: RECOMMENDED_VELOCITY.riser.max,
