@@ -70,7 +70,7 @@ const TOOLS = [
 ];
 const PALETTES = {
   fan: { title: "Fans", kinds: ["fan_centrifugal", "fan_axial", "fan_plug"], note: "A fan is the plant for the system you are tracing." },
-  terminal: { title: "Terminals", groups: [["In the building", ["diffuser", "grille_supply", "louvre", "grille_extract", "valve_extract"]], ["Outside", ["intake_louvre", "roof_intake", "exhaust_louvre", "roof_cowl"]]], note: "Extract grilles are always extract, intake louvres fresh air and exhaust louvres exhaust. An outside terminal takes the unit's own airflow unless you type one." },
+  terminal: { title: "Terminals", groups: [["In the building", ["diffuser", "grille_supply", "louvre", "open_end_supply", "grille_extract", "valve_extract", "open_end_extract"]], ["Outside", ["intake_louvre", "roof_intake", "exhaust_louvre", "roof_cowl"]]], note: "Extract grilles are always extract, intake louvres fresh air and exhaust louvres exhaust. An outside terminal takes the unit's own airflow unless you type one." },
   inline: { title: "In-line devices", kinds: ["fire_damper", "vcd", "attenuator", "plenum", "heater", "filter"], note: "Click on a duct to put the device on it." },
 };
 let paletteOpen = null; // "fan" | "terminal" | "inline"
@@ -529,7 +529,9 @@ $("#stage").addEventListener("dragleave", () => $("#drop").classList.remove("hot
 function fileStem() {
   const d = new Date();
   const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return `${(store.project.meta.name || "Untitled").replace(/[\\/:*?"<>|—–]+/g, "-")} - ${date}`;
+  const clean = (v) => String(v || "").replace(/[\\/:*?"<>|—–]+/g, "-").trim();
+  const ref = clean(store.project.meta.engineerRef);
+  return `${ref ? ref + " - " : ""}${clean(store.project.meta.name) || "Untitled"} - ${date}`;
 }
 function saveProject() {
   const p = store.project;
@@ -681,7 +683,7 @@ async function exportPdfReport() {
   try {
     const results = computeAll(store.project);
     const { planJpeg, isoJpeg } = await captureViews();
-    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg });
+    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg, logoJpeg: await logoJpeg() });
     downloadBlob(blob, `Duct Trace report - ${fileStem()}.pdf`);
     toast("PDF report downloaded");
   } catch (err) {
@@ -693,8 +695,30 @@ async function exportPdfReport() {
     store.emit();
   }
 }
-function exportTakeoffPdf(takeoff) {
-  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project) });
+// The adi logo from the top bar, as a JPEG the PDF writer can embed.
+let logoCache = null;
+async function logoJpeg() {
+  if (logoCache) return logoCache;
+  try {
+    const src = document.querySelector(".brand-logo")?.src;
+    if (!src) return null;
+    const img = await loadImage(src);
+    const cv = document.createElement("canvas");
+    cv.width = img.naturalWidth;
+    cv.height = img.naturalHeight;
+    const cx = cv.getContext("2d");
+    cx.fillStyle = "#fff";
+    cx.fillRect(0, 0, cv.width, cv.height);
+    cx.drawImage(img, 0, 0);
+    logoCache = cv.toDataURL("image/jpeg", 0.95);
+  } catch (e) {
+    logoCache = null;
+  }
+  return logoCache;
+}
+
+async function exportTakeoffPdf(takeoff) {
+  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project), logoJpeg: await logoJpeg() });
   downloadBlob(blob, `Duct Trace take-off - ${fileStem()}.pdf`);
 }
 $("#bPdf").addEventListener("click", exportPdfReport);

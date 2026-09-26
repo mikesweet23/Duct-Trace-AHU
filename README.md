@@ -114,6 +114,34 @@ building-side connection. A louvre on the wrong airstream is rejected; an
 existing run on that path is marked for retracing. A run connected to the unit
 with zero calculated flow asks for extract airflow rather than another join.
 
+## Commissioning, open ends and louvre sizing
+
+- **Commissioning sheets** close the PDF report, to CIBSE Commissioning
+  Code A / BSRIA BG 49. Per system: design total and accepted band, the
+  main-duct traverse (size, area, velocity, velocity pressure and
+  log-Tchebycheff traverse points), every terminal with its reference, room,
+  duct size and velocity, design flow in l/s and m³/h and accepted range, the
+  index terminal (IDX) to balance from, regulating dampers, the DW144 pressure
+  class and DW143 leakage-test limit; then the unit test record, room air
+  balance and sign-off, with blank columns for measured values. Tolerances
+  (default ±10% per terminal, 100–110% per system) are set in Duct & basis.
+  `src/export/commissioning.js`.
+- **Open ends** — supply and extract — with a **bell mouth** option. Their
+  loss is K × velocity pressure at the duct: 1.0 on a supply open end, 0.5 on
+  a plain extract entry, 0.04 with a bell mouth.
+- **Outside louvre sizing** — fresh-air intake at 1.5 m/s through the free
+  area, exhaust at up to 5 m/s, both at an adjustable 50% free area — with a
+  range of circular and rectangular sizes and the velocity each gives, in the
+  inspector and the report. `src/standards/louvres.js`.
+
+**Report branding.** The PDF report and the take-off open with the adi
+Climate Systems logo and a job block — client name, job name, engineer
+reference, date and revision — set in Duct & basis → Project. Every page
+after the cover carries the job, client and reference in its header with
+the logo, and the footer repeats the job and reference. The logo is the one
+in the top bar, converted to JPEG when the report is built. File names start
+with the engineer reference.
+
 ## Units
 
 - **AHU** — supply and extract in one box, or supply-only / extract-only.

@@ -7,6 +7,7 @@ import { VELOCITY_GUIDANCE } from "../standards/dw144.js";
 import { allComputedSystems } from "../calc/network.js";
 import { formatFlow, formatFlowLs, flowUnitLabel, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { roleLabel, sectionSizeLabel, sectionShapeLabel } from "../format.js";
+import { buildCommissioning } from "./commissioning.js";
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -22,6 +23,10 @@ function pdfSafe(str) {
     .replace(/Δ/g, "d")
     .replace(/–|—/g, "-")
     .replace(/•/g, "*")
+    .replace(/°/g, " deg")
+    .replace(/²/g, "2")
+    .replace(/±/g, "+/-")
+    .replace(/ø/g, "dia ")
     .replace(/[^\x20-\x7E]/g, "?")
     .replace(/\\/g, "\\\\")
     .replace(/\(/g, "\\(")
@@ -154,10 +159,24 @@ class PdfDoc {
   }
 }
 
+// Client, job and engineer's reference, from the project.
+export function jobInfo(project) {
+  const m = project?.meta || {};
+  return {
+    client: String(m.client || "").trim(),
+    job: String(m.name || "").trim() || "Untitled",
+    ref: String(m.engineerRef || "").trim(),
+    rev: m.rev || 0,
+  };
+}
+
 class PageWriter {
-  constructor(doc, title) {
+  // opts.logo: a JPEG data URL of the company logo; opts.job: jobInfo()
+  constructor(doc, title, opts = {}) {
     this.doc = doc;
     this.title = title;
+    this.logo = opts.logo ? doc.addJpeg(opts.logo) : null;
+    this.job = opts.job || null;
     this.ops = [];
     this.y = PAGE_H - MARGIN;
     this.xobjects = {};
@@ -182,16 +201,65 @@ class PageWriter {
   newPage() {
     this.flush();
     this.pageNo += 1;
-    if (this.title) {
-      this.text(this.title, MARGIN, this.y, { font: "F2", size: 9, color: [0.35, 0.4, 0.5] });
-      this.y -= 16;
-      this.rule();
+    this.pageHeader();
+  }
+
+  // Every page after the first: job and client on the left, the engineer's
+  // reference under it, the logo on the right.
+  pageHeader() {
+    const j = this.job;
+    const line1 = j ? [j.job, j.client].filter(Boolean).join("  -  ") : this.title;
+    if (!line1 && !this.logo) return;
+    this.text(line1 || "", MARGIN, this.y, { font: "F2", size: 9, color: [0.35, 0.4, 0.5] });
+    if (j?.ref) this.text(`Ref: ${j.ref}`, MARGIN, this.y - 11, { size: 8, color: [0.45, 0.5, 0.58] });
+    if (this.logo) this.drawLogo(PAGE_W - MARGIN, this.y + 9, 20, "right");
+    this.y -= j?.ref ? 26 : 16;
+    this.rule();
+  }
+
+  // Draws the logo with its top at `top`; align "left" from x, "right" to x.
+  drawLogo(x, top, height, align = "left") {
+    if (!this.logo) return 0;
+    const w = this.logo.w * (height / this.logo.h);
+    const x0 = align === "right" ? x - w : x;
+    this.xobjects.Logo = this.logo.id;
+    this.ops.push(`q ${round(w, 2)} 0 0 ${round(height, 2)} ${round(x0, 2)} ${round(top - height, 2)} cm /Logo Do Q`);
+    return w;
+  }
+
+  // The first page: logo, report title, then the job block.
+  cover(title, subtitle) {
+    const top = this.y + 8;
+    const lw = this.drawLogo(MARGIN, top, 46, "left");
+    const tx = this.logo ? MARGIN + lw + 16 : MARGIN;
+    this.text(title, tx, top - 18, { font: "F2", size: 17, color: [0.07, 0.16, 0.32] });
+    if (subtitle) this.text(subtitle, tx, top - 34, { size: 9, color: [0.35, 0.4, 0.5] });
+    this.y = top - 62;
+    this.rule();
+    const j = this.job || {};
+    const rows = [
+      ["Client", j.client || "-"],
+      ["Job", j.job || "-"],
+      ["Engineer reference", j.ref || "-"],
+      ["Date", new Date().toISOString().slice(0, 10)],
+    ];
+    if (j.rev) rows.push(["Revision", `rev ${j.rev}`]);
+    for (const [k, v] of rows) {
+      this.ensure(15);
+      this.text(k, MARGIN, this.y, { size: 10, color: [0.35, 0.4, 0.5] });
+      this.text(String(v), MARGIN + 130, this.y, { font: "F2", size: 11 });
+      this.y -= 15;
     }
+    this.y -= 4;
+    this.rule();
   }
 
   footer() {
     const n = this.doc.pages.length + 1;
-    this.ops.push(`BT /F1 8 Tf 0.45 0.5 0.58 rg ${MARGIN} 22 Td (Page ${n}  -  Duct Trace AHU  -  DW144 / CIBSE) Tj ET`);
+    const j = this.job;
+    const who = j ? [j.job, j.ref ? `Ref ${j.ref}` : ""].filter(Boolean).join("  -  ") : "";
+    const line = `Page ${n}${who ? `  -  ${who}` : ""}  -  adi Climate Systems  -  Duct Trace AHU`;
+    this.ops.push(`BT /F1 8 Tf 0.45 0.5 0.58 rg ${MARGIN} 22 Td (${pdfSafe(line)}) Tj ET`);
   }
 
   text(str, x, y, opts = {}) {
@@ -207,7 +275,10 @@ class PageWriter {
   }
 
   heading(str, size = 14) {
-    this.ensure(22);
+    // a little air above a heading; at the top of a page, clear the header rule
+    if (this.y < PAGE_H - MARGIN - 30) this.y -= Math.round(size * 0.45);
+    else this.y -= Math.max(0, Math.round(size * 0.8) - 6);
+    this.ensure(size + 30);
     this.text(str, MARGIN, this.y, { font: "F2", size, color: [0.07, 0.16, 0.32] });
     this.y -= size + 8;
   }
@@ -246,6 +317,11 @@ class PageWriter {
     const x0 = MARGIN;
     const h = 13;
     const drawRow = (cells, bold, fill) => {
+      // a table that runs onto a new page repeats its header row there
+      if (!bold && this.y - (h + 2) < BOTTOM + 16) {
+        this.newPage();
+        drawRow(headers, true, "0.90 0.93 0.96");
+      }
       this.ensure(h + 2);
       let x = x0;
       if (fill) {
@@ -313,20 +389,17 @@ function plantOn(sys, c) {
   return sys.plant && c.id === sys.plant.id;
 }
 
-export function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
+export function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg = null }) {
   const unit = project.settings?.flowUnit || "l/s";
   const unitLabel = flowUnitLabel(unit);
   const systems = allComputedSystems(results);
   const doc = new PdfDoc();
-  const w = new PageWriter(doc, project.meta?.name || "Duct project");
+  const job = jobInfo(project);
+  const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
   w.pageNo = 1;
 
-  w.heading("Duct Trace AHU  -  design report", 18);
-  w.para("Commercial / industrial ductwork sizing to DW144 / BESA standard sizes and CIBSE Guide B velocity guidance.");
-  w.y -= 4;
+  w.cover("Ductwork design report", "adi Climate Systems  -  ductwork sizing to DW144 / BESA and CIBSE Guide B");
   w.kv([
-    ["Project", project.meta?.name || "Untitled"],
-    ["Date", new Date().toISOString().slice(0, 10)],
     ["Mode", project.mode === "drawing" ? "Drawing" : "Concept"],
     ["Flow unit", unitLabel],
     ["Default duct", sectionShapeLabel(project.settings?.ductType)],
@@ -379,6 +452,9 @@ export function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
     );
   }
 
+  writeLouvres(w, project, results, unit, unitLabel);
+  writeCommissioning(w, project, results, unit, unitLabel);
+
   if (planJpeg) {
     w.heading("Plan layout", 14);
     w.para("Traced ductwork, plant and terminals as shown on the plan. Risers appear as markers only.");
@@ -393,6 +469,127 @@ export function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
   w.para("Calculations use Darcy-Weisbach with Colebrook-White (Swamee-Jain) and Huebscher equivalent diameter for rectangular / square ducts. Verify against manufacturer data before construction.", 8);
   w.flush();
   return doc.build();
+}
+
+const r0 = (v) => round(v, 0);
+const r1 = (v) => round(v, 1);
+const r2 = (v) => round(v, 2);
+
+// Outside terminals: the size the flow needs at the design velocity
+// through the free area, as a range of circular and rectangular sizes.
+function writeLouvres(w, project, results, unit, unitLabel) {
+  const data = buildCommissioning(project, results);
+  if (!data.louvres.length) return;
+  w.heading("Outside terminals  -  louvre and grille sizing", 13);
+  w.para("Velocity is taken through the free area of the louvre or grille: free area = flow / velocity, gross face area = free area / free-area fraction. Intake is sized at 1.5 m/s so rain and snow are not drawn in; exhaust may run up to 5 m/s to throw stale air clear of the building and its intake. Sizes are listed smallest first with the velocity each actually gives. Replace the free-area figure with the selected product's.", 8.5);
+  for (const L of data.louvres) {
+    w.heading(`${L.name}  (${L.side === "exhaust" ? "exhaust discharge" : "fresh-air intake"})`, 10.5);
+    if (!(L.flowLs > 0)) { w.para("Not joined to a unit, so no flow to size it for.", 8.5); continue; }
+    w.kv([
+      [`Airflow (${unitLabel})`, formatFlowLs(L.flowLs, unit)],
+      ["Design velocity through free area", `${r2(L.velocity)} m/s`],
+      ["Free area", `${r0(L.freeAreaPct)} %`],
+      ["Free area needed", `${round(L.sizing.freeAreaM2, 3)} m2`],
+      ["Gross face area needed", `${round(L.sizing.grossAreaM2, 3)} m2`],
+    ]);
+    const rows = [...L.sizing.circular, ...L.sizing.rectangular].map((o) => [
+      o.shape === "circular" ? "Circular" : "Rectangular", o.shape === "circular" ? `dia ${o.widthMm}` : `${o.widthMm} x ${o.heightMm}`,
+      round(o.grossAreaM2, 3), round(o.freeAreaM2, 3), r2(o.freeVelocity), r2(o.faceVelocity),
+    ]);
+    w.table(["Shape", "Size mm", "Face m2", "Free m2", "Free m/s", "Face m/s"], rows, [80, 100, 70, 70, 80, 80]);
+  }
+}
+
+// Commissioning: what the balancing engineer sets to and records against,
+// to CIBSE Commissioning Code A / BSRIA BG 49.
+function writeCommissioning(w, project, results, unit, unitLabel) {
+  const data = buildCommissioning(project, results);
+  if (!data.systems.length) return;
+  const t = data.tolerances;
+  w.newPage();
+  w.heading("Commissioning  -  air systems", 16);
+  w.para(`Design figures for setting to work, regulating and proving the air systems in accordance with CIBSE Commissioning Code A (Air distribution systems) and BSRIA BG 49 (Commissioning air systems). Tolerances used: each terminal within +/-${r0(t.terminalTolPct)}% of design; each system total between ${r0(t.systemMinPct)}% and ${r0(t.systemMaxPct)}% of design. Confirm against the project specification, which governs.`, 8.5);
+  w.para("Method: check the installation is complete, clean and ready (dampers open, filters fitted, fire dampers open and reset, ductwork leakage tested). Set the fan to design duty and prove the total by pitot traverse of the main duct. Regulate the branches and then the terminals by proportional balancing, starting at the index terminal (the one furthest from the fan by resistance, marked IDX) and working back towards the fan. Re-measure the total and record final damper positions, fan speed and motor current.", 8.5);
+  w.y -= 2;
+
+  for (const s of data.systems) {
+    w.heading(`${s.name}  (${s.code})`, 12.5);
+    w.kv([
+      ["Unit / fan", s.plantLabel || "none on this system"],
+      [`Design total (${unitLabel})`, `${formatFlowLs(s.totalLs, unit)}   accept ${formatFlowLs(s.totalMinLs, unit)} to ${formatFlowLs(s.totalMaxLs, unit)}`],
+      ["Index run static (Pa)", r0(s.indexPa)],
+      ["Fan static, both sides of the fan (Pa)", r0(s.fanStaticPa)],
+      ["Available static at the unit (Pa)", s.availablePa == null ? "-" : r0(s.availablePa)],
+      ["Index terminal", s.indexRef || "-"],
+      ["DW144 pressure class / leakage class", `${s.pressureClass} / ${s.leakageClass}`],
+      ["DW143 leakage test", `at ${r0(s.testPa)} Pa, not more than ${r2(s.limitLsPerM2)} l/s per m2 of duct surface`],
+    ]);
+    if (s.traverse) {
+      w.heading("Main duct traverse (system total)", 10);
+      w.table(["Duct mm", "Area m2", `Design ${unitLabel}`, "Velocity m/s", "Pv Pa", "Measured", "% design"],
+        [[s.traverse.size, round(s.traverse.areaM2, 3), formatFlowLs(s.traverse.flowLs, unit).replace(` ${unitLabel}`, ""), r2(s.traverse.velocity), r1(s.traverse.pvPa), "", ""]],
+        [72, 60, 70, 72, 55, 100, 82]);
+      w.para(`Traverse points: ${s.traverse.points}. Take the traverse at least 7.5 diameters downstream and 3 upstream of any bend, branch or damper where the run allows.`, 8);
+    }
+    if (s.terminals.length) {
+      w.heading("Terminals", 10);
+      w.table(
+        ["Ref", "Terminal", "Room", "Duct mm", "m/s", `Design ${unitLabel}`, "m3/h", "Accept", "Measured", "%", "Init"],
+        s.terminals.map((x) => [
+          x.index ? `${x.ref} IDX` : x.ref,
+          (x.name + (x.bellMouth ? " (BM)" : "")).slice(0, 24),
+          (x.room || "-").slice(0, 12),
+          x.size,
+          r1(x.velocity),
+          formatFlowLs(x.designLs, unit).replace(` ${unitLabel}`, ""),
+          r0(x.designLs * 3.6),
+          `${formatFlowLs(x.minLs, unit).replace(` ${unitLabel}`, "")}-${formatFlowLs(x.maxLs, unit).replace(` ${unitLabel}`, "")}`,
+          "", "", "",
+        ]),
+        [44, 94, 60, 46, 26, 44, 34, 62, 50, 26, 25]
+      );
+    }
+    if (s.dampers.length) {
+      w.heading("Regulating dampers", 10);
+      w.table(["Ref", "Damper", "Duct mm", `Design ${unitLabel}`, "Final position", "Locked"],
+        s.dampers.map((d) => [d.ref, d.name.slice(0, 30), d.size, formatFlowLs(d.flowLs, unit).replace(` ${unitLabel}`, ""), "", ""]),
+        [70, 150, 70, 70, 90, 60]);
+    }
+  }
+
+  const plants = (project.components || []).filter((c) => componentDef(c.kind)?.role === "plant");
+  if (plants.length) {
+    w.heading("Unit test record", 12);
+    for (const p of plants) {
+      const def = componentDef(p.kind);
+      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantLabel === (p.label || def?.label))?.totalLs || 0;
+      const rows = [
+        [`Supply air volume (${unitLabel})`, formatFlowLs(flow("supply"), unit)],
+        [`Extract air volume (${unitLabel})`, formatFlowLs(flow("extract"), unit)],
+        [`Fresh air volume (${unitLabel})`, formatFlowLs(flow("outdoor"), unit)],
+        [`Exhaust air volume (${unitLabel})`, formatFlowLs(flow("exhaust"), unit)],
+        ["Supply fan external static (Pa)", r0(plantStaticPa(p.props, "supply"))],
+        ["Extract fan external static (Pa)", r0(plantStaticPa(p.props, "extract"))],
+        ["Supply fan speed / motor current", "-"],
+        ["Extract fan speed / motor current", "-"],
+        ["Filter pressure drops (clean)", "-"],
+      ];
+      if (p.kind === "hrv") rows.push(["Heat recovery temperature efficiency (%)", r0(Number(p.props?.recoveryEfficiencyPct) || 0)], ["Summer bypass operation", p.props?.summerBypass === false ? "none fitted" : "check"]);
+      w.heading(p.label || def?.label || "Unit", 10);
+      w.table(["Item", "Design", "Measured", "Init"], rows.map((r) => [r[0], String(r[1]), "", ""]), [220, 120, 120, 50]);
+    }
+  }
+
+  if (data.rooms.length) {
+    w.heading("Room air balance", 12);
+    w.table(["Room", `Supply target`, "Supply terminals", "Extract target", "Extract terminals", "Measured S / E"],
+      data.rooms.map((r) => [r.name.slice(0, 22), formatFlowLs(r.supplyTarget, unit), formatFlowLs(r.supplyTerminals, unit), formatFlowLs(r.extractTarget, unit), formatFlowLs(r.extractTerminals, unit), ""]),
+      [100, 75, 85, 75, 85, 90]);
+  }
+
+  w.heading("Sign-off", 12);
+  w.table(["", "Name", "Company", "Signature", "Date"],
+    [["Commissioned by", "", "", "", ""], ["Witnessed by", "", "", "", ""]], [110, 110, 110, 110, 70]);
 }
 
 function writeSystem(w, project, sys, unit, unitLabel) {
@@ -511,10 +708,11 @@ function writeSystem(w, project, sys, unit, unitLabel) {
   w.y -= 8;
 }
 
-export function buildTakeoffPdf({ project, takeoff }) {
+export function buildTakeoffPdf({ project, takeoff, logoJpeg = null }) {
   const doc = new PdfDoc();
-  const w = new PageWriter(doc, pdfSafe(project.meta?.name || "Takeoff"));
-  w.heading(project.meta?.name || "Project", 16);
+  const job = jobInfo(project);
+  const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
+  w.cover("Ductwork take-off", "adi Climate Systems  -  fabrication take-off from the physical model");
   w.para("Fabrication takeoff generated from the physical model. Component references map back to the model.");
   w.heading("Circular duct", 12);
   const circ = (takeoff.circular || []).map((g) => [

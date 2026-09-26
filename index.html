@@ -1028,6 +1028,34 @@ const COMPONENTS = {
     foot: { w: 0.6, d: 0.3, t: 0.2 },
     props: { designFlow_ls: 100, terminalLossPa: 15, note: "" },
   },
+  // An open duct end, supply or extract. Its loss is the velocity pressure
+  // at the duct times a K: a supply open end throws its velocity pressure
+  // away (K = 1.0, flared or not); an extract open end loses 0.5 on a plain
+  // sharp entry and about 0.04 with a bell mouth (CIBSE Guide C, entries).
+  open_end_supply: {
+    kind: "open_end_supply",
+    label: "Supply open end",
+    category: "terminal",
+    role: "terminal",
+    symbol: "OE",
+    color: "#059669",
+    system: "supply",
+    openEnd: true,
+    foot: { w: 0.3, d: 0.3, t: 0.3 },
+    props: { designFlow_ls: 50, bellMouth: false, terminalLossPa: 0, note: "" },
+  },
+  open_end_extract: {
+    kind: "open_end_extract",
+    label: "Extract open end",
+    category: "terminal",
+    role: "terminal",
+    symbol: "OE",
+    color: "#d97706",
+    system: "extract",
+    openEnd: true,
+    foot: { w: 0.3, d: 0.3, t: 0.3 },
+    props: { designFlow_ls: 50, bellMouth: false, terminalLossPa: 0, note: "" },
+  },
   // Outside terminals. Their flow follows the unit they serve: fresh air in
   // is the unit's supply airflow, exhaust out is its extract airflow, shared
   // between the terminals on that duct. Type a flow to override it.
@@ -1041,7 +1069,7 @@ const COMPONENTS = {
     system: "outdoor",
     outside: true,
     foot: { w: 1.0, d: 0.25, t: 0.8 },
-    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, designVelocity: 1.5, note: "" },
   },
   exhaust_louvre: {
     kind: "exhaust_louvre",
@@ -1053,7 +1081,7 @@ const COMPONENTS = {
     system: "exhaust",
     outside: true,
     foot: { w: 1.0, d: 0.25, t: 0.8 },
-    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 30, freeAreaPct: 50, designVelocity: 5.0, note: "" },
   },
   roof_cowl: {
     kind: "roof_cowl",
@@ -1065,7 +1093,7 @@ const COMPONENTS = {
     system: "exhaust",
     outside: true,
     foot: { w: 0.6, d: 0.6, t: 0.6 },
-    props: { designFlow_ls: 0, terminalLossPa: 25, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 25, freeAreaPct: 50, designVelocity: 5.0, note: "" },
   },
   roof_intake: {
     kind: "roof_intake",
@@ -1077,7 +1105,7 @@ const COMPONENTS = {
     system: "outdoor",
     outside: true,
     foot: { w: 0.6, d: 0.6, t: 0.6 },
-    props: { designFlow_ls: 0, terminalLossPa: 25, note: "" },
+    props: { designFlow_ls: 0, terminalLossPa: 25, freeAreaPct: 50, designVelocity: 1.5, note: "" },
   },
   fire_damper: {
     kind: "fire_damper",
@@ -1150,6 +1178,27 @@ function isDualPort(kind) {
   return !!COMPONENTS[kind]?.dualPort;
 }
 
+// Loss coefficient on the duct velocity pressure at a terminal, added to its
+// fixed terminalLossPa. Open ends only; everything else is a fixed figure.
+const OPEN_END_K = {
+  supply: { plain: 1.0, bell: 1.0 },
+  extract: { plain: 0.5, bell: 0.04 },
+};
+function terminalK(c) {
+  const def = COMPONENTS[c?.kind];
+  if (!def?.openEnd) return 0;
+  const side = def.system === "extract" ? "extract" : "supply";
+  return OPEN_END_K[side][c.props?.bellMouth ? "bell" : "plain"];
+}
+
+// The symbol drawn on a component — an open end with a bell mouth reads BM.
+function symbolOf(c) {
+  const def = COMPONENTS[c?.kind];
+  if (!def) return "?";
+  if (def.openEnd && c.props?.bellMouth) return "BM";
+  return def.symbol;
+}
+
 const HRV_RECOVERY_TYPES = {
   plate: "Counterflow plate",
   crossflow: "Cross-flow plate",
@@ -1192,7 +1241,7 @@ function inlineLossPa(props, dynamicPressurePa) {
   const k = Number(props?.k) || 0;
   return fixed + k * (dynamicPressurePa || 0);
 }
-return { CATEGORIES, COMPONENTS, componentDef, isDualPort, HRV_RECOVERY_TYPES, recoveredSupplyTempC, recoveredHeatKw, defaultProps, componentsByCategory, inlineLossPa };
+return { CATEGORIES, COMPONENTS, componentDef, isDualPort, OPEN_END_K, terminalK, symbolOf, HRV_RECOVERY_TYPES, recoveredSupplyTempC, recoveredHeatKw, defaultProps, componentsByCategory, inlineLossPa };
 })();
 
 // ---- src/layout.js ----
@@ -2078,6 +2127,9 @@ function defaultSettings() {
     extractTempC: 22,
     outdoorTempC: 5,
     exhaustTempC: 12,
+    commTerminalTolPct: 10, // commissioning: each terminal within ±% of design
+    commSystemMinPct: 100, // system total, lowest accepted % of design
+    commSystemMaxPct: 110, // system total, highest accepted % of design
     velocityCaps: {
       main: RECOMMENDED_VELOCITY.main.max,
       riser: RECOMMENDED_VELOCITY.riser.max,
@@ -3513,7 +3565,7 @@ const { flowToM3s, plantDutyLs, plantStaticPa, round } = __m["src/units.js"];
 const { airDensity, airViscosity } = __m["src/units.js"];
 const { sizeDuct, frictionForSection, dynamicPressure } = __m["src/standards/sizing.js"];
 const { totalFittingK } = __m["src/standards/fittings.js"];
-const { componentDef, inlineLossPa, isDualPort } = __m["src/standards/components.js"];
+const { componentDef, inlineLossPa, isDualPort, terminalK } = __m["src/standards/components.js"];
 const { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } = __m["src/standards/dw144.js"];
 const { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem } = __m["src/systems.js"];
 const { PORT_NODE_KEY } = __m["src/layout.js"];
@@ -3847,11 +3899,18 @@ function computeSystem(project, systemType, plantFilter = undefined, opts = {}) 
         }
         cur = parentNode.get(cur);
       }
-      const termLoss = list.reduce((s, c) => s + (Number(c.props?.terminalLossPa) || 0), 0);
+      // the duct that feeds the terminal: its velocity sets an open end's loss
+      // and is what the commissioning sheet reads at the terminal
+      const runout = parentSeg.has(nodeId) ? segResById.get(parentSeg.get(nodeId).id) : null;
+      const pvRunout = runout ? dynamicPressure(runout.velocity || 0, density) : 0;
+      const termLoss = list.reduce((s, c) => s + (Number(c.props?.terminalLossPa) || 0) + terminalK(c) * pvRunout, 0);
       cum += termLoss;
       const node = nodesById.get(nodeId);
       terminals.push({
         nodeId,
+        runoutSegId: runout ? runout.id : null,
+        runoutVelocity: runout ? runout.velocity : 0,
+        runoutSection: runout ? runout.section : null,
         components: list,
         name: list.map((c) => c.label || componentDef(c.kind)?.label).join(", "),
         totalPa: cum,
@@ -4050,7 +4109,7 @@ __m["src/ui/canvas.js"] = (() => {
 //     traces instead of scrolling the page away.
 
 const { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVerticalRiser, clamp, pointSegment } = __m["src/geom.js"];
-const { componentDef, isDualPort } = __m["src/standards/components.js"];
+const { componentDef, isDualPort, symbolOf } = __m["src/standards/components.js"];
 const { showPrompt, toast } = __m["src/ui/modal.js"];
 const { formatFlowLs, normalizeFlowUnit, round } = __m["src/units.js"];
 const { findSegResult, isIndexSegment } = __m["src/calc/network.js"];
@@ -5007,7 +5066,7 @@ class CanvasView {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.rotate(-(box.rot * Math.PI) / 180); // turn the symbol, never the text
-      ctx.fillText(def.symbol, 0, 0);
+      ctx.fillText(symbolOf(c), 0, 0);
       ctx.restore();
       ctx.textBaseline = "alphabetic";
 
@@ -6031,6 +6090,101 @@ function avgDepth(it, view) {
   return pts.reduce((s, p) => s + p.depth, 0) / pts.length;
 }
 return { VISUAL_MODES, View3D };
+})();
+
+// ---- src/standards/louvres.js ----
+__m["src/standards/louvres.js"] = (() => {
+// Sizing the outside terminals: the fresh-air intake and the exhaust.
+//
+// The velocity is taken through the louvre's FREE area, which is the gross
+// face area times its free-area percentage (50% by default, adjustable per
+// terminal, to be replaced by the chosen product's figure):
+//
+//   free area  = flow / velocity
+//   gross area = free area / free-area fraction
+//
+// Intake is sized slow — 1.5 m/s by default — so rain and snow are not
+// drawn in and the louvre does not whistle. Exhaust may run up to 5 m/s so
+// the stale air is thrown clear of the building and its own intake; a
+// faster design figure than that is capped.
+//
+// A range of standard circular and rectangular sizes is offered, smallest
+// first, each with the free-area and face velocity it would actually give.
+
+const { CIRCULAR_DIAMETERS, RECTANGULAR_SIDES } = __m["src/standards/dw144.js"];
+
+const LOUVRE_DEFAULTS = {
+  outdoor: { velocity: 1.5, maxVelocity: 2.5, freeAreaPct: 50, label: "Fresh-air intake" },
+  exhaust: { velocity: 5.0, maxVelocity: 5.0, freeAreaPct: 50, label: "Exhaust discharge" },
+};
+
+function louvreBasis(c) {
+  const side = c?.system === "exhaust" ? "exhaust" : "outdoor";
+  const d = LOUVRE_DEFAULTS[side];
+  const v = Number(c?.props?.designVelocity);
+  const fa = Number(c?.props?.freeAreaPct);
+  return {
+    side,
+    velocity: Math.min(v > 0 ? v : d.velocity, d.maxVelocity),
+    maxVelocity: d.maxVelocity,
+    freeAreaPct: fa > 0 && fa <= 100 ? fa : d.freeAreaPct,
+    label: d.label,
+  };
+}
+
+function option(shape, wMm, hMm, areaM2, q, frac) {
+  const free = areaM2 * frac;
+  return {
+    shape,
+    widthMm: wMm,
+    heightMm: hMm,
+    label: shape === "circular" ? `ø${wMm}` : `${wMm} × ${hMm}`,
+    grossAreaM2: areaM2,
+    freeAreaM2: free,
+    freeVelocity: free > 0 ? q / free : 0,
+    faceVelocity: areaM2 > 0 ? q / areaM2 : 0,
+  };
+}
+
+// flowLs: the terminal's airflow; opts: { velocity, freeAreaPct, count }.
+function sizeLouvre(flowLs, opts = {}) {
+  const q = Math.max(0, Number(flowLs) || 0) / 1000;
+  const v = Number(opts.velocity) > 0 ? Number(opts.velocity) : 1.5;
+  const frac = (Number(opts.freeAreaPct) > 0 ? Number(opts.freeAreaPct) : 50) / 100;
+  const count = Math.max(1, Math.round(Number(opts.count) || 5));
+  const freeAreaM2 = q / v;
+  const grossAreaM2 = freeAreaM2 / frac;
+  if (!(q > 0)) return { flowM3s: 0, velocity: v, freeAreaPct: frac * 100, freeAreaM2: 0, grossAreaM2: 0, circular: [], rectangular: [] };
+
+  const circular = CIRCULAR_DIAMETERS
+    .map((d) => option("circular", d, d, Math.PI * (d / 1000) ** 2 / 4, q, frac))
+    .filter((o) => o.grossAreaM2 >= grossAreaM2 - 1e-12)
+    .slice(0, Math.min(3, count));
+
+  // rectangular: for each standard height, the narrowest standard width that
+  // gives the area, kept to a sensible aspect ratio; then smallest first
+  const rect = [];
+  const seen = new Set();
+  for (const h of RECTANGULAR_SIDES.filter((x) => x >= 150)) {
+    const w = RECTANGULAR_SIDES.find((x) => x >= h && (x / 1000) * (h / 1000) >= grossAreaM2 - 1e-12);
+    if (!w || w / h > 4) continue;
+    const key = `${w}x${h}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rect.push(option("rectangular", w, h, (w / 1000) * (h / 1000), q, frac));
+  }
+  rect.sort((a, b) => a.grossAreaM2 - b.grossAreaM2 || Math.abs(1 - a.widthMm / a.heightMm) - Math.abs(1 - b.widthMm / b.heightMm));
+  return {
+    flowM3s: q,
+    velocity: v,
+    freeAreaPct: frac * 100,
+    freeAreaM2,
+    grossAreaM2,
+    circular,
+    rectangular: rect.slice(0, count),
+  };
+}
+return { LOUVRE_DEFAULTS, louvreBasis, sizeLouvre };
 })();
 
 // ---- src/format.js ----
@@ -7646,6 +7800,8 @@ return { renderTakeoff };
 __m["src/ui/panels.js"] = (() => {
 // Right-hand panel rendering: Properties, Results and Settings tabs.
 
+const { terminalK, OPEN_END_K } = __m["src/standards/components.js"];
+const { sizeLouvre, louvreBasis } = __m["src/standards/louvres.js"];
 const { componentDef, COMPONENTS, defaultProps, isDualPort, HRV_RECOVERY_TYPES, recoveredSupplyTempC, recoveredHeatKw } = __m["src/standards/components.js"];
 const { FITTINGS } = __m["src/standards/fittings.js"];
 const { CIRCULAR_DIAMETERS, RECTANGULAR_SIDES, VELOCITY_GUIDANCE, VELOCITY_ROLES } = __m["src/standards/dw144.js"];
@@ -7933,6 +8089,71 @@ class Panels {
     `;
   }
 
+  terminalResult(c) {
+    for (const sys of allComputedSystems(this.results)) {
+      const t = (sys.terminals || []).find((x) => x.nodeId === c.nodeId);
+      if (t) return { sys, t };
+    }
+    return null;
+  }
+
+  // Outside terminals: the size the flow needs at the design velocity through
+  // the free area, as a range of standard circular and rectangular sizes.
+  louvreFields(c) {
+    const unit = unitOf(this.store);
+    const b = louvreBasis(c);
+    const tr = this.terminalResult(c);
+    const flowLs = tr ? tr.t.flowM3s * 1000 : Number(c.props?.designFlow_ls) || 0;
+    const r = sizeLouvre(flowLs, { velocity: b.velocity, freeAreaPct: b.freeAreaPct });
+    const rows = (list) => list.map((o) => `<tr><td>${o.label}</td><td class="n">${num(o.grossAreaM2, 3)}</td><td class="n">${num(o.freeVelocity, 2)}</td><td class="n">${num(o.faceVelocity, 2)}</td></tr>`).join("");
+    const isEx = b.side === "exhaust";
+    return h`
+      <div class="section-title">${isEx ? "Exhaust discharge sizing" : "Fresh-air intake sizing"}</div>
+      <div class="field"><label>Design velocity through the free area (m/s)${isEx ? " — up to 5" : ""}</label>
+        <input type="number" step="0.1" min="0.5" max="${b.maxVelocity}" data-prop="designVelocity" value="${b.velocity}"/></div>
+      <div class="field"><label>Free area of the grille / louvre (%)</label>
+        <input type="number" step="1" min="10" max="100" data-prop="freeAreaPct" value="${b.freeAreaPct}"/></div>
+      ${flowLs > 0 ? `
+      <div class="hrv-box"><dl>
+        <dt>Airflow</dt><dd>${lsToDisplay(flowLs, unit)} ${flowUnitLabel(unit)}</dd>
+        <dt>Free area needed</dt><dd>${num(r.freeAreaM2, 3)} m²</dd>
+        <dt>Gross face area at ${num(b.freeAreaPct, 0)}% free</dt><dd>${num(r.grossAreaM2, 3)} m²</dd>
+      </dl></div>
+      <table class="schedule"><thead><tr><th>Circular</th><th>Face m²</th><th>Free m/s</th><th>Face m/s</th></tr></thead><tbody>${rows(r.circular)}</tbody></table>
+      <table class="schedule"><thead><tr><th>Rectangular mm</th><th>Face m²</th><th>Free m/s</th><th>Face m/s</th></tr></thead><tbody>${rows(r.rectangular)}</tbody></table>
+      <p class="small-note">${isEx
+        ? "Exhaust may run up to 5 m/s through the free area to throw stale air clear of the building and away from any intake; larger sizes run slower."
+        : "Intake is sized at 1.5 m/s through the free area so rain and snow are not drawn in and it runs quietly."} Smallest first; each size shows the velocity it would actually give. Replace the free area with the chosen product's figure.</p>`
+      : `<p class="small-note">Join this terminal to its unit (or type a flow) and the size it needs appears here.</p>`}
+    `;
+  }
+
+  // Open ends: bell mouth or plain, and the loss that gives at this duct.
+  openEndFields(c) {
+    const def = componentDef(c.kind);
+    const extract = def.system === "extract";
+    const tr = this.terminalResult(c);
+    const v = tr?.t?.runoutVelocity || 0;
+    const pv = 0.6 * v * v;
+    const k = terminalK(c);
+    return h`
+      <div class="section-title">Open end</div>
+      <div class="field"><label>End</label>
+        <select data-prop-bool="bellMouth">
+          <option value="false" ${!c.props?.bellMouth ? "selected" : ""}>Plain open end — K ${extract ? OPEN_END_K.extract.plain : OPEN_END_K.supply.plain}</option>
+          <option value="true" ${c.props?.bellMouth ? "selected" : ""}>Bell mouth — K ${extract ? OPEN_END_K.extract.bell : OPEN_END_K.supply.bell}</option>
+        </select></div>
+      <div class="hrv-box"><dl>
+        <dt>Duct velocity at the end</dt><dd>${num(v, 2)} m/s</dd>
+        <dt>Velocity pressure</dt><dd>${num(pv, 1)} Pa</dd>
+        <dt>End loss (K ${k} × Pv)</dt><dd>${num(k * pv, 1)} Pa</dd>
+      </dl></div>
+      <p class="small-note">${extract
+        ? "A bell mouth on an extract open end cuts the entry loss from about half a velocity pressure to almost nothing."
+        : "A supply open end discharges its whole velocity pressure (K 1.0) whether plain or bell-mouthed; the bell mouth is recorded for the schedule."} Any fixed terminal loss above is added to this.</p>
+    `;
+  }
+
   // Heat recovery: the figures a schedule and a Part L check ask for. They do
   // not change the duct sizes; the flows and the available static do that.
   hrvFields(c) {
@@ -7983,7 +8204,8 @@ class Panels {
     const ul = flowUnitLabel(unit);
     const isPlant = def.role === "plant";
     const props = Object.entries(c.props || {})
-      .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k)))
+      .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k))
+        && !(def.outside && (k === "freeAreaPct" || k === "designVelocity")) && !(def.openEnd && k === "bellMouth"))
       .map(([k, v]) => {
         const label = PROP_LABELS[k] || k;
         if (k === "note") {
@@ -8044,6 +8266,8 @@ class Panels {
       <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
       <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>
       ${isPlant ? this.plantFields(c, def) : ""}
+      ${def.outside ? this.louvreFields(c) : ""}
+      ${def.openEnd ? this.openEndFields(c) : ""}
       <div class="section-title">Parameters</div>
       ${props}
       <button class="link-btn" data-act="addParam">+ Add custom parameter</button>
@@ -8443,8 +8667,10 @@ class Panels {
     }).join("");
     el.innerHTML = h`
       <div class="section-title">Project</div>
-      <div class="field"><label>Project name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
-      <p class="small-note">Goes on the saved file, the PDF report and the take-off.</p>
+      <div class="field"><label>Client name</label><input type="text" data-meta="client" value="${(p.meta.client || "").replace(/"/g, "&quot;")}" placeholder="e.g. Acme Developments Ltd"/></div>
+      <div class="field"><label>Job name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
+      <div class="field"><label>Engineer reference</label><input type="text" data-meta="engineerRef" value="${(p.meta.engineerRef || "").replace(/"/g, "&quot;")}" placeholder="e.g. ADI-2026-041 / MS"/></div>
+      <p class="small-note">On the cover and every page of the PDF report and the take-off, with the adi Climate Systems logo, and on the saved file name.</p>
       <div class="section-title">Sizing method</div>
       <div class="field"><label>Method</label>
         <select data-s="sizingMethod">
@@ -8497,6 +8723,13 @@ class Panels {
           <option value="false" ${s.showActualDucts === false ? "selected" : ""}>Centreline only</option>
         </select></div>
       <p class="small-note">Snap only pulls to a terminal, unit or existing corner when you are already nearby, so a close parallel supply and extract are not yanked together. To branch, hover a run while tracing and click the dot on it — only runs of the system you are tracing show one.</p>
+
+      <div class="section-title">Commissioning tolerances</div>
+      <div class="field"><label>Each terminal within ± (% of design)</label><input type="number" step="1" data-s="commTerminalTolPct" value="${s.commTerminalTolPct ?? 10}"/></div>
+      <div class="field"><label>System total — lowest / highest (% of design)</label>
+        <span><input type="number" step="1" data-s="commSystemMinPct" value="${s.commSystemMinPct ?? 100}"/>
+        <input type="number" step="1" data-s="commSystemMaxPct" value="${s.commSystemMaxPct ?? 110}"/></span></div>
+      <p class="small-note">Used on the commissioning sheets in the PDF report. Typical figures to CIBSE Commissioning Code A / BSRIA BG 49; the project specification governs.</p>
 
       <div class="section-title">Default heights (m AFFL)</div>
       <div class="field"><label>Duct run</label><input type="number" step="0.05" data-s="defaultDuctHeight" value="${s.defaultDuctHeight}"/></div>
@@ -8624,6 +8857,183 @@ class Panels {
 return { Panels };
 })();
 
+// ---- src/export/commissioning.js ----
+__m["src/export/commissioning.js"] = (() => {
+// The commissioning data a CIBSE Commissioning Code A / BSRIA BG 49 air
+// balance needs, worked out from the design so the engineer on site has the
+// figures to set to and somewhere to write what they measured.
+//
+// Per system: the unit's design duty and static, the main duct traverse
+// (where the total is proved), every terminal with its design flow, the
+// accepted band and the duct velocity feeding it, the regulating dampers,
+// and the DW144 / DW143 leakage-test figures for the pressure class. Plus
+// room-by-room design totals and the outside louvre sizes.
+//
+// Tolerances default to the usual figures (each terminal within ±10% of
+// design, the system total between 100% and 110%) and are set per project
+// in Duct & basis, because the specification governs, not this tool.
+
+const { componentDef } = __m["src/standards/components.js"];
+const { LEAKAGE_FACTORS, PRESSURE_CLASSES } = __m["src/standards/dw144.js"];
+const { allComputedSystems } = __m["src/calc/network.js"];
+const { pointInPolygon } = __m["src/geom.js"];
+const { SYSTEMS } = __m["src/systems.js"];
+const { sizeLouvre, louvreBasis } = __m["src/standards/louvres.js"];
+
+const COMMISSIONING_DEFAULTS = { terminalTolPct: 10, systemMinPct: 100, systemMaxPct: 110 };
+
+const REF_PREFIX = { supply: "S", extract: "E", outdoor: "F", exhaust: "X" };
+
+function commissioningTolerances(settings = {}) {
+  const d = COMMISSIONING_DEFAULTS;
+  const n = (v, def) => (Number.isFinite(Number(v)) && v !== "" && v != null ? Number(v) : def);
+  return {
+    terminalTolPct: n(settings.commTerminalTolPct, d.terminalTolPct),
+    systemMinPct: n(settings.commSystemMinPct, d.systemMinPct),
+    systemMaxPct: n(settings.commSystemMaxPct, d.systemMaxPct),
+  };
+}
+
+// Guide number of traverse points, log-Tchebycheff (BS EN 12599 / BSRIA BG 49).
+function traversePoints(section) {
+  if (!section) return "";
+  if (section.shape === "rect" || section.shape === "square") {
+    const per = (mm) => (mm < 760 ? 5 : mm <= 915 ? 6 : 7);
+    const a = per(section.widthMm || 0), b = per(section.heightMm || 0);
+    return `${a} × ${b} = ${a * b} points (log-Tchebycheff grid)`;
+  }
+  const d = section.diameterMm || 0;
+  const per = d <= 600 ? 6 : d <= 1200 ? 8 : 10;
+  return `2 diameters × ${per} = ${per * 2} points (log-Tchebycheff, ${per / 2} rings)`;
+}
+
+function sizeText(section) {
+  if (!section) return "-";
+  if (section.shape === "rect" || section.shape === "square") return `${section.widthMm}x${section.heightMm}`;
+  return `dia ${section.diameterMm}`;
+}
+
+function roomOf(project, pt) {
+  if (!pt) return "";
+  const r = (project.rooms || []).find((room) => room.points?.length >= 3 && pointInPolygon(pt, room.points));
+  return r ? r.name : "";
+}
+
+function leakage(pressureClass) {
+  const info = PRESSURE_CLASSES[pressureClass] || PRESSURE_CLASSES.A;
+  const factor = LEAKAGE_FACTORS[info.leakage] ?? LEAKAGE_FACTORS.A;
+  const testPa = info.maxPressure;
+  return { leakageClass: info.leakage, testPa, limitLsPerM2: factor * Math.pow(testPa, 0.65) };
+}
+
+function buildCommissioning(project, results) {
+  const tol = commissioningTolerances(project.settings);
+  const systems = allComputedSystems(results).filter((s) => s.segments.length || s.terminals.length);
+  const pv = (v, rho) => 0.5 * (rho || 1.2) * v * v;
+  const out = [];
+  for (const sys of systems) {
+    const info = SYSTEMS[sys.systemType] || SYSTEMS.supply;
+    const prefix = REF_PREFIX[sys.systemType] || "T";
+    const terminals = (sys.terminals || []).filter((t) => t.connected !== false).map((t, i) => {
+      const c = t.components[0];
+      const def = componentDef(c?.kind);
+      const designLs = t.flowM3s * 1000;
+      return {
+        ref: `${prefix}${String(i + 1).padStart(2, "0")}`,
+        name: t.name || def?.label || "Terminal",
+        kind: def?.label || "",
+        bellMouth: !!(def?.openEnd && c?.props?.bellMouth),
+        room: roomOf(project, t.point),
+        size: sizeText(t.runoutSection),
+        velocity: t.runoutVelocity || 0,
+        designLs,
+        minLs: designLs * (1 - tol.terminalTolPct / 100),
+        maxLs: designLs * (1 + tol.terminalTolPct / 100),
+        index: t.nodeId === sys.indexTerminal,
+        pathPa: t.totalPa,
+      };
+    });
+    // the main duct off the unit is where the system total is proved
+    const segById = new Map(project.segments.map((s) => [s.id, s]));
+    const main = sys.segments
+      .filter((r) => {
+        const s = segById.get(r.id);
+        return s && (s.a === sys.rootNode || s.b === sys.rootNode);
+      })
+      .sort((a, b) => b.flowM3s - a.flowM3s)[0] || null;
+    const mainIsRiser = main && main.role === "riser";
+    const traverseSeg = mainIsRiser ? sys.segments.filter((r) => r.flowM3s >= main.flowM3s - 1e-9 && r.role !== "riser")[0] || main : main;
+    const traverse = traverseSeg ? {
+      size: sizeText(traverseSeg.section),
+      areaM2: traverseSeg.section?.areaM2 || 0,
+      velocity: traverseSeg.velocity || 0,
+      pvPa: pv(traverseSeg.velocity || 0, sys.density),
+      flowLs: traverseSeg.flowM3s * 1000,
+      points: traversePoints(traverseSeg.section),
+    } : null;
+    const nodeIds = new Set();
+    for (const r of sys.segments) {
+      const s = segById.get(r.id);
+      if (s) { nodeIds.add(s.a); nodeIds.add(s.b); }
+    }
+    const dampers = (project.components || [])
+      .filter((c) => c.kind === "vcd" && nodeIds.has(c.nodeId))
+      .map((c, i) => {
+        const r = sys.segments.find((x) => { const s = segById.get(x.id); return s && s.b === c.nodeId; })
+          || sys.segments.find((x) => { const s = segById.get(x.id); return s && s.a === c.nodeId; });
+        return { ref: `VCD-${prefix}${String(i + 1).padStart(2, "0")}`, name: c.label || "Volume control damper", size: sizeText(r?.section), flowLs: r ? r.flowM3s * 1000 : 0 };
+      });
+    const totalLs = sys.totalFlowM3s * 1000;
+    out.push({
+      name: sys.name,
+      systemType: sys.systemType,
+      code: info.en,
+      side: info.code,
+      plantLabel: sys.plant ? (sys.plant.label || componentDef(sys.plant.kind)?.label || "Unit") : "",
+      totalLs,
+      totalMinLs: totalLs * tol.systemMinPct / 100,
+      totalMaxLs: totalLs * tol.systemMaxPct / 100,
+      indexPa: sys.indexStaticPa,
+      fanStaticPa: sys.fanStaticPa ?? sys.indexStaticPa,
+      availablePa: sys.plant ? sys.availableStaticPa : null,
+      pressureClass: sys.pressureClass,
+      ...leakage(sys.pressureClass),
+      traverse,
+      terminals,
+      dampers,
+      indexRef: terminals.find((t) => t.index)?.ref || "",
+    });
+  }
+
+  const rooms = (project.rooms || []).map((r) => {
+    const sum = (system) => (project.components || [])
+      .filter((c) => componentDef(c.kind)?.role === "terminal" && c.system === system)
+      .filter((c) => {
+        const n = project.nodes.find((x) => x.id === c.nodeId) || c;
+        return pointInPolygon(n, r.points);
+      })
+      .reduce((a, c) => a + (Number(c.props?.designFlow_ls) || 0), 0);
+    return { name: r.name, supplyTarget: Number(r.supplyFlow_ls) || 0, supplyTerminals: sum("supply"), extractTarget: Number(r.extractFlow_ls) || 0, extractTerminals: sum("extract") };
+  });
+
+  const louvres = [];
+  for (const c of project.components || []) {
+    const def = componentDef(c.kind);
+    if (!def?.outside) continue;
+    let flowLs = 0;
+    for (const sys of systems) {
+      const t = (sys.terminals || []).find((x) => x.nodeId === c.nodeId);
+      if (t) flowLs = t.flowM3s * 1000;
+    }
+    const b = louvreBasis(c);
+    const s = sizeLouvre(flowLs, { velocity: b.velocity, freeAreaPct: b.freeAreaPct });
+    louvres.push({ name: c.label || def.label, kind: def.label, side: b.side, flowLs, velocity: b.velocity, freeAreaPct: b.freeAreaPct, sizing: s });
+  }
+  return { tolerances: tol, systems: out, rooms, louvres };
+}
+return { COMMISSIONING_DEFAULTS, commissioningTolerances, traversePoints, sizeText, buildCommissioning };
+})();
+
 // ---- src/export/pdf.js ----
 __m["src/export/pdf.js"] = (() => {
 // Client-side A4 PDF builder for the project report.
@@ -8635,6 +9045,7 @@ const { VELOCITY_GUIDANCE } = __m["src/standards/dw144.js"];
 const { allComputedSystems } = __m["src/calc/network.js"];
 const { formatFlow, formatFlowLs, flowUnitLabel, plantDutyLs, plantStaticPa, round } = __m["src/units.js"];
 const { roleLabel, sectionSizeLabel, sectionShapeLabel } = __m["src/format.js"];
+const { buildCommissioning } = __m["src/export/commissioning.js"];
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -8650,6 +9061,10 @@ function pdfSafe(str) {
     .replace(/Δ/g, "d")
     .replace(/–|—/g, "-")
     .replace(/•/g, "*")
+    .replace(/°/g, " deg")
+    .replace(/²/g, "2")
+    .replace(/±/g, "+/-")
+    .replace(/ø/g, "dia ")
     .replace(/[^\x20-\x7E]/g, "?")
     .replace(/\\/g, "\\\\")
     .replace(/\(/g, "\\(")
@@ -8782,10 +9197,24 @@ class PdfDoc {
   }
 }
 
+// Client, job and engineer's reference, from the project.
+function jobInfo(project) {
+  const m = project?.meta || {};
+  return {
+    client: String(m.client || "").trim(),
+    job: String(m.name || "").trim() || "Untitled",
+    ref: String(m.engineerRef || "").trim(),
+    rev: m.rev || 0,
+  };
+}
+
 class PageWriter {
-  constructor(doc, title) {
+  // opts.logo: a JPEG data URL of the company logo; opts.job: jobInfo()
+  constructor(doc, title, opts = {}) {
     this.doc = doc;
     this.title = title;
+    this.logo = opts.logo ? doc.addJpeg(opts.logo) : null;
+    this.job = opts.job || null;
     this.ops = [];
     this.y = PAGE_H - MARGIN;
     this.xobjects = {};
@@ -8810,16 +9239,65 @@ class PageWriter {
   newPage() {
     this.flush();
     this.pageNo += 1;
-    if (this.title) {
-      this.text(this.title, MARGIN, this.y, { font: "F2", size: 9, color: [0.35, 0.4, 0.5] });
-      this.y -= 16;
-      this.rule();
+    this.pageHeader();
+  }
+
+  // Every page after the first: job and client on the left, the engineer's
+  // reference under it, the logo on the right.
+  pageHeader() {
+    const j = this.job;
+    const line1 = j ? [j.job, j.client].filter(Boolean).join("  -  ") : this.title;
+    if (!line1 && !this.logo) return;
+    this.text(line1 || "", MARGIN, this.y, { font: "F2", size: 9, color: [0.35, 0.4, 0.5] });
+    if (j?.ref) this.text(`Ref: ${j.ref}`, MARGIN, this.y - 11, { size: 8, color: [0.45, 0.5, 0.58] });
+    if (this.logo) this.drawLogo(PAGE_W - MARGIN, this.y + 9, 20, "right");
+    this.y -= j?.ref ? 26 : 16;
+    this.rule();
+  }
+
+  // Draws the logo with its top at `top`; align "left" from x, "right" to x.
+  drawLogo(x, top, height, align = "left") {
+    if (!this.logo) return 0;
+    const w = this.logo.w * (height / this.logo.h);
+    const x0 = align === "right" ? x - w : x;
+    this.xobjects.Logo = this.logo.id;
+    this.ops.push(`q ${round(w, 2)} 0 0 ${round(height, 2)} ${round(x0, 2)} ${round(top - height, 2)} cm /Logo Do Q`);
+    return w;
+  }
+
+  // The first page: logo, report title, then the job block.
+  cover(title, subtitle) {
+    const top = this.y + 8;
+    const lw = this.drawLogo(MARGIN, top, 46, "left");
+    const tx = this.logo ? MARGIN + lw + 16 : MARGIN;
+    this.text(title, tx, top - 18, { font: "F2", size: 17, color: [0.07, 0.16, 0.32] });
+    if (subtitle) this.text(subtitle, tx, top - 34, { size: 9, color: [0.35, 0.4, 0.5] });
+    this.y = top - 62;
+    this.rule();
+    const j = this.job || {};
+    const rows = [
+      ["Client", j.client || "-"],
+      ["Job", j.job || "-"],
+      ["Engineer reference", j.ref || "-"],
+      ["Date", new Date().toISOString().slice(0, 10)],
+    ];
+    if (j.rev) rows.push(["Revision", `rev ${j.rev}`]);
+    for (const [k, v] of rows) {
+      this.ensure(15);
+      this.text(k, MARGIN, this.y, { size: 10, color: [0.35, 0.4, 0.5] });
+      this.text(String(v), MARGIN + 130, this.y, { font: "F2", size: 11 });
+      this.y -= 15;
     }
+    this.y -= 4;
+    this.rule();
   }
 
   footer() {
     const n = this.doc.pages.length + 1;
-    this.ops.push(`BT /F1 8 Tf 0.45 0.5 0.58 rg ${MARGIN} 22 Td (Page ${n}  -  Duct Trace AHU  -  DW144 / CIBSE) Tj ET`);
+    const j = this.job;
+    const who = j ? [j.job, j.ref ? `Ref ${j.ref}` : ""].filter(Boolean).join("  -  ") : "";
+    const line = `Page ${n}${who ? `  -  ${who}` : ""}  -  adi Climate Systems  -  Duct Trace AHU`;
+    this.ops.push(`BT /F1 8 Tf 0.45 0.5 0.58 rg ${MARGIN} 22 Td (${pdfSafe(line)}) Tj ET`);
   }
 
   text(str, x, y, opts = {}) {
@@ -8835,7 +9313,10 @@ class PageWriter {
   }
 
   heading(str, size = 14) {
-    this.ensure(22);
+    // a little air above a heading; at the top of a page, clear the header rule
+    if (this.y < PAGE_H - MARGIN - 30) this.y -= Math.round(size * 0.45);
+    else this.y -= Math.max(0, Math.round(size * 0.8) - 6);
+    this.ensure(size + 30);
     this.text(str, MARGIN, this.y, { font: "F2", size, color: [0.07, 0.16, 0.32] });
     this.y -= size + 8;
   }
@@ -8874,6 +9355,11 @@ class PageWriter {
     const x0 = MARGIN;
     const h = 13;
     const drawRow = (cells, bold, fill) => {
+      // a table that runs onto a new page repeats its header row there
+      if (!bold && this.y - (h + 2) < BOTTOM + 16) {
+        this.newPage();
+        drawRow(headers, true, "0.90 0.93 0.96");
+      }
       this.ensure(h + 2);
       let x = x0;
       if (fill) {
@@ -8941,20 +9427,17 @@ function plantOn(sys, c) {
   return sys.plant && c.id === sys.plant.id;
 }
 
-function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
+function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg = null }) {
   const unit = project.settings?.flowUnit || "l/s";
   const unitLabel = flowUnitLabel(unit);
   const systems = allComputedSystems(results);
   const doc = new PdfDoc();
-  const w = new PageWriter(doc, project.meta?.name || "Duct project");
+  const job = jobInfo(project);
+  const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
   w.pageNo = 1;
 
-  w.heading("Duct Trace AHU  -  design report", 18);
-  w.para("Commercial / industrial ductwork sizing to DW144 / BESA standard sizes and CIBSE Guide B velocity guidance.");
-  w.y -= 4;
+  w.cover("Ductwork design report", "adi Climate Systems  -  ductwork sizing to DW144 / BESA and CIBSE Guide B");
   w.kv([
-    ["Project", project.meta?.name || "Untitled"],
-    ["Date", new Date().toISOString().slice(0, 10)],
     ["Mode", project.mode === "drawing" ? "Drawing" : "Concept"],
     ["Flow unit", unitLabel],
     ["Default duct", sectionShapeLabel(project.settings?.ductType)],
@@ -9007,6 +9490,9 @@ function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
     );
   }
 
+  writeLouvres(w, project, results, unit, unitLabel);
+  writeCommissioning(w, project, results, unit, unitLabel);
+
   if (planJpeg) {
     w.heading("Plan layout", 14);
     w.para("Traced ductwork, plant and terminals as shown on the plan. Risers appear as markers only.");
@@ -9021,6 +9507,127 @@ function buildProjectPdf({ project, results, planJpeg, isoJpeg }) {
   w.para("Calculations use Darcy-Weisbach with Colebrook-White (Swamee-Jain) and Huebscher equivalent diameter for rectangular / square ducts. Verify against manufacturer data before construction.", 8);
   w.flush();
   return doc.build();
+}
+
+const r0 = (v) => round(v, 0);
+const r1 = (v) => round(v, 1);
+const r2 = (v) => round(v, 2);
+
+// Outside terminals: the size the flow needs at the design velocity
+// through the free area, as a range of circular and rectangular sizes.
+function writeLouvres(w, project, results, unit, unitLabel) {
+  const data = buildCommissioning(project, results);
+  if (!data.louvres.length) return;
+  w.heading("Outside terminals  -  louvre and grille sizing", 13);
+  w.para("Velocity is taken through the free area of the louvre or grille: free area = flow / velocity, gross face area = free area / free-area fraction. Intake is sized at 1.5 m/s so rain and snow are not drawn in; exhaust may run up to 5 m/s to throw stale air clear of the building and its intake. Sizes are listed smallest first with the velocity each actually gives. Replace the free-area figure with the selected product's.", 8.5);
+  for (const L of data.louvres) {
+    w.heading(`${L.name}  (${L.side === "exhaust" ? "exhaust discharge" : "fresh-air intake"})`, 10.5);
+    if (!(L.flowLs > 0)) { w.para("Not joined to a unit, so no flow to size it for.", 8.5); continue; }
+    w.kv([
+      [`Airflow (${unitLabel})`, formatFlowLs(L.flowLs, unit)],
+      ["Design velocity through free area", `${r2(L.velocity)} m/s`],
+      ["Free area", `${r0(L.freeAreaPct)} %`],
+      ["Free area needed", `${round(L.sizing.freeAreaM2, 3)} m2`],
+      ["Gross face area needed", `${round(L.sizing.grossAreaM2, 3)} m2`],
+    ]);
+    const rows = [...L.sizing.circular, ...L.sizing.rectangular].map((o) => [
+      o.shape === "circular" ? "Circular" : "Rectangular", o.shape === "circular" ? `dia ${o.widthMm}` : `${o.widthMm} x ${o.heightMm}`,
+      round(o.grossAreaM2, 3), round(o.freeAreaM2, 3), r2(o.freeVelocity), r2(o.faceVelocity),
+    ]);
+    w.table(["Shape", "Size mm", "Face m2", "Free m2", "Free m/s", "Face m/s"], rows, [80, 100, 70, 70, 80, 80]);
+  }
+}
+
+// Commissioning: what the balancing engineer sets to and records against,
+// to CIBSE Commissioning Code A / BSRIA BG 49.
+function writeCommissioning(w, project, results, unit, unitLabel) {
+  const data = buildCommissioning(project, results);
+  if (!data.systems.length) return;
+  const t = data.tolerances;
+  w.newPage();
+  w.heading("Commissioning  -  air systems", 16);
+  w.para(`Design figures for setting to work, regulating and proving the air systems in accordance with CIBSE Commissioning Code A (Air distribution systems) and BSRIA BG 49 (Commissioning air systems). Tolerances used: each terminal within +/-${r0(t.terminalTolPct)}% of design; each system total between ${r0(t.systemMinPct)}% and ${r0(t.systemMaxPct)}% of design. Confirm against the project specification, which governs.`, 8.5);
+  w.para("Method: check the installation is complete, clean and ready (dampers open, filters fitted, fire dampers open and reset, ductwork leakage tested). Set the fan to design duty and prove the total by pitot traverse of the main duct. Regulate the branches and then the terminals by proportional balancing, starting at the index terminal (the one furthest from the fan by resistance, marked IDX) and working back towards the fan. Re-measure the total and record final damper positions, fan speed and motor current.", 8.5);
+  w.y -= 2;
+
+  for (const s of data.systems) {
+    w.heading(`${s.name}  (${s.code})`, 12.5);
+    w.kv([
+      ["Unit / fan", s.plantLabel || "none on this system"],
+      [`Design total (${unitLabel})`, `${formatFlowLs(s.totalLs, unit)}   accept ${formatFlowLs(s.totalMinLs, unit)} to ${formatFlowLs(s.totalMaxLs, unit)}`],
+      ["Index run static (Pa)", r0(s.indexPa)],
+      ["Fan static, both sides of the fan (Pa)", r0(s.fanStaticPa)],
+      ["Available static at the unit (Pa)", s.availablePa == null ? "-" : r0(s.availablePa)],
+      ["Index terminal", s.indexRef || "-"],
+      ["DW144 pressure class / leakage class", `${s.pressureClass} / ${s.leakageClass}`],
+      ["DW143 leakage test", `at ${r0(s.testPa)} Pa, not more than ${r2(s.limitLsPerM2)} l/s per m2 of duct surface`],
+    ]);
+    if (s.traverse) {
+      w.heading("Main duct traverse (system total)", 10);
+      w.table(["Duct mm", "Area m2", `Design ${unitLabel}`, "Velocity m/s", "Pv Pa", "Measured", "% design"],
+        [[s.traverse.size, round(s.traverse.areaM2, 3), formatFlowLs(s.traverse.flowLs, unit).replace(` ${unitLabel}`, ""), r2(s.traverse.velocity), r1(s.traverse.pvPa), "", ""]],
+        [72, 60, 70, 72, 55, 100, 82]);
+      w.para(`Traverse points: ${s.traverse.points}. Take the traverse at least 7.5 diameters downstream and 3 upstream of any bend, branch or damper where the run allows.`, 8);
+    }
+    if (s.terminals.length) {
+      w.heading("Terminals", 10);
+      w.table(
+        ["Ref", "Terminal", "Room", "Duct mm", "m/s", `Design ${unitLabel}`, "m3/h", "Accept", "Measured", "%", "Init"],
+        s.terminals.map((x) => [
+          x.index ? `${x.ref} IDX` : x.ref,
+          (x.name + (x.bellMouth ? " (BM)" : "")).slice(0, 24),
+          (x.room || "-").slice(0, 12),
+          x.size,
+          r1(x.velocity),
+          formatFlowLs(x.designLs, unit).replace(` ${unitLabel}`, ""),
+          r0(x.designLs * 3.6),
+          `${formatFlowLs(x.minLs, unit).replace(` ${unitLabel}`, "")}-${formatFlowLs(x.maxLs, unit).replace(` ${unitLabel}`, "")}`,
+          "", "", "",
+        ]),
+        [44, 94, 60, 46, 26, 44, 34, 62, 50, 26, 25]
+      );
+    }
+    if (s.dampers.length) {
+      w.heading("Regulating dampers", 10);
+      w.table(["Ref", "Damper", "Duct mm", `Design ${unitLabel}`, "Final position", "Locked"],
+        s.dampers.map((d) => [d.ref, d.name.slice(0, 30), d.size, formatFlowLs(d.flowLs, unit).replace(` ${unitLabel}`, ""), "", ""]),
+        [70, 150, 70, 70, 90, 60]);
+    }
+  }
+
+  const plants = (project.components || []).filter((c) => componentDef(c.kind)?.role === "plant");
+  if (plants.length) {
+    w.heading("Unit test record", 12);
+    for (const p of plants) {
+      const def = componentDef(p.kind);
+      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantLabel === (p.label || def?.label))?.totalLs || 0;
+      const rows = [
+        [`Supply air volume (${unitLabel})`, formatFlowLs(flow("supply"), unit)],
+        [`Extract air volume (${unitLabel})`, formatFlowLs(flow("extract"), unit)],
+        [`Fresh air volume (${unitLabel})`, formatFlowLs(flow("outdoor"), unit)],
+        [`Exhaust air volume (${unitLabel})`, formatFlowLs(flow("exhaust"), unit)],
+        ["Supply fan external static (Pa)", r0(plantStaticPa(p.props, "supply"))],
+        ["Extract fan external static (Pa)", r0(plantStaticPa(p.props, "extract"))],
+        ["Supply fan speed / motor current", "-"],
+        ["Extract fan speed / motor current", "-"],
+        ["Filter pressure drops (clean)", "-"],
+      ];
+      if (p.kind === "hrv") rows.push(["Heat recovery temperature efficiency (%)", r0(Number(p.props?.recoveryEfficiencyPct) || 0)], ["Summer bypass operation", p.props?.summerBypass === false ? "none fitted" : "check"]);
+      w.heading(p.label || def?.label || "Unit", 10);
+      w.table(["Item", "Design", "Measured", "Init"], rows.map((r) => [r[0], String(r[1]), "", ""]), [220, 120, 120, 50]);
+    }
+  }
+
+  if (data.rooms.length) {
+    w.heading("Room air balance", 12);
+    w.table(["Room", `Supply target`, "Supply terminals", "Extract target", "Extract terminals", "Measured S / E"],
+      data.rooms.map((r) => [r.name.slice(0, 22), formatFlowLs(r.supplyTarget, unit), formatFlowLs(r.supplyTerminals, unit), formatFlowLs(r.extractTarget, unit), formatFlowLs(r.extractTerminals, unit), ""]),
+      [100, 75, 85, 75, 85, 90]);
+  }
+
+  w.heading("Sign-off", 12);
+  w.table(["", "Name", "Company", "Signature", "Date"],
+    [["Commissioned by", "", "", "", ""], ["Witnessed by", "", "", "", ""]], [110, 110, 110, 110, 70]);
 }
 
 function writeSystem(w, project, sys, unit, unitLabel) {
@@ -9139,10 +9746,11 @@ function writeSystem(w, project, sys, unit, unitLabel) {
   w.y -= 8;
 }
 
-function buildTakeoffPdf({ project, takeoff }) {
+function buildTakeoffPdf({ project, takeoff, logoJpeg = null }) {
   const doc = new PdfDoc();
-  const w = new PageWriter(doc, pdfSafe(project.meta?.name || "Takeoff"));
-  w.heading(project.meta?.name || "Project", 16);
+  const job = jobInfo(project);
+  const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
+  w.cover("Ductwork take-off", "adi Climate Systems  -  fabrication take-off from the physical model");
   w.para("Fabrication takeoff generated from the physical model. Component references map back to the model.");
   w.heading("Circular duct", 12);
   const circ = (takeoff.circular || []).map((g) => [
@@ -9187,7 +9795,7 @@ function downloadBlob(blob, filename) {
   // revoked a moment later: revoking at once can lose the file name
   setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 }
-return { buildProjectPdf, buildTakeoffPdf, downloadBlob };
+return { jobInfo, buildProjectPdf, buildTakeoffPdf, downloadBlob };
 })();
 
 // ---- src/ui/help.js ----
@@ -9234,6 +9842,10 @@ const HELP = [
     b: "Pick the HRV and set the exchanger type, temperature efficiency, SFP and winter design. The inspector gives the supply temperature after recovery, the heat recovered and the fan power. They go on the PDF." },
   { sec: "place", tools: ["terminal"], t: "I want to add diffusers and grilles",
     b: "<b>Terminal</b> <kbd>G</kbd> opens the list. Pick one and click the plan. Set its design flow in the inspector. <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates the picked terminal with its size, height and flow." },
+  { sec: "place", tools: ["terminal"], t: "I want an open end or a bell mouth",
+    b: "<b>Terminal</b> → <i>Supply open end</i> or <i>Extract open end</i>. Pick it and set <b>End</b> to plain or <b>bell mouth</b>. The loss is worked from the duct velocity: K 1.0 on a supply open end, 0.5 on a plain extract entry, about 0.04 with a bell mouth." },
+  { sec: "place", tools: ["terminal"], t: "What size should the intake and exhaust louvres be?",
+    b: "Pick the louvre. Intake is sized at <b>1.5 m/s</b> through the free area, exhaust at up to <b>5 m/s</b>; both at a <b>50%</b> free area you can change to the product's figure. It lists circular and rectangular sizes, smallest first, with the velocity each gives. They are in the PDF report too." },
   { sec: "place", tools: ["inline"], t: "I want a fire damper, VCD or attenuator on a duct",
     b: "<b>In-line</b> <kbd>I</kbd>, pick the device and click on the duct. The run is cut there and the device sits on it, so its loss is on that path." },
   { sec: "place", tools: ["fan"], t: "The system is a fan, not an AHU",
@@ -9263,7 +9875,11 @@ const HELP = [
   { sec: "size", tools: ["select"], t: "I want a fabrication take-off",
     b: "<b>Schedule → Fabrication</b> generates the physical model — straights, bends, tees, reducers, joints — and <b>Take-off</b> gives the bill of materials, as CSV, Excel or PDF." },
   { sec: "size", tools: ["select"], t: "I want a report",
-    b: "<b>PDF</b> builds the report with the plan, a 3D view, each system, the index run, the plant and the fittings." },
+    b: "<b>PDF</b> builds the report with the plan, a 3D view, each system, the index run, the plant, the fittings, the outside louvre sizes and the <b>commissioning sheets</b>." },
+  { sec: "size", tools: ["select"], t: "I want the client, job and our reference on the report",
+    b: "<b>Duct &amp; basis</b> → <i>Project</i>: client name, job name and engineer reference. They go on the report's cover with the adi Climate Systems logo, in the header and footer of every page, on the take-off PDF and in the file names." },
+  { sec: "size", tools: ["select"], t: "I need commissioning sheets",
+    b: "The PDF report ends with them, to CIBSE Commissioning Code A / BSRIA BG 49: per system the design total and accepted band, the main-duct traverse (size, velocity, Pv, traverse points), every terminal with its design flow, accepted range and duct velocity, the index terminal (IDX), regulating dampers, the DW143 leakage test, the unit test record, room balance and sign-off — with blank columns for what is measured. Tolerances are in <b>Duct &amp; basis</b>." },
   { sec: "size", tools: ["select"], t: "The flow is in the wrong unit",
     b: "Click <b>Flow unit</b> on the status strip, or the switch in <b>Duct &amp; basis</b>. Flow is stored as l/s whatever is shown (1 l/s = 3.6 m³/h)." },
 ];
@@ -9424,7 +10040,7 @@ const TOOLS = [
 ];
 const PALETTES = {
   fan: { title: "Fans", kinds: ["fan_centrifugal", "fan_axial", "fan_plug"], note: "A fan is the plant for the system you are tracing." },
-  terminal: { title: "Terminals", groups: [["In the building", ["diffuser", "grille_supply", "louvre", "grille_extract", "valve_extract"]], ["Outside", ["intake_louvre", "roof_intake", "exhaust_louvre", "roof_cowl"]]], note: "Extract grilles are always extract, intake louvres fresh air and exhaust louvres exhaust. An outside terminal takes the unit's own airflow unless you type one." },
+  terminal: { title: "Terminals", groups: [["In the building", ["diffuser", "grille_supply", "louvre", "open_end_supply", "grille_extract", "valve_extract", "open_end_extract"]], ["Outside", ["intake_louvre", "roof_intake", "exhaust_louvre", "roof_cowl"]]], note: "Extract grilles are always extract, intake louvres fresh air and exhaust louvres exhaust. An outside terminal takes the unit's own airflow unless you type one." },
   inline: { title: "In-line devices", kinds: ["fire_damper", "vcd", "attenuator", "plenum", "heater", "filter"], note: "Click on a duct to put the device on it." },
 };
 let paletteOpen = null; // "fan" | "terminal" | "inline"
@@ -9883,7 +10499,9 @@ $("#stage").addEventListener("dragleave", () => $("#drop").classList.remove("hot
 function fileStem() {
   const d = new Date();
   const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return `${(store.project.meta.name || "Untitled").replace(/[\\/:*?"<>|—–]+/g, "-")} - ${date}`;
+  const clean = (v) => String(v || "").replace(/[\\/:*?"<>|—–]+/g, "-").trim();
+  const ref = clean(store.project.meta.engineerRef);
+  return `${ref ? ref + " - " : ""}${clean(store.project.meta.name) || "Untitled"} - ${date}`;
 }
 function saveProject() {
   const p = store.project;
@@ -10035,7 +10653,7 @@ async function exportPdfReport() {
   try {
     const results = computeAll(store.project);
     const { planJpeg, isoJpeg } = await captureViews();
-    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg });
+    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg, logoJpeg: await logoJpeg() });
     downloadBlob(blob, `Duct Trace report - ${fileStem()}.pdf`);
     toast("PDF report downloaded");
   } catch (err) {
@@ -10047,8 +10665,30 @@ async function exportPdfReport() {
     store.emit();
   }
 }
-function exportTakeoffPdf(takeoff) {
-  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project) });
+// The adi logo from the top bar, as a JPEG the PDF writer can embed.
+let logoCache = null;
+async function logoJpeg() {
+  if (logoCache) return logoCache;
+  try {
+    const src = document.querySelector(".brand-logo")?.src;
+    if (!src) return null;
+    const img = await loadImage(src);
+    const cv = document.createElement("canvas");
+    cv.width = img.naturalWidth;
+    cv.height = img.naturalHeight;
+    const cx = cv.getContext("2d");
+    cx.fillStyle = "#fff";
+    cx.fillRect(0, 0, cv.width, cv.height);
+    cx.drawImage(img, 0, 0);
+    logoCache = cv.toDataURL("image/jpeg", 0.95);
+  } catch (e) {
+    logoCache = null;
+  }
+  return logoCache;
+}
+
+async function exportTakeoffPdf(takeoff) {
+  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project), logoJpeg: await logoJpeg() });
   downloadBlob(blob, `Duct Trace take-off - ${fileStem()}.pdf`);
 }
 $("#bPdf").addEventListener("click", exportPdfReport);

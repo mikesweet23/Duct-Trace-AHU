@@ -9,7 +9,7 @@ import { flowToM3s, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { airDensity, airViscosity } from "../units.js";
 import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizing.js";
 import { totalFittingK } from "../standards/fittings.js";
-import { componentDef, inlineLossPa, isDualPort } from "../standards/components.js";
+import { componentDef, inlineLossPa, isDualPort, terminalK } from "../standards/components.js";
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
 import { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem } from "../systems.js";
 import { PORT_NODE_KEY } from "../layout.js";
@@ -343,11 +343,18 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
         }
         cur = parentNode.get(cur);
       }
-      const termLoss = list.reduce((s, c) => s + (Number(c.props?.terminalLossPa) || 0), 0);
+      // the duct that feeds the terminal: its velocity sets an open end's loss
+      // and is what the commissioning sheet reads at the terminal
+      const runout = parentSeg.has(nodeId) ? segResById.get(parentSeg.get(nodeId).id) : null;
+      const pvRunout = runout ? dynamicPressure(runout.velocity || 0, density) : 0;
+      const termLoss = list.reduce((s, c) => s + (Number(c.props?.terminalLossPa) || 0) + terminalK(c) * pvRunout, 0);
       cum += termLoss;
       const node = nodesById.get(nodeId);
       terminals.push({
         nodeId,
+        runoutSegId: runout ? runout.id : null,
+        runoutVelocity: runout ? runout.velocity : 0,
+        runoutSection: runout ? runout.section : null,
         components: list,
         name: list.map((c) => c.label || componentDef(c.kind)?.label).join(", "),
         totalPa: cum,
