@@ -81,6 +81,11 @@ export class Panels {
     const el = this.els.properties;
     const sel = this.store.selection;
     const selected = this.store.getSelected();
+    if (sel?.type === "multi") {
+      el.innerHTML = this.propMulti();
+      this.bindMulti(el);
+      return;
+    }
     if (!sel || !selected) {
       el.innerHTML = this.propertiesEmpty();
       this.bindProjectConstruction(el);
@@ -95,6 +100,130 @@ export class Panels {
       el.innerHTML = this.propPiece(selected);
     }
     this.bindProperty(el, sel, selected);
+  }
+
+  // Several things picked: change them together, line them up, move,
+  // duplicate or delete the lot. A field shows a value only when every
+  // picked thing that has it agrees; typing sets it on all of them.
+  propMulti() {
+    const o = this.store.selectedObjects();
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
+    const comps = o.components;
+    const terms = comps.filter((c) => componentDef(c.kind)?.role === "terminal");
+    const inlines = comps.filter((c) => componentDef(c.kind)?.role === "inline");
+    const common = (list, get) => {
+      const vals = list.map(get);
+      return vals.length && vals.every((v) => v === vals[0]) ? vals[0] : null;
+    };
+    const val = (v) => (v == null ? "" : v);
+    const mixed = (v) => (v == null ? 'placeholder="mixed"' : "");
+    const count = [
+      terms.length && `${terms.length} terminal${terms.length > 1 ? "s" : ""}`,
+      inlines.length && `${inlines.length} in-line device${inlines.length > 1 ? "s" : ""}`,
+      comps.length - terms.length - inlines.length && `${comps.length - terms.length - inlines.length} unit${comps.length - terms.length - inlines.length > 1 ? "s" : ""}`,
+      o.segments.length && `${o.segments.length} duct${o.segments.length > 1 ? "s" : ""}`,
+      o.rooms.length && `${o.rooms.length} room${o.rooms.length > 1 ? "s" : ""}`,
+      o.measures.length && `${o.measures.length} tape${o.measures.length > 1 ? "s" : ""}`,
+    ].filter(Boolean).join(" · ");
+    const flow = common(terms, (c) => Number(c.props?.designFlow_ls) || 0);
+    const loss = common(terms, (c) => Number(c.props?.terminalLossPa) || 0);
+    const hgt = common(comps, (c) => Number(c.heightM) || 0);
+    const w = common(comps, (c) => Number(c.widthM) || 0);
+    const d = common(comps, (c) => Number(c.depthM) || 0);
+    const rot = common(comps, (c) => Number(c.rot) || 0);
+    const kind = common(terms, (c) => c.kind);
+    const inLoss = common(inlines, (c) => Number(c.props?.lossPa) || 0);
+    const termKinds = Object.values(COMPONENTS).filter((x) => x.role === "terminal");
+    const constr = common(o.segments, (s) => (s.shapeOverride || s.constructionType ? sectionConstructionKey(s, this.store.project.settings) : ""));
+    return h`
+      <p class="small-note"><b>${count}</b> picked. Change a field and it is set on every picked item that has it. Drag any picked item to move them all; arrow keys nudge 50 mm (Shift 500 mm).</p>
+      ${terms.length ? `
+      <div class="section-title">Terminals (${terms.length})</div>
+      <div class="field"><label>Design flow (${ul})</label><input type="number" step="any" data-multi="flow" value="${flow == null ? "" : lsToDisplay(flow, unit)}" ${mixed(flow)}/></div>
+      <div class="field"><label>Terminal loss (Pa)</label><input type="number" step="any" data-multi="props.terminalLossPa" value="${val(loss)}" ${mixed(loss)}/></div>
+      <div class="field"><label>Type</label><select data-multi="kind"><option value="">${kind == null ? "mixed — leave" : "—"}</option>${termKinds.map((t) => `<option value="${t.kind}" ${kind === t.kind ? "selected" : ""}>${t.label}</option>`).join("")}</select></div>` : ""}
+      ${inlines.length ? `
+      <div class="section-title">In-line devices (${inlines.length})</div>
+      <div class="field"><label>Pressure loss (Pa)</label><input type="number" step="any" data-multi="props.lossPa" value="${val(inLoss)}" ${mixed(inLoss)}/></div>` : ""}
+      ${comps.length ? `
+      <div class="section-title">Size, height and angle</div>
+      <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-multi="heightM" value="${val(hgt)}" ${mixed(hgt)}/></div>
+      <div class="field"><label>Width × depth (m)</label><span>
+        <input type="number" step="0.05" data-multi="widthM" value="${val(w)}" ${mixed(w)}/>
+        <input type="number" step="0.05" data-multi="depthM" value="${val(d)}" ${mixed(d)}/></span></div>
+      <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-multi="rot" value="${val(rot)}" ${mixed(rot)}/></div>` : ""}
+      ${comps.length >= 2 ? `
+      <div class="section-title">Line up</div>
+      <div class="row-actions">
+        <button class="btn ghost tiny" data-align="y" title="Centres on one horizontal line">&#8596; In a row</button>
+        <button class="btn ghost tiny" data-align="x" title="Centres on one vertical line">&#8597; In a column</button>
+        ${comps.length >= 3 ? `<button class="btn ghost tiny" data-align="spreadX">Space evenly across</button>
+        <button class="btn ghost tiny" data-align="spreadY">Space evenly down</button>` : ""}
+      </div>` : ""}
+      ${o.segments.length ? `
+      <div class="section-title">Ducts (${o.segments.length})</div>
+      <div class="field"><label>Construction</label><select data-multi="construction">
+        <option value="__keep">${constr == null ? "mixed — leave" : "—"}</option>
+        <option value="">Follow project (${projectConstructionLabel(this.store.project.settings)})</option>
+        ${SECTION_CONSTRUCTIONS.map((c) => `<option value="${c.key}" ${constr === c.key ? "selected" : ""}>${c.label}</option>`).join("")}
+      </select></div>
+      <div class="field"><label>Floor / zone</label><span>
+        <input type="text" data-multi="floor" value="${val(common(o.segments, (s) => s.floor || ""))}" placeholder="floor"/>
+        <input type="text" data-multi="zone" value="${val(common(o.segments, (s) => s.zone || ""))}" placeholder="zone"/></span></div>
+      <button class="link-btn" data-multi-act="clearSize">Clear manual sizes on these ducts</button>` : ""}
+      <div class="section-title">Move by (m)</div>
+      <div class="field"><span>
+        <input type="number" step="0.05" id="mvX" placeholder="across" />
+        <input type="number" step="0.05" id="mvY" placeholder="down" />
+        <button class="btn ghost tiny" data-multi-act="move">Move</button></span></div>
+      <div class="row-actions">
+        <button class="btn tiny" data-multi-act="duplicate">Duplicate (Ctrl+D)</button>
+        <button class="btn ghost tiny" data-multi-act="delete">Delete all (Del)</button>
+        <button class="btn ghost tiny" data-multi-act="clear">Clear selection (Esc)</button>
+      </div>
+    `;
+  }
+
+  bindMulti(el) {
+    const store = this.store;
+    const unit = unitOf(store);
+    const px = pxPerMeterOf(store.project);
+    el.querySelectorAll("[data-multi]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const key = input.dataset.multi;
+        let v = input.value;
+        if (key === "construction" && v === "__keep") return;
+        if (key === "kind" && !v) return;
+        if (input.type === "number") {
+          if (v === "") return;
+          v = Number(v);
+        }
+        store.snapshot();
+        if (key === "flow") store.batchEdit({ "props.designFlow_ls": displayToLs(v, unit) });
+        else store.batchEdit({ [key]: v });
+        store.commit();
+      });
+    });
+    el.querySelectorAll("[data-align]").forEach((b) => b.addEventListener("click", () => {
+      store.snapshot();
+      store.alignSelection(b.dataset.align);
+      store.commit();
+    }));
+    el.querySelectorAll("[data-multi-act]").forEach((b) => b.addEventListener("click", () => {
+      const act = b.dataset.multiAct;
+      if (act === "delete") { store.deleteSelection(); return; }
+      if (act === "clear") { store.select(null); return; }
+      store.snapshot();
+      if (act === "duplicate") store.duplicateSelection();
+      else if (act === "clearSize") store.batchEdit({ clearSize: true });
+      else if (act === "move") {
+        const dx = Number(el.querySelector("#mvX").value) || 0;
+        const dy = Number(el.querySelector("#mvY").value) || 0;
+        store.moveSelection(dx * px, dy * px);
+      }
+      store.commit();
+    }));
   }
 
   propertiesEmpty() {
@@ -200,6 +329,7 @@ export class Panels {
       <div class="field"><label>Cladding</label><input type="text" data-ins="cladding" value="${s.insulationOverride?.cladding || ""}" placeholder="inherit"/></div>
 
       <div class="section-title">Fittings</div>
+      ${res?.autoBend ? `<p class="small-note">The corner at the start of this duct turns ${num(res.autoBend.angleDeg, 0)}° and is counted as a bend, K ${num(res.autoBend.k, 2)}. Add a bend below to choose the type instead — the traced one is then not counted twice.</p>` : ""}
       ${fittings || `<p class="small-note">No fittings added.</p>`}
       <div class="fitting-row">
         <select id="newFitting">${fittingOptions}</select>

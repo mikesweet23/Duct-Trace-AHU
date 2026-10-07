@@ -682,6 +682,9 @@ function writeSystem(w, project, sys, unit, unitLabel) {
         round(s.fittingPa, 1),
       ]);
     }
+    if (s.autoBend) {
+      fitRows.push([sectionSizeLabel(s.section), roleLabel(s.role), `Corner bend ${round(s.autoBend.angleDeg, 0)} deg (traced)`, 1, round(s.autoBend.k, 2), round(s.fittingPa, 1)]);
+    }
   }
   if (!fitRows.length) w.para("No fittings recorded on this system.");
   else {

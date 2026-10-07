@@ -137,8 +137,72 @@ export class CanvasView {
     }
     if (sn) return { x: sn.at.x, y: sn.at.y, snap: sn };
     const last = this.draft ? p.nodes.find((n) => n.id === this.draft.lastNodeId) : null;
-    const q = last && this.orthoOn() ? orthoPoint(last, world) : { x: world.x, y: world.y };
-    return { ...q, snap: null };
+    if (!last) return { x: world.x, y: world.y, snap: null };
+    const lock = this.angleLock(last, world);
+    return { x: lock.x, y: lock.y, snap: null, lock };
+  }
+
+  // Plan directions (radians) of the ducts of the traced system that meet at
+  // a node — the duct being branched off, or the leg just drawn.
+  refDirs(node) {
+    const p = this.store.project;
+    const px = this.pxPerMeter();
+    const out = [];
+    for (const s of p.segments) {
+      if (s.system !== this.store.activeSystem) continue;
+      if (s.a !== node.id && s.b !== node.id) continue;
+      const o = p.nodes.find((n) => n.id === (s.a === node.id ? s.b : s.a));
+      if (!o || dist(o, node) / px < 0.05) continue; // a riser has no plan direction
+      out.push(Math.atan2(o.y - node.y, o.x - node.x));
+    }
+    return out;
+  }
+
+  // Corners lock square to the sheet AND at 0 / 45 / 90 / 135° to the duct
+  // the leg leaves from, so a branch off an angled run comes off it at a
+  // true 90° or 45°. Alt (or the lock off) frees the angle; the label still
+  // says when a free leg happens to sit on one of those angles.
+  angleLock(from, world) {
+    const dx = world.x - from.x, dy = world.y - from.y;
+    const len = Math.hypot(dx, dy);
+    const cur = Math.atan2(dy, dx);
+    const refs = this.refDirs(from);
+    const relTo = (ang) => {
+      // the smallest angle between this leg and any duct at the node
+      let best = null;
+      for (const r of refs) {
+        let d = Math.abs(((ang - r) * 180) / Math.PI) % 180;
+        if (d > 90) d = 180 - d;
+        if (!best || d < best.d) best = { d, ref: r };
+      }
+      return best;
+    };
+    const near = (d, t) => Math.abs(d - t) < 0.6;
+    if (len < 1e-6) return { x: from.x, y: from.y, rel: null };
+    let ang = cur;
+    let relLock = null;
+    if (this.orthoOn()) {
+      const cands = [];
+      for (let k = 0; k < 8; k++) cands.push({ a: (k * Math.PI) / 4, rel: false });
+      for (const r of refs) for (let k = 0; k < 8; k++) cands.push({ a: r + (k * Math.PI) / 4, rel: true, ref: r });
+      let best = null;
+      for (const c of cands) {
+        let d = Math.abs(cur - c.a) % (2 * Math.PI);
+        if (d > Math.PI) d = 2 * Math.PI - d;
+        // prefer the duct's own angles when they tie with the sheet's
+        if (!best || d < best.d - 1e-9 || (Math.abs(d - best.d) < 1e-9 && c.rel && !best.c.rel)) best = { d, c };
+      }
+      ang = best.c.a;
+    }
+    const proj = this.orthoOn() ? Math.max(0, dx * Math.cos(ang) + dy * Math.sin(ang)) : len;
+    const x = this.orthoOn() ? from.x + Math.cos(ang) * proj : world.x;
+    const y = this.orthoOn() ? from.y + Math.sin(ang) * proj : world.y;
+    const r = relTo(ang);
+    if (r && proj > 0) {
+      if (near(r.d, 90)) relLock = { deg: 90, ref: r.ref };
+      else if (near(r.d, 45)) relLock = { deg: 45, ref: r.ref };
+    }
+    return { x, y, rel: relLock, refs };
   }
 
   // ------------------------------------------------------------------- view
@@ -250,8 +314,16 @@ export class CanvasView {
       if (r.distance <= tol && (!bestSeg || r.distance < bestSeg.d)) bestSeg = { d: r.distance, id: s.id };
     }
     if (bestSeg) return { type: "segment", id: bestSeg.id };
+    // a room is picked by its outline or its name, not anywhere inside it —
+    // inside is where a box is dragged to pick the grilles in the room
     for (let i = p.rooms.length - 1; i >= 0; i--) {
-      if (pointInPolygon(world, p.rooms[i].points)) return { type: "room", id: p.rooms[i].id };
+      const r = p.rooms[i];
+      const pts = r.points || [];
+      for (let k = 0; k < pts.length; k++) {
+        if (pointSegment(world, pts[k], pts[(k + 1) % pts.length]).distance <= 6 / z) return { type: "room", id: r.id };
+      }
+      const c = polygonCentroid(pts);
+      if (pts.length >= 3 && Math.abs(world.x - c.x) <= 50 / z && world.y >= c.y - 18 / z && world.y <= c.y + 16 / z) return { type: "room", id: r.id };
     }
     return null;
   }
@@ -278,6 +350,7 @@ export class CanvasView {
   dropPointerState() {
     if (this.dragging?.moved) this.store.commit();
     this.dragging = null;
+    this.marquee = null;
     this.pending = null;
     this.pinch = null;
     this.canvas.classList.remove("down");
@@ -316,6 +389,16 @@ export class CanvasView {
         this.dragging = { kind: "handle", id: h.id, handle: h.handle, moved: false, rot0: c.rot || 0, foot0: { w: c.widthM, d: c.depthM } };
         return;
       }
+      if (h && e.shiftKey && h.type !== "piece") {
+        // Shift-click adds one thing to the selection or takes it out
+        this.store.toggleSelected(h.type, h.id);
+        return;
+      }
+      if (h && this.store.selection?.type === "multi" && this.store.isSelected(h.type, h.id)) {
+        // a press on something already picked moves the whole selection
+        this.dragging = { kind: "group", last: world, moved: false, sx: scr.x, sy: scr.y };
+        return;
+      }
       if (h) {
         this.store.select(h.type, h.id);
         const p = this.store.project;
@@ -332,8 +415,9 @@ export class CanvasView {
         return;
       }
     }
-    // everything else waits: a press that moves is a pan, one that does not is a click
-    this.pending = { sx: e.clientX, sy: e.clientY, ox: this.view.offsetX, oy: this.view.offsetY, world, shift: e.shiftKey };
+    // everything else waits: a press that moves is a pan (with Select, a box
+    // that picks everything in it), one that does not is a click
+    this.pending = { sx: e.clientX, sy: e.clientY, ox: this.view.offsetX, oy: this.view.offsetY, world, shift: e.shiftKey, lasso: tool === "select" };
   }
 
   onMove(e) {
@@ -356,6 +440,13 @@ export class CanvasView {
     this.pointer = world;
     const d = this.dragging;
     if (this.pending && Math.hypot(e.clientX - this.pending.sx, e.clientY - this.pending.sy) > CLICK_SLOP) {
+      if (this.pending.lasso) {
+        this.marquee = { a: this.pending.world, b: world, add: this.pending.shift };
+        this.dragging = { kind: "marquee" };
+        this.pending = null;
+        this.scheduleDraw();
+        return;
+      }
       this.dragging = { pan: true, sx: this.pending.sx, sy: this.pending.sy, ox: this.pending.ox, oy: this.pending.oy };
       this.pending = null;
       this.canvas.classList.add("down");
@@ -369,6 +460,18 @@ export class CanvasView {
     if (d && d.kind && !d.moved && d.sx != null) {
       const scr = this.screenOf(e);
       if (Math.hypot(scr.x - d.sx, scr.y - d.sy) < 3) return;
+    }
+    if (d?.kind === "marquee") {
+      if (this.marquee) this.marquee.b = world;
+      this.scheduleDraw();
+      return;
+    }
+    if (d?.kind === "group") {
+      if (!d.moved) { this.store.snapshot(); d.moved = true; }
+      this.store.moveSelection(world.x - d.last.x, world.y - d.last.y);
+      d.last = world;
+      this.store.emitSoon();
+      return;
     }
     if (d?.kind === "handle") {
       const c = this.store.project.components.find((x) => x.id === d.id);
@@ -405,7 +508,9 @@ export class CanvasView {
     if (d?.kind === "component") {
       if (!d.moved) { this.store.snapshot(); d.moved = true; }
       const c = this.store.project.components.find((x) => x.id === d.id);
-      if (c) this.store.moveComponent(c, world.x - d.dx, world.y - d.dy);
+      const a = this.alignSnap({ x: world.x - d.dx, y: world.y - d.dy }, [d.id]);
+      this.guides = a.guides;
+      if (c) this.store.moveComponent(c, a.x, a.y);
       this.store.emitSoon();
       return;
     }
@@ -431,11 +536,39 @@ export class CanvasView {
     this.canvas.classList.remove("down");
     const pend = this.pending;
     this.pending = null;
+    if (this.dragging?.kind === "marquee") {
+      const m = this.marquee;
+      this.marquee = null;
+      this.dragging = null;
+      if (m) this.selectInBox(m.a, m.b, m.add);
+      return;
+    }
+    this.guides = null;
     if (this.dragging?.moved) this.store.commit();
     else if (this.dragging?.pan) this.store.persist();
     const wasDrag = !!this.dragging;
     this.dragging = null;
     if (pend && !wasDrag) this.click(pend.world, pend);
+  }
+
+  // Everything inside the box: units by their centre, ducts with both ends
+  // inside (a duct ending on a unit inside counts), rooms and tapes wholly
+  // inside. With Shift the box adds to what is already picked.
+  selectInBox(a, b, add = false) {
+    const p = this.store.project;
+    const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+    const inside = (q) => q && q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1;
+    const items = add ? this.store.selectedItems().filter((i) => i.type !== "piece") : [];
+    const pickedComp = new Set();
+    for (const c of p.components) if (inside(c)) { items.push({ type: "component", id: c.id }); for (const id of componentNodeIds(c)) pickedComp.add(id); }
+    for (const s of p.segments) {
+      const na = p.nodes.find((n) => n.id === s.a), nb = p.nodes.find((n) => n.id === s.b);
+      const inA = inside(na) || pickedComp.has(s.a), inB = inside(nb) || pickedComp.has(s.b);
+      if (inA && inB) items.push({ type: "segment", id: s.id });
+    }
+    for (const r of p.rooms) if (r.points.length && r.points.every(inside)) items.push({ type: "room", id: r.id });
+    for (const m of p.measures || []) if (m.pts.every(inside)) items.push({ type: "measure", id: m.id });
+    this.store.setSelection(items);
   }
 
   onDblClick(e) {
@@ -452,7 +585,7 @@ export class CanvasView {
 
   click(world, ev = {}) {
     const tool = this.store.tool;
-    if (tool === "select") { this.store.select(null); return; }
+    if (tool === "select") { if (!ev.shift) this.store.select(null); return; }
     if (tool === "duct") { this.traceClick(world); return; }
     if (tool === "room") {
       if (this.roomPts.length >= 3 && dist(world, this.roomPts[0]) < 10 / this.zoom) { this.finishRoom(); return; }
@@ -521,7 +654,7 @@ export class CanvasView {
     const a = p.nodes.find((n) => n.id === this.draft.lastNodeId);
     if (!Number.isFinite(Number(node.z))) node.z = store.traceHeight;
     const seg = store.addSegment(a, node);
-    if (seg) { seg.aOff = this.draft.lastOff; seg.bOff = off; }
+    if (seg) { seg.aOff = this.draft.lastOff; seg.bOff = off; store.fitBranch(seg); }
     this.draft = { lastNodeId: node.id, lastOff: off, count: this.draft.count + 1 };
     if (joined) {
       // joined onto a unit or an existing run: that click finishes the run
@@ -567,12 +700,59 @@ export class CanvasView {
     this.store.emit();
   }
 
+  // Line-up: a unit being placed or dragged pulls into line with the centre
+  // of any other unit within a few pixels, across or down, and the guide is
+  // drawn so it is obvious. Alt places it exactly where the cursor is.
+  alignSnap(pt, excludeIds = []) {
+    if (this.store.overrideKey) return { x: pt.x, y: pt.y, guides: [] };
+    const tol = 8 / this.zoom;
+    const others = this.store.project.components.filter((c) => !excludeIds.includes(c.id));
+    let bx = null, by = null;
+    for (const c of others) {
+      const dx = Math.abs(c.x - pt.x), dy = Math.abs(c.y - pt.y);
+      if (dx <= tol && (!bx || dx < bx.d)) bx = { d: dx, v: c.x };
+      if (dy <= tol && (!by || dy < by.d)) by = { d: dy, v: c.y };
+    }
+    const x = bx ? bx.v : pt.x, y = by ? by.v : pt.y;
+    const guides = [];
+    if (bx) {
+      const ys = others.filter((c) => Math.abs(c.x - x) < 1e-6).map((c) => c.y).concat(y);
+      guides.push({ axis: "x", v: x, from: Math.min(...ys), to: Math.max(...ys) });
+    }
+    if (by) {
+      const xs = others.filter((c) => Math.abs(c.y - y) < 1e-6).map((c) => c.x).concat(x);
+      guides.push({ axis: "y", v: y, from: Math.min(...xs), to: Math.max(...xs) });
+    }
+    return { x, y, guides };
+  }
+
+  drawGuides(ctx, guides) {
+    const z = this.zoom;
+    if (!guides?.length) return;
+    ctx.save();
+    ctx.strokeStyle = "#db2777";
+    ctx.lineWidth = 1.2 / z;
+    ctx.setLineDash([6 / z, 4 / z]);
+    const pad = 30 / z;
+    for (const g of guides) {
+      ctx.beginPath();
+      if (g.axis === "x") { ctx.moveTo(g.v, g.from - pad); ctx.lineTo(g.v, g.to + pad); }
+      else { ctx.moveTo(g.from - pad, g.v); ctx.lineTo(g.to + pad, g.v); }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // ---------------------------------------------------------------- placing
   placeComponent(world) {
     const store = this.store;
     const kind = store.newComponentKind;
     const def = componentDef(kind);
     if (!def) return;
+    if (def.role !== "inline") {
+      const a = this.alignSnap(world);
+      world = { x: a.x, y: a.y };
+    }
     store.snapshot();
     let c = null;
     if (def.role === "inline") {
@@ -663,7 +843,8 @@ export class CanvasView {
     let a = (Math.atan2(-(to.y - from.y), to.x - from.x) * 180) / Math.PI;
     if (a < 0) a += 360;
     const lenM = dist(from, to) / this.pxPerMeter();
-    return { deg: a, free: Math.abs(a / 45 - Math.round(a / 45)) > 0.02, lenM };
+    const rel = to.lock?.rel ? to.lock.rel.deg : null;
+    return { deg: a, free: Math.abs(a / 45 - Math.round(a / 45)) > 0.02 && !rel, lenM, rel };
   }
 
   // -------------------------------------------------------------- rendering
@@ -753,7 +934,7 @@ export class CanvasView {
       ctx.beginPath();
       r.points.forEach((pt, i) => (i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y)));
       ctx.closePath();
-      const selected = this.store.selection?.type === "room" && this.store.selection.id === r.id;
+      const selected = this.store.isSelected("room", r.id);
       ctx.fillStyle = selected ? "rgba(224,164,34,0.12)" : "rgba(29,78,216,0.04)";
       ctx.fill();
       ctx.lineWidth = (selected ? 2 : 1.2) / z;
@@ -810,7 +991,7 @@ export class CanvasView {
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
       const res = this.segResult(s.id);
-      const selected = (sel?.type === "segment" && sel.id === s.id)
+      const selected = this.store.isSelected("segment", s.id)
         || (sel?.type === "piece" && this.store.getSelected()?.segmentId === s.id);
       const base = systemColor(s.system);
       const noFlow = !res || res.flowM3s <= 0;
@@ -902,7 +1083,7 @@ export class CanvasView {
     const sel = this.store.selection;
     for (const n of p.nodes) {
       if (p.components.some((c) => componentNodeIds(c).includes(n.id))) continue;
-      const selected = sel?.type === "node" && sel.id === n.id;
+      const selected = this.store.isSelected("node", n.id);
       const touching = p.segments.filter((s) => s.a === n.id || s.b === n.id);
       if (touching.length === 2 && !n.tee && !selected) continue; // a plain corner
       const sys = touching[0]?.system;
@@ -940,7 +1121,7 @@ export class CanvasView {
       const def = componentDef(c.kind);
       if (!def) continue;
       if (c.system !== "both" && hidden?.has(c.system)) continue;
-      const selected = sel?.type === "component" && sel.id === c.id;
+      const selected = this.store.isSelected("component", c.id);
       const box = componentBox(c, px, z);
       ctx.save();
       ctx.translate(c.x, c.y);
@@ -991,7 +1172,7 @@ export class CanvasView {
       ctx.font = `500 ${9.5 / z}px ${MONO}`;
       ctx.fillText(bits.join(" · "), c.x, bottom + 23 / z);
       if (isFourPort(c)) this.drawUnitPorts(ctx, c, z);
-      if (selected) this.drawHandles(ctx, c);
+      if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
     }
   }
 
@@ -1050,7 +1231,7 @@ export class CanvasView {
     const p = this.store.project;
     const z = this.zoom;
     for (const m of p.measures || []) {
-      const selected = this.store.selection?.type === "measure" && this.store.selection.id === m.id;
+      const selected = this.store.isSelected("measure", m.id);
       this.drawTapeLine(ctx, m.pts, selected);
     }
   }
@@ -1073,10 +1254,62 @@ export class CanvasView {
     this.chip(ctx, `${round(this.polyLengthM(pts), 2)} m`, last.x, last.y - 14 / z, { mono: true, bold: true, bg: "#fff4e0", color: "#8a5d00", border: COL.tape });
   }
 
+  // The duct being left, extended through the corner, and a right-angle
+  // mark or a 45° arc where the new leg comes off it.
+  drawAngleGuide(ctx, a, tgt, rel) {
+    const z = this.zoom;
+    const L = 140 / z;
+    const ux = Math.cos(rel.ref), uy = Math.sin(rel.ref);
+    ctx.save();
+    ctx.strokeStyle = COL.accent;
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 1.2 / z;
+    ctx.setLineDash([4 / z, 4 / z]);
+    ctx.beginPath(); ctx.moveTo(a.x - ux * L, a.y - uy * L); ctx.lineTo(a.x + ux * L, a.y + uy * L); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    const leg = Math.atan2(tgt.y - a.y, tgt.x - a.x);
+    // the side of the duct line the leg is on
+    let base = rel.ref;
+    let d = leg - base;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    if (Math.abs(d) > Math.PI / 2 + 1e-6) { base += Math.PI; d = d > 0 ? d - Math.PI : d + Math.PI; }
+    const r = 16 / z;
+    ctx.lineWidth = 1.6 / z;
+    if (rel.deg === 90) {
+      const vx = Math.cos(leg), vy = Math.sin(leg);
+      const bx = Math.cos(base), by = Math.sin(base);
+      ctx.beginPath();
+      ctx.moveTo(a.x + bx * r, a.y + by * r);
+      ctx.lineTo(a.x + bx * r + vx * r, a.y + by * r + vy * r);
+      ctx.lineTo(a.x + vx * r, a.y + vy * r);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, r * 1.4, base, base + d, d < 0);
+      ctx.stroke();
+    }
+    ctx.restore();
+    const mid = leg + (rel.deg === 90 ? 0 : 0);
+    this.chip(ctx, `${rel.deg}° to duct`, a.x + Math.cos(mid) * 38 / z + Math.cos(mid + Math.PI / 2) * 14 / z, a.y + Math.sin(mid) * 38 / z + Math.sin(mid + Math.PI / 2) * 14 / z, { bg: COL.accent, color: "#fff", bold: true, size: 9.5 });
+  }
+
   drawDrafts(ctx) {
     const z = this.zoom;
     const p = this.store.project;
     const tool = this.store.tool;
+    if (this.marquee) {
+      const { a, b } = this.marquee;
+      ctx.save();
+      ctx.fillStyle = "rgba(29,78,216,0.08)";
+      ctx.strokeStyle = COL.accent;
+      ctx.lineWidth = 1.2 / z;
+      ctx.setLineDash([5 / z, 4 / z]);
+      ctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      ctx.restore();
+    }
     if (tool === "duct" && this.pointer && !this.dragging) {
       const tgt = this.traceTarget(this.pointer);
       const col = systemColor(this.store.activeSystem);
@@ -1088,6 +1321,7 @@ export class CanvasView {
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(tgt.x, tgt.y); ctx.stroke();
           ctx.setLineDash([]);
           ctx.beginPath(); ctx.arc(a.x, a.y, 4 / z, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+          if (tgt.lock?.rel && dist(a, tgt) * z > 12) this.drawAngleGuide(ctx, a, tgt, tgt.lock.rel);
           if (!tgt.snap && Math.abs((a.z || 0) - this.store.traceHeight) > 0.05 && dist(a, tgt) < 8 / z) {
             this.chip(ctx, `riser → ${round(this.store.traceHeight, 2)} m`, a.x, a.y - 16 / z, { bg: col, color: "#fff", bold: true });
           } else if (dist(a, tgt) * z > 30) {
@@ -1130,8 +1364,20 @@ export class CanvasView {
         ctx.beginPath(); ctx.moveTo(pt.x - 7 / z, pt.y); ctx.lineTo(pt.x + 7 / z, pt.y); ctx.moveTo(pt.x, pt.y - 7 / z); ctx.lineTo(pt.x, pt.y + 7 / z); ctx.stroke();
       }
     }
+    if (this.guides?.length) this.drawGuides(ctx, this.guides);
     if (tool === "component" && this.pointer && !this.dragging) {
       const def = componentDef(this.store.newComponentKind);
+      if (def && def.role !== "inline") {
+        // where it would land, lined up
+        const a = this.alignSnap(this.pointer);
+        this.drawGuides(ctx, a.guides);
+        const px = this.pxPerMeter();
+        const w = Math.max((def.foot?.w || 0.4) * px, 10 / z), h = Math.max((def.foot?.d || 0.4) * px, 10 / z);
+        ctx.save();
+        ctx.strokeStyle = def.color; ctx.lineWidth = 1.4 / z; ctx.setLineDash([4 / z, 3 / z]);
+        ctx.strokeRect(a.x - w / 2, a.y - h / 2, w, h);
+        ctx.restore();
+      }
       if (def?.role === "inline") {
         const hit = hitSegment(p, this.pointer, 12 / z);
         if (hit) {

@@ -142,6 +142,28 @@ the logo, and the footer repeats the job and reference. The logo is the one
 in the top bar, converted to JPEG when the report is built. File names start
 with the engineer reference.
 
+## Several at once, lining up, and angles off a duct
+
+- **Multi-select** — with Select, drag a box (a duct comes when both ends
+  are inside), Shift-click to add or remove, Ctrl+A for everything. The
+  panel batch-edits design flow, terminal loss, type, height, size and
+  angle; lines units up in a row or column or spaces them evenly; moves by
+  a distance; duplicates (Ctrl+D) and deletes (Del). Drag a picked item to
+  move the lot; arrows nudge 50 mm (Shift 500 mm). A room is picked by its
+  outline or name, so a box can start inside it. `selectInBox()` in
+  `src/ui/canvas.js`; `moveSelection`, `batchEdit`, `alignSelection`,
+  `duplicateSelection` in `src/state.js`.
+- **Line-up guides** — placing or dragging a unit pulls its centre into line
+  with others nearby, across or down, with a pink guide; Alt places freely.
+- **Angles off a duct** — the corner lock pulls to 90° and 45° relative to
+  the duct being branched off or continued, not only to the sheet, with a
+  dashed guide, a right-angle or 45° mark and "90° to duct" in the hint. A
+  45° branch is costed as a 45° lateral (`fitBranch()`).
+- **Traced corners are bends** — a corner between two ducts is counted in
+  the pressure drop by the angle the air turns (3D, so riser tops and
+  bottoms count): 45° K 0.15, 90° K 0.22 round / 0.30 rectangular, unless a
+  bend is listed on the duct. Shown in the duct's panel and the report.
+
 ## Units
 
 - **AHU** — supply and extract in one box, or supply-only / extract-only.

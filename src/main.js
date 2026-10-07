@@ -159,7 +159,7 @@ document.querySelectorAll("[data-tsys]").forEach((b) => b.addEventListener("clic
    ========================================================================== */
 let hintHidden = false;
 const HINTS = {
-  select: "Click to pick · drag a unit or a corner to move it · drag empty paper to pan · <kbd>Del</kbd> removes only what is picked.",
+  select: "Click to pick · drag a box round several, <kbd>Shift</kbd>-click to add or remove · drag a picked item to move them all · <kbd>Ctrl</kbd>+<kbd>A</kbd> everything · arrows nudge · <kbd>Space</kbd>-drag pans.",
   pan: "Drag to move around the drawing. <kbd>Space</kbd>-drag pans in any tool.",
   scale: "Click two points a known distance apart, then type the real dimension.",
   tape: "Click along the route; click again to turn. Double-click, <kbd>Enter</kbd> or Finish keeps it. Plan metres only — never a duct.",
@@ -195,7 +195,7 @@ function renderHint() {
   const ang = canvas.angleNow();
   const a = $("#hintAngle");
   if (ang) {
-    a.textContent = `${round(ang.deg, 1)}° · ${round(ang.lenM, 2)} m`;
+    a.textContent = `${ang.rel ? `${ang.rel}° to duct` : `${round(ang.deg, 1)}°`} · ${round(ang.lenM, 2)} m`;
     a.classList.toggle("free", ang.free);
   } else {
     a.textContent = "—";
@@ -810,14 +810,16 @@ $("#insClose").addEventListener("click", () => store.select(null));
 function renderInspector() {
   const sel = store.selection;
   const obj = store.getSelected();
-  const on = !!(sel && obj) && store.viewMode !== "3d";
+  const multi = sel?.type === "multi";
+  const on = !!(sel && (obj || multi)) && store.viewMode !== "3d";
   const body = $("#body");
   const was = body.classList.contains("insp");
   body.classList.toggle("insp", on);
   if (was !== on) requestAnimationFrame(() => canvas.resize());
   if (!on) return;
   let kind = "", name = "";
-  if (sel.type === "component") { const def = componentDef(obj.kind); kind = def?.label || obj.kind; name = obj.label || def?.label; }
+  if (multi) { kind = "Several items"; name = `${sel.items.length} picked`; }
+  else if (sel.type === "component") { const def = componentDef(obj.kind); kind = def?.label || obj.kind; name = obj.label || def?.label; }
   else if (sel.type === "segment") {
     kind = `${obj.system} duct`;
     const p = store.project;
@@ -842,6 +844,7 @@ function renderInspector() {
    STATUS STRIP
    ========================================================================== */
 let lastResults = null;
+let nudgeAt = 0;
 function renderStatus(results) {
   const st = $("#status");
   st.style.display = started ? "flex" : "none";
@@ -906,6 +909,33 @@ window.addEventListener("keydown", (e) => {
   if (modalOpen()) return;
   if (ctrl && e.key.toLowerCase() === "z") { e.preventDefault(); canvas.endDraft(); e.shiftKey ? store.redo() : store.undo(); return; }
   if (ctrl && e.key.toLowerCase() === "y") { e.preventDefault(); store.redo(); return; }
+  if (ctrl && e.key.toLowerCase() === "a") {
+    e.preventDefault();
+    canvas.endDraft();
+    railTool = "select"; paletteOpen = null; store.setTool("select"); renderRail(); renderPalette();
+    store.selectAll();
+    return;
+  }
+  if (!ctrl && e.key.startsWith("Arrow") && store.selection) {
+    // nudge what is picked: 50 mm, or 500 mm with Shift; a run of presses is one undo step
+    e.preventDefault();
+    const stepM = e.shiftKey ? 0.5 : 0.05;
+    const px = pxPerMeterOf(store.project) * stepM;
+    const d = { ArrowLeft: [-px, 0], ArrowRight: [px, 0], ArrowUp: [0, -px], ArrowDown: [0, px] }[e.key];
+    const now = Date.now();
+    if (!(nudgeAt && now - nudgeAt < 1500)) store.snapshot();
+    nudgeAt = now;
+    store.moveSelection(d[0], d[1]);
+    store.commit();
+    return;
+  }
+  if (ctrl && e.key.toLowerCase() === "d" && store.selection?.type === "multi") {
+    e.preventDefault();
+    store.snapshot();
+    store.duplicateSelection();
+    store.commit();
+    return;
+  }
   if (ctrl && e.key.toLowerCase() === "d") {
     e.preventDefault();
     const sel = store.getSelected();

@@ -8,7 +8,7 @@ import { engineeringLengthM, graphicalLengthM, hasLengthOverride } from "../fab/
 import { flowToM3s, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { airDensity, airViscosity } from "../units.js";
 import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizing.js";
-import { totalFittingK } from "../standards/fittings.js";
+import { totalFittingK, cornerBendK, hasListedBend } from "../standards/fittings.js";
 import { componentDef, inlineLossPa, isDualPort, terminalK } from "../standards/components.js";
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
 import { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem } from "../systems.js";
@@ -233,6 +233,38 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
 
   const segsToSize = plantFilter ? segs.filter((s) => reachableSegs.has(s.id) || s.flowOverride != null) : segs;
 
+  // The corner at the upstream end of a duct — two ducts meeting at a point
+  // with nothing else there — is a bend. Its loss goes on the downstream duct
+  // at that duct's velocity, unless a bend is already listed on it.
+  const compNodes = new Set();
+  for (const c of project.components || []) {
+    for (const id of [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId]) if (id) compNodes.add(id);
+  }
+  const at3d = (n) => ({ x: n.x / pxPerMeter, y: n.y / pxPerMeter, z: Number(n.z) || 0 });
+  function cornerAt(s) {
+    if (hasListedBend(s.fittings || [])) return null;
+    const child = parentSeg.get(s.b)?.id === s.id ? s.b : parentSeg.get(s.a)?.id === s.id ? s.a : null;
+    if (!child) return null;
+    const up = child === s.b ? s.a : s.b;
+    if (compNodes.has(up)) return null;
+    const touching = adj.get(up) || [];
+    if (touching.length !== 2) return null;
+    const prev = parentSeg.get(up);
+    if (!prev) return null;
+    const pFar = nodesById.get(prev.a === up ? prev.b : prev.a);
+    const c = nodesById.get(up), d = nodesById.get(child);
+    if (!pFar || !c || !d) return null;
+    const A = at3d(pFar), B = at3d(c), C = at3d(d);
+    const u = { x: B.x - A.x, y: B.y - A.y, z: B.z - A.z };
+    const v = { x: C.x - B.x, y: C.y - B.y, z: C.z - B.z };
+    const lu = Math.hypot(u.x, u.y, u.z), lv = Math.hypot(v.x, v.y, v.z);
+    if (lu < 1e-6 || lv < 1e-6) return null;
+    const cos = Math.max(-1, Math.min(1, (u.x * v.x + u.y * v.y + u.z * v.z) / (lu * lv)));
+    const angleDeg = (Math.acos(cos) * 180) / Math.PI;
+    const k = cornerBendK(angleDeg, s.shapeOverride || settings.ductType || "round");
+    return k > 0 ? { angleDeg, k } : null;
+  }
+
   const segResults = [];
   let minV = Infinity;
   let maxV = 0;
@@ -268,7 +300,8 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
     const velocity = section.velocity || 0;
     const dp = dynamicPressure(velocity, density);
     const frictionPa = (section.gradient || 0) * lengthM;
-    const kTotal = totalFittingK(s.fittings || []);
+    const autoBend = cornerAt(s);
+    const kTotal = totalFittingK(s.fittings || []) + (autoBend ? autoBend.k : 0);
     const fittingPa = kTotal * dp;
     const inlineList = inlineNodes.get(s.b) || [];
     let inlinePa = 0;
@@ -310,6 +343,7 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
       inlinePa,
       dpPa: segDp,
       kTotal,
+      autoBend,
       fittings: (s.fittings || []).map((f) => ({ ...f })),
       withinVelocity: withinMax && withinMin,
       withinMax,

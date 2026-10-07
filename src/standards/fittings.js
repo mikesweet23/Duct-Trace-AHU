@@ -72,6 +72,27 @@ export function fittingLoss(kOrType, dynamicPressurePa) {
   return k * dynamicPressurePa;
 }
 
+// A corner traced in a run is a bend, whether or not a fitting was typed on
+// the duct. K by how far the air turns (3D, so a riser's top and bottom
+// count): a 45° bend 0.15, a 90° radius bend 0.22 round / 0.30 rectangular
+// (CIBSE Guide C), in between pro rata, beyond 90° pro rata on the 90°.
+export function cornerBendK(deflectionDeg, shape = "round") {
+  const a = Math.abs(Number(deflectionDeg) || 0);
+  if (a < 8) return 0;
+  const k45 = FITTINGS.bend45.k;
+  const k90 = shape === "rect" || shape === "square" ? 0.3 : FITTINGS.bend90_radius.k;
+  if (a <= 45) return k45 * (a / 45);
+  if (a <= 90) return k45 + (k90 - k45) * ((a - 45) / 45);
+  return k90 * (a / 90);
+}
+
+export function hasListedBend(fittings = []) {
+  return fittings.some((f) => {
+    const g = FITTINGS[f.type]?.group;
+    return g === "elbow" || g === "offset";
+  });
+}
+
 export function totalFittingK(fittings = []) {
   return fittings.reduce((sum, f) => {
     const k = typeof f.k === "number" ? f.k : (FITTINGS[f.type]?.k ?? 0);

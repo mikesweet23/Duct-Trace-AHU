@@ -10,6 +10,7 @@ import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
 import { applyConstruction, setSegmentConstruction } from "./construction.js";
 
 const STORAGE_KEY = "duct-trace-ahu:project";
+const MULTI_TYPES = new Set(["component", "segment", "node", "room", "measure"]);
 const NODE_MERGE_TOL = 8; // px in world space — tight, so close parallel ducts stay apart
 const Z_MERGE_TOL = 0.05; // m — stacked riser nodes must not collapse
 
@@ -200,16 +201,36 @@ export class Store {
     for (const fn of this.listeners) fn(this);
   }
 
+  // Undo steps hold the take-off, not the drawing: the sheet's image (often
+  // megabytes) is kept once in a pool and each step refers to it, so sixty
+  // steps do not mean sixty copies of the drawing.
+  freeze(project = this.project) {
+    if (!this._imgPool) this._imgPool = new Map();
+    return JSON.stringify(project, (k, v) => {
+      if (k === "dataUrl" && typeof v === "string" && v.length > 256) {
+        for (const [tok, url] of this._imgPool) if (url === v) return tok;
+        const tok = `@img${this._imgPool.size + 1}`;
+        this._imgPool.set(tok, v);
+        return tok;
+      }
+      return v;
+    });
+  }
+
+  thaw(text) {
+    return JSON.parse(text, (k, v) => (k === "dataUrl" && typeof v === "string" && v.startsWith("@img") ? this._imgPool?.get(v) ?? null : v));
+  }
+
   snapshot() {
-    this.undoStack.push(JSON.stringify(this.project));
+    this.undoStack.push(this.freeze());
     if (this.undoStack.length > 60) this.undoStack.shift();
     this.redoStack.length = 0;
   }
 
   undo() {
     if (!this.undoStack.length) return;
-    this.redoStack.push(JSON.stringify(this.project));
-    this.project = migrateProject(JSON.parse(this.undoStack.pop()));
+    this.redoStack.push(this.freeze());
+    this.project = migrateProject(this.thaw(this.undoStack.pop()));
     this.selection = null;
     this.persist();
     this.emit();
@@ -217,8 +238,8 @@ export class Store {
 
   redo() {
     if (!this.redoStack.length) return;
-    this.undoStack.push(JSON.stringify(this.project));
-    this.project = migrateProject(JSON.parse(this.redoStack.pop()));
+    this.undoStack.push(this.freeze());
+    this.project = migrateProject(this.thaw(this.redoStack.pop()));
     this.selection = null;
     this.persist();
     this.emit();
@@ -299,6 +320,199 @@ export class Store {
   select(type, id) {
     this.selection = type ? { type, id } : null;
     this.emit();
+  }
+
+  // ---- several things at once ---------------------------------------------
+  // A multi selection is { type: "multi", items: [{ type, id }] }. One thing
+  // settles back to a plain selection and nothing to null, so the inspector
+  // and every highlight work the same for one or many.
+  selectedItems() {
+    const sel = this.selection;
+    if (!sel) return [];
+    if (sel.type === "multi") return sel.items;
+    return [{ type: sel.type, id: sel.id }];
+  }
+
+  isSelected(type, id) {
+    return this.selectedItems().some((i) => i.type === type && i.id === id);
+  }
+
+  setSelection(items) {
+    const seen = new Set();
+    const list = (items || []).filter((i) => {
+      if (!i || !MULTI_TYPES.has(i.type)) return false;
+      const k = `${i.type}:${i.id}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    this.selection = list.length === 0 ? null : list.length === 1 ? { ...list[0] } : { type: "multi", items: list };
+    this.emit();
+  }
+
+  toggleSelected(type, id) {
+    const items = this.selectedItems().filter((i) => MULTI_TYPES.has(i.type));
+    const has = items.some((i) => i.type === type && i.id === id);
+    this.setSelection(has ? items.filter((i) => !(i.type === type && i.id === id)) : [...items, { type, id }]);
+  }
+
+  selectAll() {
+    const p = this.project;
+    this.setSelection([
+      ...p.components.map((c) => ({ type: "component", id: c.id })),
+      ...p.segments.map((s) => ({ type: "segment", id: s.id })),
+      ...p.rooms.map((r) => ({ type: "room", id: r.id })),
+      ...(p.measures || []).map((m) => ({ type: "measure", id: m.id })),
+    ]);
+  }
+
+  // What the selection is, resolved to objects.
+  selectedObjects() {
+    const p = this.project;
+    const out = { components: [], segments: [], nodes: [], rooms: [], measures: [] };
+    for (const i of this.selectedItems()) {
+      if (i.type === "component") { const c = p.components.find((x) => x.id === i.id); if (c) out.components.push(c); }
+      else if (i.type === "segment") { const s = p.segments.find((x) => x.id === i.id); if (s) out.segments.push(s); }
+      else if (i.type === "node") { const n = p.nodes.find((x) => x.id === i.id); if (n) out.nodes.push(n); }
+      else if (i.type === "room") { const r = p.rooms.find((x) => x.id === i.id); if (r) out.rooms.push(r); }
+      else if (i.type === "measure") { const m = (p.measures || []).find((x) => x.id === i.id); if (m) out.measures.push(m); }
+    }
+    return out;
+  }
+
+  // Moves everything picked by (dx, dy) world px. A picked duct takes both
+  // its ends with it; a duct with one end picked stretches. Units carry their
+  // connection nodes; nothing moves twice.
+  moveSelection(dx, dy) {
+    const p = this.project;
+    const sel = this.selectedObjects();
+    const compNodes = new Set();
+    for (const c of p.components) for (const id of componentNodeIds(c)) compNodes.add(id);
+    const nodeIds = new Set(sel.nodes.map((n) => n.id));
+    for (const s of sel.segments) { nodeIds.add(s.a); nodeIds.add(s.b); }
+    const movedComps = new Set(sel.components.map((c) => c.id));
+    // a picked duct ending on an unpicked unit does not drag the unit's port off it
+    for (const c of p.components) if (!movedComps.has(c.id)) for (const id of componentNodeIds(c)) nodeIds.delete(id);
+    for (const c of sel.components) {
+      c.x += dx;
+      c.y += dy;
+      this.syncComponentPorts(c);
+      for (const id of componentNodeIds(c)) nodeIds.delete(id);
+    }
+    for (const n of p.nodes) if (nodeIds.has(n.id) && !compNodes.has(n.id)) { n.x += dx; n.y += dy; }
+    for (const r of sel.rooms) for (const q of r.points) { q.x += dx; q.y += dy; }
+    for (const m of sel.measures) for (const q of m.pts) { q.x += dx; q.y += dy; }
+  }
+
+  // Lines the picked units up: "x" puts their centres on one vertical line,
+  // "y" on one horizontal line (both at the average); "spreadX" / "spreadY"
+  // spaces them evenly between the two outermost.
+  alignSelection(mode) {
+    const comps = this.selectedObjects().components;
+    if (comps.length < 2) return 0;
+    const mean = (k) => comps.reduce((a, c) => a + c[k], 0) / comps.length;
+    if (mode === "x" || mode === "y") {
+      const v = mean(mode);
+      for (const c of comps) { c[mode] = v; this.syncComponentPorts(c); }
+    } else if (mode === "spreadX" || mode === "spreadY") {
+      const k = mode === "spreadX" ? "x" : "y";
+      const sorted = [...comps].sort((a, b) => a[k] - b[k]);
+      const lo = sorted[0][k], hi = sorted[sorted.length - 1][k];
+      sorted.forEach((c, i) => { c[k] = lo + ((hi - lo) * i) / (sorted.length - 1); this.syncComponentPorts(c); });
+    }
+    return comps.length;
+  }
+
+  // Sets the same values on every picked thing that has them. `fields` keys:
+  // props.<name> for component parameters (only where the component has
+  // that parameter), heightM, widthM, depthM, rot, kind, and for ducts
+  // construction, floor, zone. Returns how many things changed.
+  batchEdit(fields) {
+    const sel = this.selectedObjects();
+    let n = 0;
+    for (const c of sel.components) {
+      let touched = false;
+      for (const [k, v] of Object.entries(fields)) {
+        if (k.startsWith("props.")) {
+          const key = k.slice(6);
+          if (c.props && key in c.props) { c.props[key] = v; touched = true; }
+        } else if (k === "kind") {
+          const from = componentDef(c.kind), to = componentDef(v);
+          if (from && to && from.category === to.category && c.kind !== v) {
+            c.props = { ...defaultProps(v), ...(c.props || {}) };
+            c.kind = v;
+            if (to.system && c.system !== "both") c.system = to.system;
+            touched = true;
+          }
+        } else if (k === "heightM" || k === "widthM" || k === "depthM" || k === "rot") {
+          c[k] = Number(v);
+          touched = true;
+        }
+      }
+      if (touched) { this.syncComponentPorts(c); n++; }
+    }
+    for (const s of sel.segments) {
+      let touched = false;
+      if ("construction" in fields) { this.setSegmentConstruction(s, fields.construction || null); touched = true; }
+      for (const k of ["floor", "zone"]) if (k in fields) { s[k] = fields[k]; touched = true; }
+      if (fields.clearSize) { s.sizeOverride = null; touched = true; }
+      if (touched) n++;
+    }
+    return n;
+  }
+
+  // Copies the picked units and the ducts between them, one gap to the right
+  // (or by dx, dy), with fresh ids; the copy becomes the selection.
+  duplicateSelection(dx = null, dy = 0) {
+    const p = this.project;
+    const sel = this.selectedObjects();
+    if (!sel.components.length && !sel.segments.length && !sel.rooms.length) return null;
+    const xs = [], px = pxPerMeterOf(p);
+    for (const c of sel.components) xs.push(c.x - (c.widthM || 0.6) * px / 2, c.x + (c.widthM || 0.6) * px / 2);
+    for (const s of sel.segments) for (const id of [s.a, s.b]) { const n = p.nodes.find((x) => x.id === id); if (n) xs.push(n.x); }
+    for (const r of sel.rooms) for (const q of r.points) xs.push(q.x);
+    const shift = dx != null ? dx : (Math.max(...xs) - Math.min(...xs)) + 1.0 * px;
+    const nodeMap = new Map();
+    const copyNode = (id) => {
+      if (nodeMap.has(id)) return nodeMap.get(id);
+      const n = p.nodes.find((x) => x.id === id);
+      if (!n) return null;
+      const m = { ...n, id: uid("n"), x: n.x + shift, y: n.y + dy };
+      p.nodes.push(m);
+      nodeMap.set(id, m.id);
+      return m.id;
+    };
+    const items = [];
+    for (const c of sel.components) {
+      const copy = JSON.parse(JSON.stringify(c));
+      copy.id = uid("c");
+      copy.x += shift;
+      copy.y += dy;
+      const same = p.components.filter((x) => x.kind === c.kind).length + 1;
+      const def = componentDef(c.kind);
+      copy.label = `${c.kind === "ahu" ? "AHU" : c.kind === "hrv" ? "HRV" : def?.label || "Item"} ${same}`;
+      for (const key of ["nodeId", "returnNodeId", "outdoorNodeId", "exhaustNodeId"]) copy[key] = c[key] ? copyNode(c[key]) : null;
+      p.components.push(copy);
+      this.syncComponentPorts(copy);
+      items.push({ type: "component", id: copy.id });
+    }
+    for (const s of sel.segments) {
+      const copy = JSON.parse(JSON.stringify(s));
+      copy.id = uid("s");
+      copy.a = copyNode(s.a);
+      copy.b = copyNode(s.b);
+      if (!copy.a || !copy.b) continue;
+      p.segments.push(copy);
+      items.push({ type: "segment", id: copy.id });
+    }
+    for (const r of sel.rooms) {
+      const copy = { ...JSON.parse(JSON.stringify(r)), id: uid("r"), name: `${r.name} copy` };
+      for (const q of copy.points) { q.x += shift; q.y += dy; }
+      p.rooms.push(copy);
+      items.push({ type: "room", id: copy.id });
+    }
+    this.selection = items.length > 1 ? { type: "multi", items } : items[0] || null;
+    return items;
   }
 
   setTraceHeight(z) {
@@ -443,6 +657,33 @@ export class Store {
     return room;
   }
 
+  // A branch's fitting follows the angle it actually leaves the run at: a
+  // 45° branch is a 45° lateral (K 0.45), a square one a tee (K 1.0).
+  fitBranch(seg) {
+    const p = this.project;
+    for (const nodeId of [seg.a, seg.b]) {
+      const others = p.segments.filter((s) => s !== seg && s.system === seg.system && (s.a === nodeId || s.b === nodeId));
+      if (others.length < 2) continue;
+      const at = p.nodes.find((n) => n.id === nodeId);
+      const far = p.nodes.find((n) => n.id === (seg.a === nodeId ? seg.b : seg.a));
+      if (!at || !far) continue;
+      const dirOf = (n) => Math.atan2(n.y - at.y, n.x - at.x);
+      const mine = dirOf(far);
+      let best = 180;
+      for (const o of others) {
+        const on = p.nodes.find((n) => n.id === (o.a === nodeId ? o.b : o.a));
+        if (!on) continue;
+        let d = Math.abs(((mine - dirOf(on)) * 180) / Math.PI) % 180;
+        if (d > 90) d = 180 - d;
+        best = Math.min(best, d);
+      }
+      const isBranchFit = (f) => f.type === "tee_branch" || f.type === "lateral45";
+      if (!(seg.fittings || []).some(isBranchFit)) continue;
+      const type = Math.abs(best - 45) < 8 ? "lateral45" : "tee_branch";
+      seg.fittings = seg.fittings.map((f) => (isBranchFit(f) ? { ...f, type } : f));
+    }
+  }
+
   addMeasure(pts) {
     const m = { id: uid("m"), pts: pts.map((q) => ({ x: q.x, y: q.y })) };
     this.project.measures.push(m);
@@ -576,6 +817,25 @@ export class Store {
   deleteSelection() {
     const sel = this.selection;
     if (!sel) return;
+    if (sel.type === "multi") {
+      // everything picked goes, and a duct into a unit that goes goes with it
+      this.snapshot();
+      const p = this.project;
+      const o = this.selectedObjects();
+      const compIds = new Set(o.components.map((c) => c.id));
+      const goneNodes = new Set(o.nodes.map((n) => n.id));
+      const segIds = new Set(o.segments.map((s) => s.id));
+      p.components = p.components.filter((c) => !compIds.has(c.id));
+      p.segments = p.segments.filter((s) => !segIds.has(s.id) && !goneNodes.has(s.a) && !goneNodes.has(s.b));
+      const roomIds = new Set(o.rooms.map((r) => r.id));
+      p.rooms = p.rooms.filter((r) => !roomIds.has(r.id));
+      const mIds = new Set(o.measures.map((m) => m.id));
+      p.measures = (p.measures || []).filter((m) => !mIds.has(m.id));
+      this.pruneOrphans();
+      this.selection = null;
+      this.commit();
+      return;
+    }
     this.snapshot();
     const p = this.project;
     if (sel.type === "segment") {
