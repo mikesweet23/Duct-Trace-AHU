@@ -283,3 +283,32 @@ test("each face of a unit can swap its two connections on its own", () => {
   const snapAt = canvas.traceTarget({ x: hrv.x, y: hrv.y }).snap.at;
   assert.ok(Math.abs(snapAt.y - y0.e) < 1e-9, "the ring drawn and the ring snapped to agree");
 });
+
+test("off an angled duct the lock gives a true 90° and 45° to that duct, and a 45° branch is a lateral", () => {
+  const { store, canvas } = setup();
+  // a duct at 30° to the sheet
+  const r = 400, th = Math.PI / 6;
+  const a = store.findOrCreateNode({ x: 0, y: 0 }, 3.2);
+  const b = store.findOrCreateNode({ x: r * Math.cos(th), y: r * Math.sin(th) }, 3.2);
+  store.addSegment(a, b, "supply");
+  // branch from the middle of it
+  canvas.traceClick({ x: 200 * Math.cos(th), y: 200 * Math.sin(th) });
+  const tee = store.project.nodes.find((n) => n.tee);
+  assert.ok(tee);
+  // aim roughly square off the duct (120° on the sheet), a little off
+  const aim = (deg) => ({ x: tee.x + 200 * Math.cos((deg * Math.PI) / 180), y: tee.y + 200 * Math.sin((deg * Math.PI) / 180) });
+  const t90 = canvas.traceTarget(aim(118));
+  const ang = (q) => (Math.atan2(q.y - tee.y, q.x - tee.x) * 180) / Math.PI;
+  assert.ok(Math.abs(ang(t90) - 120) < 1e-6, `locks to 120° on the sheet, 90° to the duct (got ${ang(t90)})`);
+  assert.equal(t90.lock.rel.deg, 90);
+  const t45 = canvas.traceTarget(aim(77));
+  assert.ok(Math.abs(ang(t45) - 75) < 1e-6, "locks to 75° on the sheet, 45° to the duct");
+  assert.equal(t45.lock.rel.deg, 45);
+  // and the sheet's own square still works
+  assert.ok(Math.abs(ang(canvas.traceTarget(aim(91))) - 90) < 1e-6);
+  // draw the 45° branch: its fitting is a 45° lateral
+  canvas.traceClick(aim(77));
+  const branch = store.project.segments[store.project.segments.length - 1];
+  assert.ok(branch.a === tee.id || branch.b === tee.id, "the last duct drawn is the branch off the tee");
+  assert.ok(branch.fittings.some((f) => f.type === "lateral45"), "45° branch costed as a lateral");
+});
