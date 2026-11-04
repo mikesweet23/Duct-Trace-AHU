@@ -170,6 +170,12 @@ export function preferredPort(c, system) {
   return { nodeId: c.nodeId, off: null };
 }
 
+// Where a single-connection component joins its duct, in its own frame:
+// the middle for most, the left-hand end for an air sock (its inlet).
+export function terminalPortOffset(c) {
+  return componentDef(c?.kind)?.inletEnd ? { u: -1, v: 0 } : null;
+}
+
 // Every node id a component owns.
 export function componentNodeIds(c) {
   return [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean);

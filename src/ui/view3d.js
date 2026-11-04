@@ -5,7 +5,7 @@ import { isVerticalRiser } from "../geom.js";
 import { componentDef } from "../standards/components.js";
 import { componentFoot, pxPerMeterOf } from "../layout.js";
 import { formatFlow, round } from "../units.js";
-import { findSegResult } from "../calc/network.js";
+import { findSegResult, memberColor, memberPlantId } from "../calc/network.js";
 import { meshPiece, pieceFill, airflowArrow, systemColor } from "./fab3d.js";
 import { sizeLabel } from "../fab/catalog.js";
 
@@ -154,6 +154,12 @@ export class View3D {
     return this.store.hiddenSystems?.has(system);
   }
 
+  // hidden with its system (unit) from the Systems list
+  plantHidden(type, id) {
+    const pid = memberPlantId(this.results, type, id);
+    return !!pid && !!this.store.hiddenPlants?.has(pid);
+  }
+
   draw() {
     const ctx = this.ctx;
     const p = this.store.project;
@@ -194,14 +200,17 @@ export class View3D {
       const def = componentDef(comp.kind);
       if (!def) continue;
       if (this.hidden(comp.system) && comp.system !== "both") continue;
+      if (this.plantHidden("comp", comp.id)) continue;
       const foot = componentFoot(comp);
       const z = Number.isFinite(Number(comp.heightM)) ? comp.heightM : 0;
       const center = this.toXYZ(W, comp, z);
       const grow = Math.max(1, (W.spanM / 26) * 0.7 / Math.max(foot.w, foot.d));
       const bw = foot.w * grow;
       const bd = foot.d * grow;
-      const bh = Math.max(foot.t, 0.18) * grow;
-      const fill = def.color;
+      const bh = Math.max(def.airSock ? foot.d : foot.t, 0.18) * grow;
+      const fill = def.role === "plant" && comp.color && (p.settings.colourBy || "system") === "system"
+        ? comp.color
+        : memberColor(p, this.results, "comp", comp.id, def.color);
       cuboid(center, bw, bd, bh / this.ex, foot.rot).forEach((face) => {
         items.push({ t: "poly", pts: face, fill, stroke: "rgba(0,0,0,0.35)", z: center.Z, alpha: mode === "transparent" ? 0.35 : 0.92 });
       });
@@ -257,7 +266,7 @@ export class View3D {
     const p = this.store.project;
     const sel = this.store.selection;
     for (const s of p.segments) {
-      if (this.hidden(s.system)) continue;
+      if (this.hidden(s.system) || this.plantHidden("seg", s.id)) continue;
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
@@ -265,7 +274,7 @@ export class View3D {
       const selected = sel?.type === "segment" && sel.id === s.id;
       const col = selected ? "#e0a422" : mode === "velocity" ? pieceFill({ velocity: res?.velocity }, "velocity")
         : mode === "pressure" ? pieceFill({ dpPa: res?.dpPa }, "pressure")
-        : systemColor(s.system);
+        : memberColor(p, this.results, "seg", s.id, systemColor(s.system));
       const za = a.z || 0, zb = b.z || 0;
       const poly = [this.toXYZ(W, a, za)];
       if (Math.abs(za - zb) > 0.02 && !isVerticalRiser(a, b, W.s)) poly.push(this.toXYZ(W, b, za));

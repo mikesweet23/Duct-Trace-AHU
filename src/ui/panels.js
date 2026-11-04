@@ -16,7 +16,8 @@ import { renderFabrication } from "./fab-panel.js";
 import { renderTakeoff } from "./takeoff-panel.js";
 import { FITTINGS as FAB_FITTINGS } from "../standards/fittings.js";
 import { setPieceOverride } from "../fab/change.js";
-import { SYSTEMS, SYSTEM_KEYS } from "../systems.js";
+import { SYSTEMS, SYSTEM_KEYS, COLOUR_MODES, SYSTEM_PALETTE, systemTitle } from "../systems.js";
+import { isAirSock, sockFigures, sockFlowLs, sockBasis, SOCK_DISCHARGE, SOCK_BASIS, SOCK_DIAMETERS_MM } from "../standards/airsock.js";
 import { PROJECT_CONSTRUCTIONS, SECTION_CONSTRUCTIONS, projectConstructionLabel, sectionConstructionKey } from "../construction.js";
 
 const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
@@ -89,6 +90,7 @@ export class Panels {
     if (!sel || !selected) {
       el.innerHTML = this.propertiesEmpty();
       this.bindProjectConstruction(el);
+      this.bindSystemsList(el);
       return;
     }
     if (sel.type === "segment") el.innerHTML = this.propSegment(selected);
@@ -246,6 +248,7 @@ export class Panels {
       <p class="small-note">This is the project ideal. Select a duct to change one length or a whole branch without rewriting the rest of the system.</p>
       <div class="field"><label>Nodes / ducts</label><span class="badge">${p.nodes.length} / ${p.segments.length}</span></div>
       <div class="field"><label>Components / rooms</label><span class="badge">${p.components.length} / ${p.rooms.length}</span></div>
+      ${this.systemsList()}
       ${rooms ? `<div class="section-title">Rooms</div>${rooms}` : ""}
     `;
   }
@@ -419,6 +422,73 @@ export class Panels {
     `;
   }
 
+  // A unit or fan is a system: its tag, name and colour carry to every duct
+  // and terminal joined to it, the status strip, 3D and the report.
+  systemIdentityFields(c, def) {
+    const swatches = SYSTEM_PALETTE.map((col) => `<button class="swatch${(c.color || "").toLowerCase() === col.toLowerCase() ? " on" : ""}" data-swatch="${col}" style="background:${col}" title="${col}"></button>`).join("");
+    return h`
+      <div class="section-title">System</div>
+      <div class="field"><label>Tag / number</label><input type="text" data-k="tag" value="${c.tag || ""}" placeholder="${def.tagPrefix || "SYS"}-01"/></div>
+      <div class="field"><label>Colour</label><span class="swatch-row"><input type="color" data-k="color" value="${c.color || def.color}"/>${swatches}</span></div>
+      <p class="small-note">Shows as <b>${systemTitle(c, def.label)}</b>. Name it with <b>Custom label</b> above (e.g. "Level 2 East offices"). Every duct and terminal joined to this unit takes its colour when Duct &amp; basis colours by system.</p>
+    `;
+  }
+
+  // Air sock: total airflow and "ventilated throughout", the nominal size
+  // and pressure for concept / design, then the manufacturer's selection.
+  sockFields(c) {
+    const p = this.store.project;
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
+    const pr = c.props || {};
+    const flowLs = sockFlowLs(c, this.results);
+    const fig = sockFigures(c, flowLs, p.settings);
+    const b = sockBasis(p.settings);
+    const shared = !(Number(pr.designFlow_ls) > 0);
+    const dias = [`<option value="0" ${fig.autoDia ? "selected" : ""}>Auto — ø${fig.autoDia ? fig.diameterMm : "…"} at ${b.inletVelocity} m/s</option>`]
+      .concat(SOCK_DIAMETERS_MM.map((d) => `<option value="${d}" ${!fig.autoDia && fig.diameterMm === d ? "selected" : ""}>ø${d}</option>`)).join("");
+    const opts = (map, cur) => Object.entries(map).map(([k, v]) => `<option value="${k}" ${cur === k ? "selected" : ""}>${v}</option>`).join("");
+    const perM = unit === "m3/h" ? `${num(fig.m3hPerM, 1)} m³/h per m` : `${num(fig.flowPerM_ls, 1)} l/s per m`;
+    return h`
+      <div class="section-title">Air sock</div>
+      <div class="field"><label>Total airflow (${ul})</label>
+        <input type="number" step="any" data-flow-prop="designFlow_ls" value="${shared ? "" : lsToDisplay(pr.designFlow_ls, unit)}" placeholder="share of unit supply duty"/></div>
+      <div class="field"><label>Discharge</label>
+        <select data-prop-bool="ventilatedThroughout">
+          <option value="true" ${pr.ventilatedThroughout !== false ? "selected" : ""}>Ventilated throughout — whole length</option>
+          <option value="false" ${pr.ventilatedThroughout === false ? "selected" : ""}>Part length — vented length below</option>
+        </select></div>
+      ${pr.ventilatedThroughout === false ? `<div class="field"><label>Vented length (m)</label><input type="number" step="0.1" data-prop-num="ventedLengthM" value="${pr.ventedLengthM || ""}"/></div>` : ""}
+      <div class="field"><label>Pattern</label><select data-prop-text="discharge">${opts(SOCK_DISCHARGE, pr.discharge)}</select></div>
+      <div class="field"><label>Length (m)</label><input type="number" step="0.1" data-k="widthM" value="${num(fig.lengthM, 2)}"/></div>
+      <div class="field"><label>Diameter</label><select data-prop-num="diameterMm">${dias}</select></div>
+      <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-k="rot" value="${c.rot || 0}"/></div>
+      <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
+      <div class="hrv-box"><dl>
+        <dt>Airflow${shared ? " (shared by length)" : ""}</dt><dd>${lsToDisplay(flowLs, unit)} ${ul}</dd>
+        <dt>Vented length</dt><dd>${num(fig.ventedLengthM, 1)} m</dd>
+        <dt>Discharge</dt><dd>${perM}</dd>
+        <dt>Inlet velocity at ø${fig.diameterMm}</dt><dd>${num(fig.inletVelocity, 2)} m/s</dd>
+        <dt>Inlet static in the index run</dt><dd>${num(fig.staticPa, 0)} Pa — ${fig.confirmed ? "manufacturer" : "nominal"}</dd>
+      </dl></div>
+      ${fig.warnings.length ? `<ul class="warn-list">${fig.warnings.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
+      <p class="small-note">The duct joins at the square end. Leave the airflow blank when you only have the system total: every blank sock on the unit shares its supply duty (set on the unit) in proportion to vented length. Drag the handles or type the length; the diameter follows the airflow unless you pick one.</p>
+
+      <div class="section-title">Manufacturer selection</div>
+      <div class="field"><label>Basis</label><select data-prop-text="basis">${opts(SOCK_BASIS, pr.basis || "nominal")}</select></div>
+      ${pr.basis === "manufacturer" ? "" : `<div class="field"><label>Nominal inlet static (Pa)</label><input type="number" step="5" data-prop-num="nominalStaticPa" value="${Number(pr.nominalStaticPa) > 0 ? pr.nominalStaticPa : ""}" placeholder="${b.nominalStaticPa} (project)"/></div>`}
+      <div class="field"><label>Manufacturer</label><input type="text" data-prop-text="manufacturer" value="${pr.manufacturer || ""}"/></div>
+      <div class="field"><label>Product / fabric</label><input type="text" data-prop-text="product" value="${pr.product || ""}"/></div>
+      <div class="field"><label>Selection ref (EPC)</label><input type="text" data-prop-text="selectionRef" value="${pr.selectionRef || ""}"/></div>
+      <div class="field"><label>Inlet static (Pa)</label><input type="number" step="any" data-prop-num="mfrStaticPa" value="${Number(pr.mfrStaticPa) > 0 ? pr.mfrStaticPa : ""}"/></div>
+      <div class="field"><label>Throw (m)</label><input type="number" step="any" data-prop-num="mfrThrow_m" value="${Number(pr.mfrThrow_m) > 0 ? pr.mfrThrow_m : ""}"/></div>
+      <div class="field"><label>Noise (NR)</label><input type="number" step="1" data-prop-num="mfrNR" value="${Number(pr.mfrNR) > 0 ? pr.mfrNR : ""}"/></div>
+      <p class="small-note">${fig.confirmed
+        ? "The manufacturer's inlet static is in the index run."
+        : "Still on nominal figures. When the selection comes back, type the inlet static and set the basis to <b>Manufacturer selection</b> — it then replaces the nominal figure in the index run and the report."}</p>
+    `;
+  }
+
   terminalResult(c) {
     for (const sys of allComputedSystems(this.results)) {
       const t = (sys.terminals || []).find((x) => x.nodeId === c.nodeId);
@@ -535,7 +605,8 @@ export class Panels {
     const isPlant = def.role === "plant";
     const props = Object.entries(c.props || {})
       .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k))
-        && !(def.outside && (k === "freeAreaPct" || k === "designVelocity")) && !(def.openEnd && k === "bellMouth"))
+        && !(def.outside && (k === "freeAreaPct" || k === "designVelocity")) && !(def.openEnd && k === "bellMouth")
+        && !(def.airSock && k !== "note"))
       .map(([k, v]) => {
         const label = PROP_LABELS[k] || k;
         if (k === "note") {
@@ -588,13 +659,14 @@ export class Panels {
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
         </select></div>
-      <div class="section-title">Size &amp; height</div>
+      ${isPlant ? this.systemIdentityFields(c, def) : ""}
+      ${def.airSock ? this.sockFields(c) : `<div class="section-title">Size &amp; height</div>
       <div class="field"><label>Width × depth (m)</label>
         <span><input type="number" step="0.05" style="width:64px" data-k="widthM" value="${c.widthM ?? ""}"/>
         <input type="number" step="0.05" style="width:64px" data-k="depthM" value="${c.depthM ?? ""}"/></span></div>
       <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-k="rot" value="${c.rot || 0}"/></div>
       <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
-      <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>
+      <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>`}
       ${isPlant ? this.plantFields(c, def) : ""}
       ${def.outside ? this.louvreFields(c) : ""}
       ${def.openEnd ? this.openEndFields(c) : ""}
@@ -780,6 +852,20 @@ export class Panels {
         commit();
       });
     });
+    el.querySelectorAll("[data-prop-num]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        obj.props[input.dataset.propNum] = input.value === "" ? 0 : Number(input.value) || 0;
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-swatch]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        store.snapshot();
+        obj.color = btn.dataset.swatch;
+        commit();
+      });
+    });
     el.querySelectorAll("[data-prop-text]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
@@ -869,6 +955,59 @@ export class Panels {
         }
       });
     });
+  }
+
+  // Every unit and fan on the job as a system: colour, tag, name, its
+  // airflow and a show / hide — for a floor with several systems on it.
+  systemsList() {
+    const p = this.store.project;
+    const unit = unitOf(this.store);
+    const plants = p.components.filter((c) => componentDef(c.kind)?.role === "plant");
+    if (!plants.length) return "";
+    const systems = this.results ? allComputedSystems(this.results) : [];
+    const hidden = this.store.hiddenPlants || new Set();
+    const rows = plants.map((c) => {
+      const def = componentDef(c.kind);
+      const sup = systems.find((x) => x.plant?.id === c.id && x.systemType === "supply");
+      const ext = systems.find((x) => x.plant?.id === c.id && x.systemType === "extract");
+      const flow = [sup && `S ${formatFlow(sup.totalFlowM3s, unit)}`, ext && `E ${formatFlow(ext.totalFlowM3s, unit)}`].filter(Boolean).join(" · ") || "no ducts yet";
+      return `<div class="sys-row${hidden.has(c.id) ? " off" : ""}">
+        <input type="color" data-sys-color="${c.id}" value="${c.color || def.color}" title="System colour"/>
+        <input type="text" class="sys-tag" data-sys-tag="${c.id}" value="${c.tag || ""}" placeholder="${def.tagPrefix || "SYS"}-01" title="Tag / number"/>
+        <input type="text" class="sys-name" data-sys-name="${c.id}" value="${c.label || ""}" placeholder="${def.label}" title="System name"/>
+        <button class="btn ghost tiny" data-sys-hide="${c.id}" title="${hidden.has(c.id) ? "Show" : "Hide"} this system on the plan">${hidden.has(c.id) ? "Show" : "Hide"}</button>
+        <button class="link-btn" data-sys-pick="${c.id}" title="Select the unit">${flow}</button>
+      </div>`;
+    }).join("");
+    return h`
+      <div class="section-title">Systems</div>
+      ${rows}
+      <p class="small-note">One row per unit or fan. Colour, tag (AHU-01) and name carry to its ducts and terminals, the status strip, 3D and the report. Hide the others to work on one system at a time.${(p.settings.colourBy || "system") !== "system" ? " Ducts are coloured by airstream at the moment — switch to <b>by system</b> in Duct &amp; basis." : ""}</p>
+    `;
+  }
+
+  bindSystemsList(el) {
+    const store = this.store;
+    const find = (id) => store.project.components.find((c) => c.id === id);
+    const edit = (attr, key) => el.querySelectorAll(`[${attr}]`).forEach((input) => {
+      input.addEventListener("change", () => {
+        const c = find(input.getAttribute(attr));
+        if (!c) return;
+        store.snapshot();
+        c[key] = input.value.trim();
+        store.commit();
+      });
+    });
+    edit("data-sys-color", "color");
+    edit("data-sys-tag", "tag");
+    edit("data-sys-name", "label");
+    el.querySelectorAll("[data-sys-hide]").forEach((b) => b.addEventListener("click", () => {
+      const id = b.dataset.sysHide;
+      if (store.hiddenPlants.has(id)) store.hiddenPlants.delete(id);
+      else store.hiddenPlants.add(id);
+      store.emit();
+    }));
+    el.querySelectorAll("[data-sys-pick]").forEach((b) => b.addEventListener("click", () => store.select("component", b.dataset.sysPick)));
   }
 
   bindProjectConstruction(el) {
@@ -1001,6 +1140,14 @@ export class Panels {
       <div class="field"><label>Job name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
       <div class="field"><label>Engineer reference</label><input type="text" data-meta="engineerRef" value="${(p.meta.engineerRef || "").replace(/"/g, "&quot;")}" placeholder="e.g. ADI-2026-041 / MS"/></div>
       <p class="small-note">On the cover and every page of the PDF report and the take-off, with the adi Climate Systems logo, and on the saved file name.</p>
+      ${this.systemsList()}
+      <div class="section-title">Systems on the plan</div>
+      <div class="field"><label>Colour ducts</label>
+        <select data-s="colourBy">
+          ${Object.entries(COLOUR_MODES).map(([k, v]) => `<option value="${k}" ${(s.colourBy || "system") === k ? "selected" : ""}>${v}</option>`).join("")}
+        </select></div>
+      <p class="small-note">By system, every unit and fan has its own colour (set it on the unit or in the Systems list above) and the airstream shows as a stripe down the duct. By airstream is the EN 16798-3 convention — supply blue, extract orange, fresh air green, exhaust brown.</p>
+
       <div class="section-title">Sizing method</div>
       <div class="field"><label>Method</label>
         <select data-s="sizingMethod">
@@ -1053,6 +1200,13 @@ export class Panels {
           <option value="false" ${s.showActualDucts === false ? "selected" : ""}>Centreline only</option>
         </select></div>
       <p class="small-note">Snap only pulls to a terminal, unit or existing corner when you are already nearby, so a close parallel supply and extract are not yanked together. To branch, hover a run while tracing and click the dot on it — only runs of the system you are tracing show one.</p>
+
+      <div class="section-title">Air socks — nominal basis</div>
+      <div class="field"><label>Target inlet velocity (m/s)</label><input type="number" step="0.5" data-s="sockInletVelocity" value="${s.sockInletVelocity ?? 6}"/></div>
+      <div class="field"><label>Warn above inlet velocity (m/s)</label><input type="number" step="0.5" data-s="sockMaxInletVelocity" value="${s.sockMaxInletVelocity ?? 8}"/></div>
+      <div class="field"><label>Nominal inlet static (Pa)</label><input type="number" step="5" data-s="sockNominalStaticPa" value="${s.sockNominalStaticPa ?? 100}"/></div>
+      <div class="field"><label>Warn below inlet static (Pa)</label><input type="number" step="5" data-s="sockMinStaticPa" value="${s.sockMinStaticPa ?? 50}"/></div>
+      <p class="small-note">Concept and design figures until the sock manufacturer's selection is in. A sock's own manufacturer static replaces the nominal figure in the index run once its basis is set to <b>Manufacturer selection</b>.</p>
 
       <div class="section-title">Commissioning tolerances</div>
       <div class="field"><label>Each terminal within ± (% of design)</label><input type="number" step="1" data-s="commTerminalTolPct" value="${s.commTerminalTolPct ?? 10}"/></div>
@@ -1119,6 +1273,7 @@ export class Panels {
       <p class="small-note">Use the <b>Scale</b> tool to calibrate from an uploaded drawing. In concept mode the concept scale sets duct lengths. Risers are recovered from the heights, not from the plan.</p>
     `;
     this.bindSettings(el);
+    this.bindSystemsList(el);
   }
 
   bindSettings(el) {

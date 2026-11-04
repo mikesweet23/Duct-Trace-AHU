@@ -19,7 +19,8 @@ import { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVertic
 import { componentDef, isDualPort, symbolOf } from "../standards/components.js";
 import { showPrompt, toast } from "./modal.js";
 import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
-import { findSegResult, isIndexSegment } from "../calc/network.js";
+import { findSegResult, isIndexSegment, memberColor, memberPlantId } from "../calc/network.js";
+import { isAirSock, sockFigures, sockFlowLs } from "../standards/airsock.js";
 import { snapAt, hitSegment, hitComponentAt, EQUIP_HIT_PX } from "../snap.js";
 import { uid } from "../state.js";
 import { systemColor, systemInfo, SYSTEM_KEYS } from "../systems.js";
@@ -478,6 +479,20 @@ export class CanvasView {
       if (!c) return;
       if (!d.moved) { this.store.snapshot(); d.moved = true; }
       const px = this.pxPerMeter();
+      if (componentDef(c.kind)?.inletEnd) {
+        // an air sock turns and stretches about its inlet: point it, pull it
+        const inlet = this.store.project.nodes.find((n) => n.id === c.nodeId) || c;
+        if (d.handle.kind === "rot") {
+          const a = Math.atan2(world.y - inlet.y, world.x - inlet.x) * 180 / Math.PI;
+          this.store.resizeComponent(c, null, null, e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15);
+        } else {
+          const r = ((Number(c.rot) || 0) * Math.PI) / 180;
+          const along = (world.x - inlet.x) * Math.cos(r) + (world.y - inlet.y) * Math.sin(r);
+          this.store.resizeComponent(c, Math.max(0.5, Math.round((along / px) * 10) / 10), null, null);
+        }
+        this.store.emitSoon();
+        return;
+      }
       if (d.handle.kind === "rot") {
         const a = Math.atan2(world.y - c.y, world.x - c.x) * 180 / Math.PI + 90;
         const rot = e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15;
@@ -960,6 +975,19 @@ export class CanvasView {
   }
 
   segResult(id) { return findSegResult(this.results, id); }
+
+  // Colour by system: a duct, node or component joined to a unit takes the
+  // unit's colour; anything loose (or colouring by airstream) its airstream's.
+  colorOf(type, id, airstream) {
+    return memberColor(this.store.project, this.results, type, id, systemColor(airstream));
+  }
+  bySystem() { return (this.store.project.settings.colourBy || "system") === "system"; }
+  plantHidden(type, id) {
+    const hp = this.store.hiddenPlants;
+    if (!hp?.size) return false;
+    const pid = memberPlantId(this.results, type, id);
+    return !!pid && hp.has(pid);
+  }
   isIndexSeg(id) { return isIndexSegment(this.results, id); }
 
   ductWidthWorld(res, seg) {
@@ -986,19 +1014,21 @@ export class CanvasView {
     // bodies first, then labels over every body, so a label is never under a duct
     const labels = [];
     for (const s of p.segments) {
-      if (hidden?.has(s.system)) continue;
+      if (hidden?.has(s.system) || this.plantHidden("seg", s.id)) continue;
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
       const res = this.segResult(s.id);
       const selected = this.store.isSelected("segment", s.id)
         || (sel?.type === "piece" && this.store.getSelected()?.segmentId === s.id);
-      const base = systemColor(s.system);
+      const base = this.colorOf("seg", s.id, s.system);
+      // the airstream still shows as a stripe down a system-coloured duct
+      const stripe = this.bySystem() && base !== systemColor(s.system) ? systemColor(s.system) : null;
       const noFlow = !res || res.flowM3s <= 0;
       const shape = res?.section?.shape || s.shapeOverride || p.settings.ductType || "round";
       if (isVerticalRiser(a, b, px)) { this.drawRiserMarker(ctx, a, b, s, selected); continue; }
       const width = this.ductWidthWorld(res, s);
-      this.drawDuctBody(ctx, a, b, width, shape, base, { selected, index: this.isIndexSeg(s.id), noFlow, overVel: res && res.withinMax === false });
+      this.drawDuctBody(ctx, a, b, width, shape, base, { selected, index: this.isIndexSeg(s.id), noFlow, overVel: res && res.withinMax === false, stripe });
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       const segLenScr = dist(a, b) * z;
       labels.push({ s, res, mx, my, a, b, width, segLenScr, noFlow });
@@ -1042,8 +1072,14 @@ export class CanvasView {
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
+    if (flags.stripe && width > 5 / z) {
+      ctx.strokeStyle = flags.stripe;
+      ctx.lineWidth = Math.max(1.4 / z, width * 0.22);
+      ctx.lineCap = "butt";
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
     if (width > 7 / z) {
-      if (shape === "round") {
+      if (shape === "round" && !flags.stripe) {
         // spiral: a light centre stripe reads as a round duct
         ctx.strokeStyle = "rgba(255,255,255,0.35)";
         ctx.lineWidth = Math.max(1 / z, width * 0.14);
@@ -1067,7 +1103,7 @@ export class CanvasView {
     ctx.fillStyle = "#fff";
     ctx.fill();
     ctx.lineWidth = 2 / z;
-    ctx.strokeStyle = selected ? COL.sel : systemColor(seg.system);
+    ctx.strokeStyle = selected ? COL.sel : this.colorOf("seg", seg.id, seg.system);
     ctx.stroke();
     ctx.beginPath();
     const s = dz >= 0 ? -1 : 1;
@@ -1087,13 +1123,14 @@ export class CanvasView {
       const touching = p.segments.filter((s) => s.a === n.id || s.b === n.id);
       if (touching.length === 2 && !n.tee && !selected) continue; // a plain corner
       const sys = touching[0]?.system;
+      if (touching.length && touching.every((t) => this.plantHidden("seg", t.id))) continue;
       ctx.beginPath();
       if (n.tee || touching.length >= 3) {
         ctx.arc(n.x, n.y, 4 / z, 0, Math.PI * 2);
         ctx.fillStyle = "#fff";
         ctx.fill();
         ctx.lineWidth = 2 / z;
-        ctx.strokeStyle = selected ? COL.sel : systemColor(sys);
+        ctx.strokeStyle = selected ? COL.sel : this.colorOf("node", n.id, sys);
         ctx.stroke();
       } else if (touching.length <= 1) {
         // an open end — worth seeing, it usually means a run that stops short
@@ -1121,13 +1158,18 @@ export class CanvasView {
       const def = componentDef(c.kind);
       if (!def) continue;
       if (c.system !== "both" && hidden?.has(c.system)) continue;
+      if (this.plantHidden("comp", c.id)) continue;
       const selected = this.store.isSelected("component", c.id);
+      if (def.airSock) { this.drawAirSock(ctx, c, def, selected); continue; }
       const box = componentBox(c, px, z);
+      const fill = this.bySystem() && (def.role === "plant" ? c.color : memberPlantId(this.results, "comp", c.id))
+        ? (def.role === "plant" ? c.color : this.colorOf("comp", c.id, c.system))
+        : def.color;
       ctx.save();
       ctx.translate(c.x, c.y);
       ctx.rotate((box.rot * Math.PI) / 180);
       this.roundRect(ctx, -box.w / 2, -box.d / 2, box.w, box.d, Math.min(4 / z, Math.min(box.w, box.d) * 0.12));
-      ctx.fillStyle = def.color;
+      ctx.fillStyle = fill;
       ctx.fill();
       if (isFourPort(c)) {
         ctx.save();
@@ -1154,7 +1196,7 @@ export class CanvasView {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.rotate(-(box.rot * Math.PI) / 180); // turn the symbol, never the text
-      ctx.fillText(symbolOf(c), 0, 0);
+      ctx.fillText(def.role === "plant" && c.tag ? c.tag : symbolOf(c), 0, 0);
       ctx.restore();
       ctx.textBaseline = "alphabetic";
 
@@ -1174,6 +1216,67 @@ export class CanvasView {
       if (isFourPort(c)) this.drawUnitPorts(ctx, c, z);
       if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
     }
+  }
+
+  // An air sock: drawn its real length and diameter, the inlet end square
+  // where the duct joins, the far end rounded, and a row of dots along the
+  // vented length to show where it discharges.
+  drawAirSock(ctx, c, def, selected) {
+    const p = this.store.project;
+    const z = this.zoom;
+    const px = this.pxPerMeter();
+    const flowLs = sockFlowLs(c, this.results);
+    const fig = sockFigures(c, flowLs, p.settings);
+    const L = Math.max(fig.lengthM * px, 12 / z);
+    const D = Math.max((fig.diameterMm / 1000) * px, 6 / z);
+    const col = this.bySystem() ? this.colorOf("comp", c.id, "supply") : def.color;
+    const rot = ((Number(c.rot) || 0) * Math.PI) / 180;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(rot);
+    const x0 = -L / 2, r = D / 2;
+    ctx.beginPath();
+    ctx.moveTo(x0, -r);
+    ctx.lineTo(L / 2 - r, -r);
+    ctx.arc(L / 2 - r, 0, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(x0, r);
+    ctx.closePath();
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = (selected ? 2.6 : 1.6) / z;
+    ctx.strokeStyle = selected ? COL.sel : col;
+    ctx.setLineDash(fig.confirmed ? [] : [6 / z, 3 / z]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // inlet collar
+    ctx.fillStyle = col;
+    ctx.fillRect(x0 - 2 / z, -r, 4 / z, D);
+    // perforations along the vented length
+    const vent = fig.lengthM > 0 ? (fig.ventedLengthM / fig.lengthM) * L : 0;
+    const step = Math.max(10 / z, 0.5 * px);
+    ctx.fillStyle = col;
+    for (let x = L / 2 - Math.max(r, 4 / z) - vent + step / 2; x < L / 2 - r * 0.6; x += step) {
+      if (x < x0 + 4 / z) continue;
+      ctx.beginPath(); ctx.arc(x, -r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    // labels, kept upright
+    const unit = normalizeFlowUnit(p.settings.flowUnit);
+    const below = c.y + Math.abs(Math.sin(rot)) * L / 2 + r + 12 / z;
+    ctx.fillStyle = COL.ink;
+    ctx.font = `600 ${11 / z}px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.fillText(c.label || def.label, c.x, below);
+    ctx.fillStyle = COL.soft;
+    ctx.font = `500 ${9.5 / z}px ${MONO}`;
+    const bits = [`ø${fig.diameterMm} × ${round(fig.lengthM, 1)} m`];
+    if (flowLs > 0) bits.push(formatFlowLs(flowLs, unit), `${round(unit === "m3/h" ? fig.m3hPerM : fig.flowPerM_ls, 1)} ${unit === "m3/h" ? "m³/h" : "l/s"}/m`);
+    bits.push(`${round(fig.staticPa, 0)} Pa ${fig.confirmed ? "mfr" : "nom"}`);
+    ctx.fillText(bits.join(" · "), c.x, below + 11 / z);
+    if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
   }
 
   // The four connections of an AHU or HRV serving both sides: a coloured
@@ -1224,7 +1327,11 @@ export class CanvasView {
       }
     }
     const t = `${round(box.foot.w, 2)} × ${round(box.foot.d, 2)} m${box.rot ? `  ${round(box.rot, 1)}°` : ""}`;
-    this.chip(ctx, t, c.x, c.y - Math.max(box.w, box.d) / 2 - 36 / z, { mono: true, bg: COL.sel, color: "#241a00", size: 9.5 });
+    // above the box as it actually sits on the sheet, so a long air sock's
+    // chip stays next to it rather than half its length away
+    const r = ((box.rot || 0) * Math.PI) / 180;
+    const halfH = Math.abs(Math.sin(r)) * box.w / 2 + Math.abs(Math.cos(r)) * box.d / 2;
+    this.chip(ctx, t, c.x, c.y - halfH - 36 / z, { mono: true, bg: COL.sel, color: "#241a00", size: 9.5 });
   }
 
   drawMeasures(ctx) {

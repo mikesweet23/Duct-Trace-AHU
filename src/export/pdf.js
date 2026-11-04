@@ -8,6 +8,8 @@ import { allComputedSystems } from "../calc/network.js";
 import { formatFlow, formatFlowLs, flowUnitLabel, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { roleLabel, sectionSizeLabel, sectionShapeLabel } from "../format.js";
 import { buildCommissioning } from "./commissioning.js";
+import { sockSchedule, sockBasis } from "../standards/airsock.js";
+import { systemTitle } from "../systems.js";
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -453,6 +455,7 @@ export function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg 
   }
 
   writeLouvres(w, project, results, unit, unitLabel);
+  writeAirSocks(w, project, results, unit, unitLabel);
   writeCommissioning(w, project, results, unit, unitLabel);
 
   if (planJpeg) {
@@ -498,6 +501,41 @@ function writeLouvres(w, project, results, unit, unitLabel) {
     ]);
     w.table(["Shape", "Size mm", "Face m2", "Free m2", "Free m/s", "Face m/s"], rows, [80, 100, 70, 70, 80, 80]);
   }
+}
+
+// Air socks: nominal sizing and pressure at concept / design, replaced by the
+// manufacturer's selection when it is in. The Basis column says which.
+function writeAirSocks(w, project, results, unit, unitLabel) {
+  const rows = sockSchedule(project, results);
+  if (!rows.length) return;
+  const b = sockBasis(project.settings);
+  w.heading("Air socks  -  fabric ductwork", 13);
+  w.para(`Socks marked Nominal are sized for a ${b.inletVelocity} m/s inlet velocity and carry a nominal ${b.nominalStaticPa} Pa inlet static in the index run. Replace with the manufacturer's selection (inlet static, throw, NR, reference) before the design is issued for construction. A sock with no flow typed shares the unit's supply duty in proportion to its vented length ("ventilated throughout").`, 8.5);
+  w.table(
+    ["Ref", "System", `Flow ${unitLabel}`, "Len m", "Vented m", "Dia mm", "Inlet m/s", `${unitLabel}/m`, "Pa", "Basis"],
+    rows.map((r) => [
+      r.ref.slice(0, 18),
+      (r.system || "-").slice(0, 14),
+      formatFlowLs(r.flowLs, unit).replace(` ${unitLabel}`, "") + (r.shared ? "*" : ""),
+      r1(r.lengthM),
+      r1(r.ventedLengthM),
+      r.diameterMm + (r.autoDia ? "" : "!"),
+      r2(r.inletVelocity),
+      unit === "m3/h" ? r0(r.m3hPerM) : r1(r.flowPerM_ls),
+      r0(r.staticPa),
+      r.basisLabel,
+    ]),
+    [62, 70, 50, 38, 44, 42, 46, 44, 32, 66]
+  );
+  w.para("* flow shared from the unit's supply duty by vented length.  ! diameter typed rather than auto-sized.", 7.5);
+  const mfr = rows.filter((r) => r.manufacturer || r.product || r.selectionRef || r.throwM || r.nr);
+  if (mfr.length) {
+    w.table(["Ref", "Manufacturer", "Product", "Selection ref", "Discharge", "Throw m", "NR"],
+      mfr.map((r) => [r.ref.slice(0, 18), r.manufacturer.slice(0, 18), r.product.slice(0, 18), r.selectionRef.slice(0, 16), r.discharge.split(" — ")[0], r.throwM ? r1(r.throwM) : "-", r.nr || "-"]),
+      [62, 80, 80, 70, 70, 50, 32]);
+  }
+  const warn = rows.flatMap((r) => r.warnings.map((x) => `${r.ref}: ${x}`));
+  w.warnList(warn);
 }
 
 // Commissioning: what the balancing engineer sets to and records against,
@@ -562,7 +600,7 @@ function writeCommissioning(w, project, results, unit, unitLabel) {
     w.heading("Unit test record", 12);
     for (const p of plants) {
       const def = componentDef(p.kind);
-      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantLabel === (p.label || def?.label))?.totalLs || 0;
+      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantId === p.id)?.totalLs || 0;
       const rows = [
         [`Supply air volume (${unitLabel})`, formatFlowLs(flow("supply"), unit)],
         [`Extract air volume (${unitLabel})`, formatFlowLs(flow("extract"), unit)],
@@ -575,7 +613,7 @@ function writeCommissioning(w, project, results, unit, unitLabel) {
         ["Filter pressure drops (clean)", "-"],
       ];
       if (p.kind === "hrv") rows.push(["Heat recovery temperature efficiency (%)", r0(Number(p.props?.recoveryEfficiencyPct) || 0)], ["Summer bypass operation", p.props?.summerBypass === false ? "none fitted" : "check"]);
-      w.heading(p.label || def?.label || "Unit", 10);
+      w.heading(systemTitle(p, def?.label || "Unit"), 10);
       w.table(["Item", "Design", "Measured", "Init"], rows.map((r) => [r[0], String(r[1]), "", ""]), [220, 120, 120, 50]);
     }
   }

@@ -12,6 +12,7 @@
 // design, the system total between 100% and 110%) and are set per project
 // in Duct & basis, because the specification governs, not this tool.
 
+import { systemTitle } from "../systems.js";
 import { componentDef } from "../standards/components.js";
 import { LEAKAGE_FACTORS, PRESSURE_CLASSES } from "../standards/dw144.js";
 import { allComputedSystems } from "../calc/network.js";
@@ -128,7 +129,8 @@ export function buildCommissioning(project, results) {
       systemType: sys.systemType,
       code: info.en,
       side: info.code,
-      plantLabel: sys.plant ? (sys.plant.label || componentDef(sys.plant.kind)?.label || "Unit") : "",
+      plantId: sys.plant?.id || null,
+      plantLabel: sys.plant ? (systemTitle(sys.plant) || componentDef(sys.plant.kind)?.label || "Unit") : "",
       totalLs,
       totalMinLs: totalLs * tol.systemMinPct / 100,
       totalMaxLs: totalLs * tol.systemMaxPct / 100,

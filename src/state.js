@@ -3,11 +3,12 @@
 
 import { dist } from "./geom.js";
 import { defaultProps, componentDef, isDualPort } from "./standards/components.js";
-import { connPoint, defaultFootprint, defaultHeightM, portOffset, unitPortOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } from "./layout.js";
+import { connPoint, defaultFootprint, defaultHeightM, portOffset, unitPortOffset, terminalPortOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } from "./layout.js";
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
 import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
 import { applyConstruction, setSegmentConstruction } from "./construction.js";
+import { nextSystemColor, nextSystemTag } from "./systems.js";
 
 const STORAGE_KEY = "duct-trace-ahu:project";
 const MULTI_TYPES = new Set(["component", "segment", "node", "room", "measure"]);
@@ -47,6 +48,11 @@ export function defaultSettings() {
       runout: RECOMMENDED_VELOCITY.runout.min,
     },
     conceptPxPerMeter: 50,
+    colourBy: "system", // "system" (each unit its own colour) | "airstream"
+    sockInletVelocity: 6, // m/s — air sock auto diameter
+    sockMaxInletVelocity: 8, // m/s — warn above
+    sockNominalStaticPa: 100, // Pa — air sock inlet static until the manufacturer's figure is in
+    sockMinStaticPa: 50, // Pa — warn below
     flowUnit: "l/s",
     snapPoints: true,
     ortho: true,
@@ -148,7 +154,24 @@ export function migrateProject(raw) {
       syncPorts(p, c);
     }
   }
+  assignSystemIdentities(p);
   return p;
+}
+
+// Every unit and fan is a system with a tag (AHU-01) and a colour. A unit
+// without them — a new one, or one saved before systems were named — gets
+// the next free tag for its kind and the next unused colour.
+export function assignSystemIdentity(project, c) {
+  const def = componentDef(c.kind);
+  if (def?.role !== "plant") return c;
+  const others = (project.components || []).filter((x) => x !== c && componentDef(x.kind)?.role === "plant");
+  if (!String(c.tag || "").trim()) c.tag = nextSystemTag(def.tagPrefix || "SYS", others.map((x) => x.tag));
+  if (!c.color) c.color = nextSystemColor(others.map((x) => x.color));
+  return c;
+}
+
+export function assignSystemIdentities(project) {
+  for (const c of project.components || []) assignSystemIdentity(project, c);
 }
 
 // Puts every connection node of a component on its casing. A four-port unit
@@ -159,7 +182,7 @@ function syncPorts(project, c) {
   const z = Number.isFinite(Number(c.heightM)) ? c.heightM : project.settings.defaultAhuHeight;
   for (const [system, key] of Object.entries(PORT_NODE_KEY)) {
     if (!four && system !== "supply") continue;
-    const at = connPoint(c, four ? unitPortOffset(c, system) : null, px);
+    const at = connPoint(c, four ? unitPortOffset(c, system) : terminalPortOffset(c), px);
     let n = c[key] ? project.nodes.find((x) => x.id === c[key]) : null;
     if (!n) {
       if (system === "supply") continue;
@@ -186,6 +209,7 @@ export class Store {
     this.visualMode = "centreline"; // centreline | simple3d | fabrication | transparent | airflow | velocity | pressure | installation
     this.exploded = false;
     this.hiddenSystems = new Set();
+    this.hiddenPlants = new Set(); // unit / fan ids whose system is hidden on the plan
     this.takeoffFilters = { scope: "project", system: "", ahu: "", floor: "", zone: "", branch: "", size: "", type: "", area: "" };
     this.listeners = new Set();
     this.undoStack = [];
@@ -491,6 +515,7 @@ export class Store {
       const same = p.components.filter((x) => x.kind === c.kind).length + 1;
       const def = componentDef(c.kind);
       copy.label = `${c.kind === "ahu" ? "AHU" : c.kind === "hrv" ? "HRV" : def?.label || "Item"} ${same}`;
+      if (def?.role === "plant") { copy.tag = ""; copy.color = ""; assignSystemIdentity(p, copy); }
       for (const key of ["nodeId", "returnNodeId", "outdoorNodeId", "exhaustNodeId"]) copy[key] = c[key] ? copyNode(c[key]) : null;
       p.components.push(copy);
       this.syncComponentPorts(copy);
@@ -603,9 +628,14 @@ export class Store {
       heightM,
       props: defaultProps(kind),
     };
-    const n = this.findOrCreateNode(point, heightM);
+    if (def.inletEnd) {
+      // an air sock: the click is the inlet, the sock runs off to the right
+      c.x = point.x + (foot.w / 2) * pxPerMeterOf(this.project);
+    }
+    const n = this.findOrCreateNode(point, c.heightM);
     c.nodeId = n.id;
-    n.z = heightM;
+    n.z = c.heightM;
+    assignSystemIdentity(this.project, c);
     this.project.components.push(c);
     this.syncComponentPorts(c);
     return c;
@@ -622,10 +652,35 @@ export class Store {
   }
 
   resizeComponent(c, widthM, depthM, rot) {
+    // an air sock keeps its inlet where the duct joins it: it grows and
+    // turns about that end, not about its middle
+    const inletEnd = !!componentDef(c.kind)?.inletEnd;
+    const px = pxPerMeterOf(this.project);
+    const end = (w, deg) => {
+      const r = ((Number(deg) || 0) * Math.PI) / 180;
+      return { x: Math.cos(r) * (w / 2) * px, y: Math.sin(r) * (w / 2) * px };
+    };
+    const before = inletEnd ? end(Number(c.widthM) || 0, c.rot) : null;
+    const inlet = before ? { x: c.x - before.x, y: c.y - before.y } : null;
     if (widthM != null) c.widthM = Math.max(0.08, widthM);
     if (depthM != null) c.depthM = Math.max(0.08, depthM);
     if (rot != null) c.rot = ((rot % 360) + 360) % 360;
+    if (inlet) {
+      const after = end(c.widthM, c.rot);
+      c.x = inlet.x + after.x;
+      c.y = inlet.y + after.y;
+    }
     this.syncComponentPorts(c);
+  }
+
+  // An air sock's drawn diameter follows the airflow it carries, unless a
+  // diameter is typed. Called after each solve; nothing is persisted here.
+  syncSockSizes(flowOf) {
+    for (const c of this.project.components) {
+      if (!componentDef(c.kind)?.airSock) continue;
+      const d = flowOf(c);
+      if (d > 0 && Math.abs((Number(c.depthM) || 0) - d / 1000) > 1e-6) c.depthM = d / 1000;
+    }
   }
 
   setComponentSystem(c, system) {
@@ -1049,6 +1104,8 @@ export function seedDemo(store) {
     { id: "rm3", name: "Meeting", points: [{ x: 500, y: 500 }, { x: 760, y: 500 }, { x: 760, y: 640 }, { x: 500, y: 640 }], supplyFlow_ls: 90, extractFlow_ls: 120 },
   ];
 
+  assignSystemIdentities(p);
+  p.components.find((c) => c.kind === "ahu").label = "Office floor";
   store.project = p;
   store.selection = null;
   store.traceHeight = p.settings.defaultDuctHeight;

@@ -17,7 +17,8 @@ import { buildTakeoff } from "./fab/takeoff.js";
 import { dist, routeLengthM, isVerticalRiser } from "./geom.js";
 import { pxPerMeterOf } from "./layout.js";
 import { HELP, HELP_SECTIONS, STEPS, helpMatches } from "./ui/help.js";
-import { SYSTEMS, isOutsideSystem } from "./systems.js";
+import { SYSTEMS, isOutsideSystem, systemTitle } from "./systems.js";
+import { isAirSock, sockFigures, sockFlowLs, sockSchedule } from "./standards/airsock.js";
 import { rotatedSize, normDeg, turnTakeoff, turnPoint } from "./rotate.js";
 import { uid } from "./state.js";
 
@@ -744,7 +745,7 @@ function checkIssues(results) {
     }
     const joined = [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean).reduce((a, id) => a + touching(id).length, 0);
     if (!joined) out.push({ lvl: def.role === "plant" ? "warn" : "bad", msg: `${name} is not connected to any duct.`, sel: ["component", c.id] });
-    if (def.role === "terminal" && !(Number(c.props?.designFlow_ls) > 0)) out.push({ lvl: "warn", msg: `${name} has no design flow.`, sel: ["component", c.id] });
+    if (def.role === "terminal" && !(Number(c.props?.designFlow_ls) > 0) && !(isAirSock(c) && sockFlowLs(c, results) > 0)) out.push({ lvl: "warn", msg: `${name} has no design flow${isAirSock(c) ? " — type its total, or set the unit's supply duty for blank socks to share" : ""}.`, sel: ["component", c.id] });
   }
   for (const n of p.nodes) {
     if (p.components.some((c) => [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].includes(n.id))) continue;
@@ -767,6 +768,10 @@ function checkIssues(results) {
     if (sys.plant && sys.marginPa < 0 && !["outdoor", "exhaust"].includes(sys.systemType)) out.push({ lvl: "bad", msg: `${sys.name}: the fan needs ${round(sys.fanStaticPa ?? sys.indexStaticPa, 0)} Pa and the unit has ${round(sys.availableStaticPa, 0)} Pa.` });
   }
   for (const w of results?.projectWarnings || []) out.push({ lvl: "bad", msg: w });
+  const socks = sockSchedule(p, results);
+  for (const r of socks) for (const w of r.warnings) out.push({ lvl: "warn", msg: `${r.ref}: ${w}`, sel: ["component", r.id] });
+  const nominal = socks.filter((r) => !r.confirmed);
+  if (nominal.length) out.push({ lvl: "warn", msg: `${nominal.length} air sock${nominal.length > 1 ? "s are" : " is"} on nominal sizing and pressure (${nominal.map((r) => r.ref).join(", ")}) — replace with the manufacturer's selection before issue.`, sel: ["component", nominal[0].id] });
   const seen = new Set();
   return out.filter((i) => { const k = i.msg + (i.sel ? i.sel.join() : ""); if (seen.has(k)) return false; seen.add(k); return true; });
 }
@@ -871,7 +876,10 @@ function renderStatus(results) {
   for (const sys of systems) {
     const cls = { supply: "sup", extract: "ext", outdoor: "oda", exhaust: "eha" }[sys.systemType] || "sup";
     const oneUnit = systems.filter((x) => x.systemType === sys.systemType).length === 1;
-    html += cell(oneUnit ? `${SYSTEMS[sys.systemType]?.label || sys.systemType} ${SYSTEMS[sys.systemType]?.code || ""}` : (sys.name || sys.systemType), `${formatFlow(sys.totalFlowM3s, unit)} · ${round(sys.indexStaticPa, 0)} Pa`, sys.plant && sys.marginPa < 0 ? "bad" : cls);
+    const onePlant = new Set(systems.map((x) => x.plant?.id).filter(Boolean)).size <= 1;
+    const sw = sys.color && (p.settings.colourBy || "system") === "system" ? `<i class="sw" style="background:${sys.color}"></i>` : "";
+    const title = oneUnit && onePlant ? `${SYSTEMS[sys.systemType]?.label || sys.systemType} ${SYSTEMS[sys.systemType]?.code || ""}` : (sys.tag ? `${sys.tag} ${SYSTEMS[sys.systemType]?.en || ""}` : (sys.name || sys.systemType));
+    html += cell(sw + esc(title), `${formatFlow(sys.totalFlowM3s, unit)} · ${round(sys.indexStaticPa, 0)} Pa`, sys.plant && sys.marginPa < 0 ? "bad" : cls, `title="${esc(sys.name || "")}"`);
   }
   html += cell("Duct on plan", `${round(plan, 1)} m`)
     + cell("Installed", `${round(installed, 1)} m`)
@@ -1005,6 +1013,7 @@ store.subscribe(() => {
     scheduled = false;
     const results = computeAll(store.project);
     lastResults = results;
+    syncSocks(results);
     canvas.setResults(results);
     view3d.setResults(results);
     panels.setResults(results);
@@ -1016,14 +1025,28 @@ store.subscribe(() => {
   });
 });
 
+// An air sock is drawn at the diameter its airflow needs.
+function syncSocks(results) {
+  const settings = store.project.settings;
+  store.syncSockSizes((c) => sockFigures(c, sockFlowLs(c, results), settings).diameterMm);
+}
+
 function renderLegend() {
-  $("#threeLegend").innerHTML = Object.values(SYSTEMS).map((x) => `<div class="ln"><span class="sw" style="background:${x.color}"></span>${x.label} <span style="color:var(--muted)">${x.code}</span></div>`).join("")
+  const p = store.project;
+  const plants = p.components.filter((c) => componentDef(c.kind)?.role === "plant" && c.color);
+  const bySystem = (p.settings.colourBy || "system") === "system" && plants.length;
+  const rows = bySystem
+    ? plants.map((c) => `<div class="ln"><span class="sw" style="background:${c.color}"></span>${esc(systemTitle(c, componentDef(c.kind)?.label))}</div>`).join("")
+      + `<div class="ln" style="color:var(--muted);font-size:11px">Airstream: stripe down the duct</div>`
+    : "";
+  $("#threeLegend").innerHTML = rows + Object.values(SYSTEMS).map((x) => `<div class="ln"><span class="sw" style="background:${x.color}${bySystem ? ";height:3px" : ""}"></span>${x.label} <span style="color:var(--muted)">${x.code}</span></div>`).join("")
     + `<div class="ln" style="color:var(--muted);font-size:11px">Heights above finished floor</div>`;
 }
 
 // initial paint
 const initial = computeAll(store.project);
 lastResults = initial;
+syncSocks(initial);
 canvas.setResults(initial);
 view3d.setResults(initial);
 panels.setResults(initial);
