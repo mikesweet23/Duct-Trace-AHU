@@ -16,6 +16,8 @@
 // confirm with the sock supplier before construction.
 
 import { componentDef } from "./components.js";
+import { roomOfComponent, roomAreaM2 } from "../rooms.js";
+import { levelIdOf, levelName, multiLevel } from "../levels.js";
 
 export const SOCK_DIAMETERS_MM = [160, 200, 250, 315, 355, 400, 450, 500, 560, 630, 710, 800, 900, 1000, 1120, 1250, 1400, 1600];
 
@@ -25,6 +27,15 @@ export const SOCK_DISCHARGE = {
   permeable: "Permeable fabric — diffuse, draught-free",
   nozzle: "Nozzles — long throw",
   orifice: "Orifices / slots",
+};
+
+// How the sock hangs: one or two runs of cable or track along its length.
+export const SOCK_SUSPENSION = {
+  cable1: { label: "Single cable", rows: 1, kind: "Suspension cable" },
+  cable2: { label: "Twin cable", rows: 2, kind: "Suspension cable" },
+  track1: { label: "Single track / rail", rows: 1, kind: "Suspension track" },
+  track2: { label: "Twin track / rail", rows: 2, kind: "Suspension track" },
+  none: { label: "None / by others", rows: 0, kind: "" },
 };
 
 export const SOCK_BASIS = {
@@ -37,6 +48,7 @@ export const SOCK_DEFAULTS = {
   maxInletVelocity: 8, // m/s, warn above
   nominalStaticPa: 100, // Pa at the sock inlet
   minStaticPa: 50, // Pa, below this a sock may not stay inflated
+  dropSpacingM: 1.5, // m between drop rods / hangers on each suspension run
 };
 
 export function isAirSock(c) {
@@ -54,6 +66,7 @@ export function sockBasis(settings = {}) {
     maxInletVelocity: settingOr(settings, "sockMaxInletVelocity", SOCK_DEFAULTS.maxInletVelocity),
     nominalStaticPa: settingOr(settings, "sockNominalStaticPa", SOCK_DEFAULTS.nominalStaticPa),
     minStaticPa: settingOr(settings, "sockMinStaticPa", SOCK_DEFAULTS.minStaticPa),
+    dropSpacingM: settingOr(settings, "sockDropSpacingM", SOCK_DEFAULTS.dropSpacingM),
   };
 }
 
@@ -152,17 +165,35 @@ export function sockFlowLs(c, results) {
   return Number(c?.props?.designFlow_ls) || 0;
 }
 
-// One row per sock, for the inspector, the report and Check.
+// One row per sock, for the inspector, the report, the take-off and Check.
+// With each, the room it sits in and the supply rate (l/s per m²) that the
+// socks in that room give it.
 export function sockSchedule(project, results) {
   const settings = project?.settings || {};
   const plants = new Map((project?.components || []).map((c) => [c.id, c]));
-  return (project?.components || []).filter(isAirSock).map((c, i) => {
-    const flowLs = sockFlowLs(c, results);
+  const socks = (project?.components || []).filter(isAirSock);
+  const flows = new Map(socks.map((c) => [c.id, sockFlowLs(c, results)]));
+  const rooms = new Map(socks.map((c) => [c.id, roomOfComponent(project, c)]));
+  const roomFlow = new Map();
+  for (const c of socks) {
+    const r = rooms.get(c.id);
+    if (r) roomFlow.set(r, (roomFlow.get(r) || 0) + flows.get(c.id));
+  }
+  return socks.map((c, i) => {
+    const flowLs = flows.get(c.id);
     const fig = sockFigures(c, flowLs, settings);
     const plantId = results?.plantOf?.comp?.get(c.id) || null;
     const plant = plantId ? plants.get(plantId) : null;
+    const room = rooms.get(c.id);
+    const areaM2 = room ? roomAreaM2(project, room) : 0;
     return {
       id: c.id,
+      plantId,
+      level: multiLevel(project) ? levelName(project, levelIdOf(project, c)) : "",
+      room: room?.name || "",
+      roomAreaM2: areaM2,
+      roomRateLsM2: areaM2 > 0 ? (roomFlow.get(room) || 0) / areaM2 : 0,
+      suspension: c.props?.suspension || "cable1",
       ref: c.label || `Air sock ${i + 1}`,
       system: plant ? [plant.tag, plant.label].filter(Boolean).join(" ") : "",
       shared: !(Number(c.props?.designFlow_ls) > 0),
@@ -175,4 +206,42 @@ export function sockSchedule(project, results) {
       ...fig,
     };
   });
+}
+
+// Procurement lines for the socks: the sock bodies grouped by size and
+// fabric, the suspension cable or track, and the drop rods it hangs from.
+// Drops are an estimate at the spacing in Duct & basis.
+export function sockTakeoff(project, results, filters = {}) {
+  const b = sockBasis(project?.settings);
+  const rows = sockSchedule(project, results).filter((r) =>
+    (!filters.ahu || r.plantId === filters.ahu) && (!filters.floor || r.level === filters.floor));
+  const bodies = new Map();
+  const suspension = new Map();
+  let drops = 0;
+  let inlets = 0;
+  for (const r of rows) {
+    const fabric = [r.manufacturer, r.product].filter(Boolean).join(" ") || "Fabric — to manufacturer";
+    const kb = `${r.diameterMm}|${fabric}|${r.discharge}`;
+    if (!bodies.has(kb)) bodies.set(kb, { size: `dia ${r.diameterMm}`, diameterMm: r.diameterMm, fabric, discharge: r.discharge, qty: 0, lengthM: 0, refs: [] });
+    const g = bodies.get(kb);
+    g.qty += 1;
+    g.lengthM += r.lengthM;
+    g.refs.push(r.ref);
+    inlets += 1;
+    const sus = SOCK_SUSPENSION[r.suspension] || SOCK_SUSPENSION.cable1;
+    if (sus.rows > 0 && r.lengthM > 0) {
+      if (!suspension.has(sus.kind)) suspension.set(sus.kind, { label: sus.kind, lengthM: 0 });
+      suspension.get(sus.kind).lengthM += sus.rows * r.lengthM;
+      drops += sus.rows * (Math.ceil(r.lengthM / b.dropSpacingM) + 1);
+    }
+  }
+  const r2 = (v) => Math.round(v * 100) / 100;
+  return {
+    rows,
+    bodies: [...bodies.values()].map((g) => ({ ...g, lengthM: r2(g.lengthM) })),
+    suspension: [...suspension.values()].map((g) => ({ ...g, lengthM: r2(g.lengthM) })),
+    drops,
+    inlets,
+    dropSpacingM: b.dropSpacingM,
+  };
 }

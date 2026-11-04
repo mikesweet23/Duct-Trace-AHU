@@ -9,7 +9,7 @@ import { View3D, VISUAL_MODES } from "./ui/view3d.js";
 import { Panels } from "./ui/panels.js";
 import { componentDef, COMPONENTS, isDualPort } from "./standards/components.js";
 import { computeAll, allComputedSystems } from "./calc/network.js";
-import { showConfirm, showModal, closeModal, modalOpen, toast } from "./ui/modal.js";
+import { showConfirm, showModal, showPrompt, closeModal, modalOpen, toast } from "./ui/modal.js";
 import { formatFlow, normalizeFlowUnit, round } from "./units.js";
 import { buildProjectPdf, buildTakeoffPdf, downloadBlob } from "./export/pdf.js";
 import { generatePhysicalModel } from "./fab/generator.js";
@@ -19,6 +19,8 @@ import { pxPerMeterOf } from "./layout.js";
 import { HELP, HELP_SECTIONS, STEPS, helpMatches } from "./ui/help.js";
 import { SYSTEMS, isOutsideSystem, systemTitle } from "./systems.js";
 import { isAirSock, sockFigures, sockFlowLs, sockSchedule } from "./standards/airsock.js";
+import { roomMismatch } from "./rooms.js";
+import { levelsOf, levelName, levelById, activeLevelId, firstLevelId, levelView, multiLevel, resolveLevels } from "./levels.js";
 import { rotatedSize, normDeg, turnTakeoff, turnPoint } from "./rotate.js";
 import { uid } from "./state.js";
 
@@ -79,8 +81,44 @@ let railTool = "select"; // the rail button that is lit
 
 function scaleNeeded() {
   const p = store.project;
-  return !!p.background && p.mode !== "concept" && !(p.scale.pxPerMeter > 0);
+  // a sheet on a second level is scaled to match the project's scale
+  return !!p.background && p.mode !== "concept" && (!(p.scale.pxPerMeter > 0) || !!p.background.needsScale);
 }
+
+/* ---------- levels ---------- */
+function renderFloors() {
+  const p = store.project;
+  const sel = $("#zFloor");
+  if (!sel) return;
+  const cur = activeLevelId(p);
+  sel.innerHTML = levelsOf(p).map((l) => `<option value="${esc(l.id)}" ${l.id === cur ? "selected" : ""}>${esc(levelName(p, l.id))}${multiLevel(p) ? ` · ${round(Number(l.elevationM) || 0, 2)} m` : ""}</option>`).join("")
+    + `<option value="__add">+ Add a level…</option>`;
+}
+function switchLevel(id) {
+  if (!store.setActiveLevel(id)) return;
+  canvas.endDraft();
+  store.persist();
+  canvas.loadBackground();
+  canvas.fit();
+  store.emit();
+  toast(`${levelName(store.project, id)}${store.project.background ? "" : " — no drawing on this level yet"}`);
+  scaleGate();
+}
+async function addLevelDialog() {
+  const p = store.project;
+  const name = await showPrompt({ title: "Add a level", label: "Name", value: `Level ${levelsOf(p).length}`, okText: "Next" });
+  if (!name) return;
+  const top = levelsOf(p).reduce((m, l) => Math.max(m, Number(l.elevationM) || 0), 0);
+  const elev = await showPrompt({ title: `${name} — floor level`, label: "Finished floor level above the ground floor (m)", type: "number", value: String(round(top + 4, 2)), okText: "Add level",
+    note: "Heights on this level are typed above its own floor, as on every level; this figure stacks the floors for risers, 3D and lengths." });
+  if (elev == null || elev === "") return;
+  store.snapshot();
+  const id = store.addLevel(name, Number(elev));
+  store.commit();
+  switchLevel(id);
+}
+store.onSwitchLevel = (id) => switchLevel(id);
+store.onAddLevel = () => addLevelDialog();
 
 function renderRail() {
   const rail = $("#rail");
@@ -344,9 +382,14 @@ async function loadDrawingFile(file) {
     if (!img) { toast("That image could not be read"); return; }
   }
   const p = store.project;
-  const replacing = !!p.background || p.nodes.length > 0;
+  const here = levelView(p);
+  const replacing = !!p.background || here.nodes.length > 0;
   let keepScale = false;
-  if (replacing && p.scale.pxPerMeter > 0) {
+  // a first sheet on another level of a scaled job: keep the project's scale
+  // and scale this sheet to it, once two points on it are given
+  const otherLevelScale = p.scale.pxPerMeter > 0 && !p.background && (p.scale.levelId || firstLevelId(p)) !== activeLevelId(p);
+  if (otherLevelScale) keepScale = true;
+  else if (replacing && p.scale.pxPerMeter > 0) {
     keepScale = await showConfirm({
       title: "Does the scale still hold?",
       message: "There is already a take-off on this project. If the new sheet is a revision at the same scale and position, keep the scale and the trace stays where it is. Otherwise set the scale again.",
@@ -354,7 +397,7 @@ async function loadDrawingFile(file) {
     });
   }
   store.snapshot();
-  p.background = { dataUrl: img.dataUrl, width: img.w, height: img.h, x: 0, y: 0, opacity: 0.9, label: img.label, rotDeg: 0, token: uid("dwg") };
+  p.background = { dataUrl: img.dataUrl, width: img.w, height: img.h, x: 0, y: 0, opacity: 0.9, label: img.label, rotDeg: 0, token: uid("dwg"), ...(otherLevelScale ? { needsScale: true } : {}) };
   bgOriginal = null;
   p.mode = "drawing";
   if (!keepScale) p.scale = { pxPerMeter: null, calib: null };
@@ -441,7 +484,7 @@ async function rotateDrawing(targetDeg) {
     const to = { x: bg.x + world.w / 2, y: bg.y + world.h / 2 };
 
     store.snapshot();
-    turnTakeoff(p, delta, from, to);
+    turnTakeoff(levelView(p), delta, from, to); // this level's trace turns with its sheet
     for (const c of p.components) store.syncComponentPorts(c);
     bg.dataUrl = dataUrl;
     bg.width = world.w;
@@ -655,37 +698,84 @@ $("#three2d").addEventListener("click", () => open3d(false));
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
-async function captureViews() {
-  const savedView = { ...store.project.view };
+// The plan of each level (one, on a single-floor job) and the 3D view, for
+// the report. With a system picked, every other system is hidden first.
+async function captureViews(plantId = null) {
+  const p = store.project;
+  const savedView = { ...p.view };
   const was3d = store.viewMode === "3d";
   const selWas = store.selection;
+  const hiddenWas = new Set(store.hiddenPlants);
+  const startLevel = activeLevelId(p);
   store.selection = null;
-  canvas.fit();
-  canvas.draw();
-  await nextFrame();
-  const planJpeg = canvas.canvas.toDataURL("image/jpeg", 0.92);
-  $("#three").classList.add("on");
-  view3d.resize();
-  view3d.setView("fit");
-  view3d.draw();
-  await nextFrame();
-  const isoJpeg = view3d.canvas.toDataURL("image/jpeg", 0.92);
-  if (!was3d) $("#three").classList.remove("on");
-  Object.assign(store.project.view, savedView);
-  store.selection = selWas;
-  canvas.resize();
-  return { planJpeg, isoJpeg };
+  if (plantId) {
+    store.hiddenPlants = new Set(p.components.filter((c) => componentDef(c.kind)?.role === "plant" && c.id !== plantId).map((c) => c.id));
+  }
+  const on = (id) => (it) => (it.levelId || firstLevelId(p)) === id;
+  const levels = multiLevel(p)
+    ? levelsOf(p).filter((l) => p.nodes.some(on(l.id)) || p.components.some(on(l.id)) || store.levelBackground(l.id))
+    : [levelsOf(p)[0]];
+  const plans = [];
+  try {
+    for (const l of levels) {
+      if (l.id !== activeLevelId(p)) store.setActiveLevel(l.id);
+      await canvas.loadBackgroundAsync();
+      canvas.fit();
+      canvas.draw();
+      await nextFrame();
+      plans.push({ jpeg: canvas.canvas.toDataURL("image/jpeg", 0.92), name: multiLevel(p) ? levelName(p, l.id) : "" });
+    }
+    if (activeLevelId(p) !== startLevel) store.setActiveLevel(startLevel);
+    await canvas.loadBackgroundAsync();
+    $("#three").classList.add("on");
+    view3d.resize();
+    view3d.setView("fit");
+    view3d.draw();
+    await nextFrame();
+    const isoJpeg = view3d.canvas.toDataURL("image/jpeg", 0.92);
+    return { plans, isoJpeg };
+  } finally {
+    if (activeLevelId(p) !== startLevel) store.setActiveLevel(startLevel);
+    if (!was3d) $("#three").classList.remove("on");
+    store.hiddenPlants = hiddenWas;
+    Object.assign(p.view, savedView);
+    store.selection = selWas;
+    canvas.resize();
+  }
+}
+
+// One system or the whole job: asked only when there is more than one.
+function pickReportScope() {
+  const p = store.project;
+  const plants = p.components.filter((c) => componentDef(c.kind)?.role === "plant");
+  if (plants.length < 2) return Promise.resolve({ plantId: null });
+  return new Promise((resolve) => {
+    const body = showModal("PDF report — which systems?", `
+      <p>The whole job, or one system on its own — its ducts, terminals, rooms, air socks and commissioning sheets, with the others left off the plans.</p>
+      <div class="row-actions" style="flex-wrap:wrap;gap:6px">
+        <button class="btn go" data-scope="">Whole project</button>
+        ${plants.map((c) => `<button class="btn" data-scope="${esc(c.id)}"><i class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;background:${esc(c.color || "#888")}"></i>${esc(systemTitle(c, componentDef(c.kind)?.label))}</button>`).join("")}
+      </div>
+      <div class="modal-actions"><button class="btn ghost" data-scope="__cancel">Cancel</button></div>`);
+    body.querySelectorAll("[data-scope]").forEach((b) => b.addEventListener("click", () => {
+      closeModal(true);
+      resolve(b.dataset.scope === "__cancel" ? null : { plantId: b.dataset.scope || null });
+    }));
+  });
 }
 async function exportPdfReport() {
+  const scope = await pickReportScope();
+  if (!scope) return;
   const btn = $("#bPdf");
   btn.disabled = true;
   const prev = btn.textContent;
   btn.textContent = "PDF…";
   try {
     const results = computeAll(store.project);
-    const { planJpeg, isoJpeg } = await captureViews();
-    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg, logoJpeg: await logoJpeg() });
-    downloadBlob(blob, `Duct Trace report - ${fileStem()}.pdf`);
+    const { plans, isoJpeg } = await captureViews(scope.plantId);
+    const blob = buildProjectPdf({ project: store.project, results, plans, isoJpeg, logoJpeg: await logoJpeg(), plantId: scope.plantId });
+    const plant = scope.plantId ? store.project.components.find((c) => c.id === scope.plantId) : null;
+    downloadBlob(blob, `Duct Trace report - ${fileStem()}${plant ? ` - ${systemTitle(plant, "system")}` : ""}.pdf`);
     toast("PDF report downloaded");
   } catch (err) {
     console.error(err);
@@ -719,7 +809,7 @@ async function logoJpeg() {
 }
 
 async function exportTakeoffPdf(takeoff) {
-  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project), logoJpeg: await logoJpeg() });
+  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project, lastResults), logoJpeg: await logoJpeg() });
   downloadBlob(blob, `Duct Trace take-off - ${fileStem()}.pdf`);
 }
 $("#bPdf").addEventListener("click", exportPdfReport);
@@ -768,6 +858,13 @@ function checkIssues(results) {
     if (sys.plant && sys.marginPa < 0 && !["outdoor", "exhaust"].includes(sys.systemType)) out.push({ lvl: "bad", msg: `${sys.name}: the fan needs ${round(sys.fanStaticPa ?? sys.indexStaticPa, 0)} Pa and the unit has ${round(sys.availableStaticPa, 0)} Pa.` });
   }
   for (const w of results?.projectWarnings || []) out.push({ lvl: "bad", msg: w });
+  for (const r of p.rooms || []) {
+    const wrong = roomMismatch(p, r, results);
+    if (wrong.length) {
+      const t = (id) => systemTitle(p.components.find((c) => c.id === id), "a unit");
+      out.push({ lvl: "warn", msg: `${r.name} is on ${t(r.plantId)} but has terminals joined to ${wrong.map(t).join(", ")}.`, sel: ["room", r.id] });
+    }
+  }
   const socks = sockSchedule(p, results);
   for (const r of socks) for (const w of r.warnings) out.push({ lvl: "warn", msg: `${r.ref}: ${w}`, sel: ["component", r.id] });
   const nominal = socks.filter((r) => !r.confirmed);
@@ -860,8 +957,9 @@ function renderStatus(results) {
   const cell = (k, v, cls = "", attrs = "") => `<div class="st ${cls}" ${attrs}><b>${k}</b><span>${v}</span></div>`;
   const terms = p.components.filter((c) => componentDef(c.kind)?.role === "terminal");
   let plan = 0, installed = 0;
-  for (const s of p.segments) {
-    const a = p.nodes.find((n) => n.id === s.a), b = p.nodes.find((n) => n.id === s.b);
+  const rp = resolveLevels(p);
+  for (const s of rp.segments) {
+    const a = rp.nodes.find((n) => n.id === s.a), b = rp.nodes.find((n) => n.id === s.b);
     if (!a || !b) continue;
     plan += dist(a, b) / px;
     installed += Number(s.engineeringLengthM) > 0 ? Number(s.engineeringLengthM) : routeLengthM(a, b, px);
@@ -871,6 +969,7 @@ function renderStatus(results) {
   const issues = results ? checkIssues(results) : [];
   const bad = issues.filter((i) => i.lvl === "bad").length;
   let html = cell(p.mode === "concept" ? "Concept" : "Scale", p.mode === "concept" && !p.background ? "schematic" : (p.scale.pxPerMeter > 0 ? `${round(p.scale.pxPerMeter, 1)} px/m` : "not set"), scaleNeeded() ? "bad" : "")
+    + (multiLevel(p) ? cell("Level", esc(levelName(p, activeLevelId(p))), "click", 'id="stLevel" title="Levels — Duct & basis"') : "")
     + cell("Terminals", String(terms.length))
     + cell("Flow unit", unit === "m3/h" ? "m³/h" : "l/s", "click", 'id="stUnit" title="Click to switch l/s and m³/h"');
   for (const sys of systems) {
@@ -887,6 +986,7 @@ function renderStatus(results) {
     + (p.background && Number(p.background.rotDeg) ? cell("Sheet turned", `${round(Number(p.background.rotDeg), 1)}°`) : "")
     + (p.meta.rev ? cell("File", `rev ${p.meta.rev}`) : "");
   st.innerHTML = html;
+  $("#stLevel")?.addEventListener("click", () => $("#bBasis")?.click());
   $("#stUnit")?.addEventListener("click", () => setFlowUnit(unit === "m3/h" ? "l/s" : "m3/h"));
   $("#stCheck")?.addEventListener("click", runCheck);
 }
@@ -1021,6 +1121,7 @@ store.subscribe(() => {
     renderInspector();
     renderStatus(results);
     renderLegend();
+    renderFloors();
     if (store.viewMode === "3d") view3d.draw();
   });
 });
@@ -1056,6 +1157,11 @@ renderRail();
 renderChrome();
 renderStatus(initial);
 renderLegend();
+renderFloors();
+$("#zFloor")?.addEventListener("change", (e) => {
+  const v = e.target.value;
+  if (v === "__add") { renderFloors(); addLevelDialog(); } else switchLevel(v);
+});
 canvas.resize();
 if (started) {
   canvas.fit();

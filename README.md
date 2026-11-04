@@ -191,8 +191,21 @@ handle and turns about the inlet.
   inlet static; the PDF report has an **Air socks** schedule with a Basis
   column (Nominal / Manufacturer) and the manufacturer's data.
 
-Code: `src/standards/airsock.js`; the share-by-length is in
-`computeSystem()` in `src/calc/network.js`. The nominal figures are concept
+- **Share by floor area** instead (Duct & basis): each room's area is split
+  between the blank socks inside its outline by vented length. A sock outside
+  every room puts that system back on length, with a warning. Each sock shows
+  its room and the l/s per m² the room's socks give it.
+- **Take-off**: sock bodies by diameter and fabric, suspension cable or track
+  (single or twin, set per sock), drop rods estimated at 1.5 m centres
+  (Duct & basis), and an inlet connector per sock — on screen, in the
+  procurement CSV and in the take-off PDF.
+- **Presets**: *Save this sock as a preset* keeps a manufacturer / fabric's
+  typical static, throw, NR, pattern and suspension; applying one fills a
+  sock and sets its nominal static. Kept in the browser and in the job file
+  (`src/sockPresets.js`).
+
+Code: `src/standards/airsock.js`; the sharing is in `computeSystem()` in
+`src/calc/network.js`. The nominal figures are concept
 defaults, not any one manufacturer's data — confirm with the supplier.
 
 ## Named, numbered and coloured systems
@@ -217,6 +230,52 @@ that keeps clear of the selection, index-run and over-velocity colours.
 Code: `SYSTEM_PALETTE`, `nextSystemTag()`, `systemTitle()` in
 `src/systems.js`; `systemMembership()` / `memberColor()` in
 `src/calc/network.js`.
+
+## Floors and levels
+
+A job over several floors has a **level** for each: a name, a finished floor
+level (FFL) and its own drawing. The level box by the zoom switches floors
+and adds one; **Duct & basis → Levels** renames them, sets the FFL, offsets
+a sheet and deletes an empty level.
+
+- **One plan per level.** The plan shows the level in view; the other floors'
+  ducts show faintly underneath to line up against. Every node, unit,
+  terminal, room and tape belongs to one level, and nothing joins across
+  floors by accident.
+- **Drawings.** *Open drawing* loads onto the level in view. The first sheet
+  sets the project scale; a sheet on another level asks for two points and a
+  dimension and is **stretched to the project's scale**, so all floors share
+  one scale and origin. Offset it in Levels to sit over the floor below.
+  Rotating turns that level's sheet and trace only.
+- **Risers between floors.** Pick the end of a run and press **Riser to** a
+  level: a duct at the same point on plan, top and bottom at that level's
+  default duct height. It is drawn as an up / down marker with the floor it
+  goes to, sized as a riser, and its length is the true floor-to-floor rise.
+- **Heights** stay as typed above each level's own floor. The FFL is added
+  only where floors are compared — the solve, the fabrication model, 3D and
+  installed lengths (`resolveLevels()`). A single-level job is untouched.
+- Ducts with no floor typed take their level's name, so the take-off
+  filters by floor. The PDF report has a plan for each level.
+
+Code: `src/levels.js`; `setActiveLevel`, `addLevel`, `riserToLevel` in
+`src/state.js`; `levelView()` is what the plan draws and snaps to.
+
+## Rooms and systems
+
+A room can be put on a system (**System** in its inspector), or left to
+follow the terminals inside it. Its outline takes that system's colour and
+its tag; the inspector lists the systems its terminals are actually joined to
+and the supply / extract rate in l/s per m². Check flags a room assigned to
+one system with terminals on another. The PDF rooms table has the system,
+area and l/s per m². `src/rooms.js`.
+
+## Reports and take-off by system
+
+**PDF** asks for the whole project or one system. One system's report has
+only its airstreams, the ducts and terminals joined to it, its rooms, air
+socks and commissioning sheets, and plans with every other system hidden
+(`scopeToSystem()` in `src/export/pdf.js`). The take-off lists quantities
+**by system** and filters to one by tag and name.
 
 ## Units
 

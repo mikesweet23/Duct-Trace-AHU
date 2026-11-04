@@ -1,6 +1,7 @@
 // Convert the Stage 1 centreline network into a fabrication model.
 // Stage 1 remains the calculation source; this file only interprets it.
 
+import { resolveLevels } from "../levels.js";
 import { angleBetween, dist, isVerticalRiser } from "../geom.js";
 import { componentDef } from "../standards/components.js";
 import { FITTINGS, alternativesFor } from "../standards/fittings.js";
@@ -314,7 +315,9 @@ function makeFitting(opts) {
   });
 }
 
-export function generatePhysicalModel(project, results, opts = {}) {
+export function generatePhysicalModel(rawProject, results, opts = {}) {
+  // heights absolute across floors, each duct's floor named after its level
+  const project = resolveLevels(rawProject);
   const settings = project.settings || {};
   const px = pxPerMeterOf(project);
   const elevationMode = settings.elevationMode || "orthogonal";

@@ -4,6 +4,8 @@
 import { round } from "../units.js";
 import { sizeKey, sizeLabel } from "./catalog.js";
 import { FITTINGS } from "../standards/fittings.js";
+import { sockTakeoff } from "../standards/airsock.js";
+import { systemTitle } from "../systems.js";
 
 function pieceQty(p) {
   return Number(p.qty) > 0 ? Number(p.qty) : 1;
@@ -80,7 +82,9 @@ function pushGroup(map, key, seed, update) {
   update(map.get(key));
 }
 
-export function buildTakeoff(model, filters = {}, project = null) {
+// `results` (the network solve) is optional: with it the air socks carry the
+// airflow — and so the diameter — they actually get.
+export function buildTakeoff(model, filters = {}, project = null, results = null) {
   const pieces = filterPieces(model?.pieces || [], filters, project);
   const rows = pieces.map(takeoffRow);
 
@@ -196,8 +200,31 @@ export function buildTakeoff(model, filters = {}, project = null) {
     return g;
   };
 
+  // the same quantities split by the unit each piece belongs to
+  const bySystem = new Map();
+  for (const p of pieces) {
+    if (p.kind === "support") continue;
+    const key = p.plantId || "";
+    if (!bySystem.has(key)) bySystem.set(key, { plantId: key, straightM: 0, sheetAreaM2: 0, fittings: 0, pieces: 0 });
+    const g = bySystem.get(key);
+    g.pieces += pieceQty(p);
+    if (p.kind === "straight") g.straightM += p.lengthM || 0;
+    if (p.category === "fitting") g.fittings += pieceQty(p);
+    g.sheetAreaM2 += p.sheetAreaM2 || 0;
+  }
+  const plantsById = new Map((project?.components || []).map((c) => [c.id, c]));
+  const systems = [...bySystem.values()].map((g) => ({
+    ...g,
+    title: g.plantId ? systemTitle(plantsById.get(g.plantId), "Unit") : "Not on a unit",
+    straightM: round(g.straightM, 2),
+    sheetAreaM2: round(g.sheetAreaM2, 2),
+  }));
+  const socks = project ? sockTakeoff(project, results, { ...emptyTakeoffFilters(), ...filters }) : null;
+
   return {
     generatedAt: Date.now(),
+    systems,
+    socks,
     filters: { ...emptyTakeoffFilters(), ...filters },
     rows,
     circular: [...circular.values()].map(roundGroup),

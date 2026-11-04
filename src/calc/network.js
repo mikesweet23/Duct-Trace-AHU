@@ -13,6 +13,8 @@ import { componentDef, inlineLossPa, isDualPort, terminalK } from "../standards/
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
 import { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem, systemTitle } from "../systems.js";
 import { isAirSock, sockStaticPa, sockVentedLengthM } from "../standards/airsock.js";
+import { roomOfComponent, roomAreaM2 } from "../rooms.js";
+import { resolveLevels } from "../levels.js";
 import { PORT_NODE_KEY } from "../layout.js";
 
 const FLOW_MATCH_ABS_LS = 2;
@@ -224,6 +226,28 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
           const q = Number(c.props?.designFlow_ls) || 0;
           if (q > 0) typed += q;
           else if (isAirSock(c)) socks.push({ nodeId, c, w: sockVentedLengthM(c) });
+        }
+      }
+      if (socks.length && settings.sockShareBy === "area") {
+        // by floor area: each room's area, split between the blank socks in
+        // it by vented length — a sock with no room outline round it falls
+        // the whole system back to sharing by length
+        const groups = new Map();
+        const loose = socks.filter((x) => {
+          const r = roomOfComponent(project, x.c);
+          if (!r) return true;
+          if (!groups.has(r)) groups.set(r, []);
+          groups.get(r).push(x);
+          return false;
+        });
+        if (loose.length) {
+          warnings.push(`${loose.length} air sock${loose.length > 1 ? "s are" : " is"} not inside a room outline, so the duty is shared by length, not floor area.`);
+        } else {
+          for (const [r, list] of groups) {
+            const A = roomAreaM2(project, r);
+            const L = list.reduce((a, x) => a + x.w, 0);
+            for (const x of list) x.w = L > 0 ? (A * x.w) / L : A / list.length;
+          }
         }
       }
       if (socks.length) {
@@ -528,7 +552,9 @@ function dualAhuWarnings(project, systems) {
   return warnings;
 }
 
-export function computeAll(project) {
+export function computeAll(rawProject) {
+  // heights absolute across floors; a single-level job passes straight through
+  const project = resolveLevels(rawProject);
   const systems = [];
   // supply and extract first: fresh air and exhaust take their flow from them
   for (const systemType of SYSTEM_KEYS) {

@@ -13,6 +13,8 @@
 // in Duct & basis, because the specification governs, not this tool.
 
 import { systemTitle } from "../systems.js";
+import { roomOfComponent, roomTerminals } from "../rooms.js";
+import { isAirSock, sockFlowLs } from "../standards/airsock.js";
 import { componentDef } from "../standards/components.js";
 import { LEAKAGE_FACTORS, PRESSURE_CLASSES } from "../standards/dw144.js";
 import { allComputedSystems } from "../calc/network.js";
@@ -53,7 +55,9 @@ export function sizeText(section) {
   return `dia ${section.diameterMm}`;
 }
 
-function roomOf(project, pt) {
+// the room a terminal is in, on its own level
+function roomOf(project, pt, c = null) {
+  if (c) return roomOfComponent(project, c)?.name || "";
   if (!pt) return "";
   const r = (project.rooms || []).find((room) => room.points?.length >= 3 && pointInPolygon(pt, room.points));
   return r ? r.name : "";
@@ -83,7 +87,7 @@ export function buildCommissioning(project, results) {
         name: t.name || def?.label || "Terminal",
         kind: def?.label || "",
         bellMouth: !!(def?.openEnd && c?.props?.bellMouth),
-        room: roomOf(project, t.point),
+        room: roomOf(project, t.point, c),
         size: sizeText(t.runoutSection),
         velocity: t.runoutVelocity || 0,
         designLs,
@@ -147,13 +151,9 @@ export function buildCommissioning(project, results) {
   }
 
   const rooms = (project.rooms || []).map((r) => {
-    const sum = (system) => (project.components || [])
-      .filter((c) => componentDef(c.kind)?.role === "terminal" && c.system === system)
-      .filter((c) => {
-        const n = project.nodes.find((x) => x.id === c.nodeId) || c;
-        return pointInPolygon(n, r.points);
-      })
-      .reduce((a, c) => a + (Number(c.props?.designFlow_ls) || 0), 0);
+    const sum = (system) => roomTerminals(project, r)
+      .filter((c) => c.system === system)
+      .reduce((a, c) => a + (isAirSock(c) ? sockFlowLs(c, results) : Number(c.props?.designFlow_ls) || 0), 0);
     return { name: r.name, supplyTarget: Number(r.supplyFlow_ls) || 0, supplyTerminals: sum("supply"), extractTarget: Number(r.extractFlow_ls) || 0, extractTerminals: sum("extract") };
   });
 

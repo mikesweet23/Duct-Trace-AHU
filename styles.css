@@ -495,3 +495,9 @@ table.schedule tr.over-vel td { color: var(--alarm); }
 .sys-row .link-btn { grid-column: 2 / -1; text-align: left; font-size: 11px; }
 .sys-row.off { opacity: 0.5; }
 .st .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+/* Level switcher in the zoom bar */
+.zoomer select#zFloor { border: none; height: 32px; padding: 0 6px; font: 600 12.5px Archivo, system-ui, sans-serif; color: var(--ink); background: var(--white); max-width: 170px; border-right: 1px solid rgba(0,0,0,0.08); }
+.lvl-row { display: grid; grid-template-columns: 1fr 70px auto auto; gap: 4px; align-items: center; margin: 4px 0; }
+.lvl-row input { min-width: 0; }
+.lvl-row.on input[type="text"] { font-weight: 700; }

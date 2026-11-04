@@ -9,6 +9,7 @@ import { normalizeFlowUnit } from "./units.js";
 import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
 import { applyConstruction, setSegmentConstruction } from "./construction.js";
 import { nextSystemColor, nextSystemTag } from "./systems.js";
+import { ensureLevels, stampLevels, activeLevelId, levelIdOf, levelView, levelById, firstLevelId, multiLevel, FIRST_LEVEL_ID } from "./levels.js";
 
 const STORAGE_KEY = "duct-trace-ahu:project";
 const MULTI_TYPES = new Set(["component", "segment", "node", "room", "measure"]);
@@ -53,6 +54,8 @@ export function defaultSettings() {
     sockMaxInletVelocity: 8, // m/s — warn above
     sockNominalStaticPa: 100, // Pa — air sock inlet static until the manufacturer's figure is in
     sockMinStaticPa: 50, // Pa — warn below
+    sockShareBy: "length", // "length" | "area" — how blank socks share the unit's duty
+    sockDropSpacingM: 1.5, // m — air sock suspension drops, for the take-off
     flowUnit: "l/s",
     snapPoints: true,
     ortho: true,
@@ -91,6 +94,9 @@ export function newProject(name = "Untitled project") {
     components: [],
     rooms: [],
     measures: [], // tape measures: [{ id, pts: [{x,y}] }] — plan metres only, never a duct
+    levels: [{ id: FIRST_LEVEL_ID, name: "Ground floor", elevationM: 0, background: null }],
+    activeLevel: FIRST_LEVEL_ID,
+    sockPresets: [], // air sock presets carried with the job (also kept in this browser)
     physical: null,
     engineeringLocked: false,
   };
@@ -155,6 +161,13 @@ export function migrateProject(raw) {
     }
   }
   assignSystemIdentities(p);
+  // floors: anything from before levels is on the first one
+  ensureLevels(p);
+  const first = firstLevelId(p);
+  for (const list of [p.nodes, p.components, p.rooms, p.measures]) {
+    for (const it of list || []) if (!it.levelId || !levelById(p, it.levelId)) it.levelId = first;
+  }
+  if (!Array.isArray(p.sockPresets)) p.sockPresets = [];
   return p;
 }
 
@@ -222,7 +235,70 @@ export class Store {
   }
 
   emit() {
+    // anything just made (a node, a unit, a room…) is on the level in view
+    stampLevels(this.project);
     for (const fn of this.listeners) fn(this);
+  }
+
+  // ------------------------------------------------------------- levels
+  // The plan shows one level. Its drawing lives on the project as
+  // `background` while it is in view, and on its level otherwise.
+  setActiveLevel(id) {
+    const p = this.project;
+    ensureLevels(p);
+    const to = levelById(p, id);
+    if (!to || id === p.activeLevel) return false;
+    stampLevels(p);
+    const from = levelById(p, p.activeLevel);
+    if (from) from.background = p.background || null;
+    p.background = to.background || null;
+    to.background = null;
+    p.activeLevel = id;
+    this.selection = null;
+    return true;
+  }
+
+  // Swap the background in and out without touching undo or storage — for
+  // drawing each level's plan into the report.
+  levelBackground(id) {
+    const p = this.project;
+    return id === p.activeLevel ? p.background : levelById(p, id)?.background || null;
+  }
+
+  addLevel(name, elevationM) {
+    const p = this.project;
+    ensureLevels(p);
+    const id = uid("L");
+    const top = p.levels.reduce((m, l) => Math.max(m, Number(l.elevationM) || 0), 0);
+    p.levels.push({ id, name: name || `Level ${p.levels.length}`, elevationM: Number.isFinite(Number(elevationM)) ? Number(elevationM) : top + 4, background: null });
+    return id;
+  }
+
+  // Only an empty level goes — nothing on it, no drawing.
+  levelIsEmpty(id) {
+    const p = this.project;
+    const on = (it) => levelIdOf(p, it) === id;
+    return !p.nodes.some(on) && !p.components.some(on) && !(p.rooms || []).some(on) && !(p.measures || []).some(on) && !this.levelBackground(id);
+  }
+
+  deleteLevel(id) {
+    const p = this.project;
+    if (p.levels.length < 2 || !this.levelIsEmpty(id)) return false;
+    if (p.activeLevel === id) this.setActiveLevel(p.levels.find((l) => l.id !== id).id);
+    p.levels = p.levels.filter((l) => l.id !== id);
+    return true;
+  }
+
+  // A riser from a point on this level to another: a node at the same point
+  // on plan on that level, at its default duct height, and the duct between.
+  riserToLevel(node, levelId) {
+    const p = this.project;
+    if (!levelById(p, levelId) || levelIdOf(p, node) === levelId) return null;
+    const top = { id: uid("n"), x: node.x, y: node.y, z: p.settings.defaultDuctHeight ?? 3.2, levelId };
+    p.nodes.push(top);
+    const sys = p.segments.find((s) => s.a === node.id || s.b === node.id)?.system || this.activeSystem;
+    const seg = this.addSegment(node, top, sys, { roleOverride: "riser" });
+    return { node: top, seg };
   }
 
   // Undo steps hold the take-off, not the drawing: the sheet's image (often
@@ -293,7 +369,17 @@ export class Store {
   persist() {
     try {
       const bg = this.project.background;
-      const lite = bg ? { ...this.project, background: { ...bg, dataUrl: null, stored: true } } : this.project;
+      let lite = bg ? { ...this.project, background: { ...bg, dataUrl: null, stored: true } } : this.project;
+      // the other levels' drawings: each under its own key, like the one in view
+      if ((this.project.levels || []).some((l) => l.background?.dataUrl)) {
+        lite = { ...lite, levels: this.project.levels.map((l) => {
+          if (!l.background?.dataUrl) return l;
+          try {
+            if (localStorage.getItem(`${STORAGE_KEY}:drawing:${l.id}`)?.length !== l.background.dataUrl.length) localStorage.setItem(`${STORAGE_KEY}:drawing:${l.id}`, l.background.dataUrl);
+          } catch (e) { this.drawingNotStored = true; }
+          return { ...l, background: { ...l.background, dataUrl: null, stored: true } };
+        }) };
+      }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(lite));
       const token = bg ? `${bg.dataUrl?.length || 0}:${bg.width}x${bg.height}` : "";
       if (token !== this._bgToken) {
@@ -323,6 +409,12 @@ export class Store {
           else data.background = null;
         }
         if (data.background) delete data.background.stored;
+        for (const l of data.levels || []) {
+          if (l.background && !l.background.dataUrl) {
+            const img = localStorage.getItem(`${STORAGE_KEY}:drawing:${l.id}`);
+            if (img) { l.background.dataUrl = img; delete l.background.stored; } else l.background = null;
+          }
+        }
         this.project = migrateProject(data);
         this.traceHeight = this.project.settings.defaultDuctHeight;
         const bg = this.project.background;
@@ -381,7 +473,7 @@ export class Store {
   }
 
   selectAll() {
-    const p = this.project;
+    const p = levelView(this.project);
     this.setSelection([
       ...p.components.map((c) => ({ type: "component", id: c.id })),
       ...p.segments.map((s) => ({ type: "segment", id: s.id })),
@@ -552,8 +644,10 @@ export class Store {
   findNodeAt(point, tol = NODE_MERGE_TOL, z = null) {
     let best = null;
     let bestD = tol;
+    const lv = activeLevelId(this.project);
     for (const n of this.project.nodes) {
       if (z != null && Math.abs((n.z || 0) - z) > Z_MERGE_TOL) continue;
+      if (levelIdOf(this.project, n) !== lv) continue; // never join across floors
       const d = dist(n, point);
       if (d <= bestD) {
         best = n;

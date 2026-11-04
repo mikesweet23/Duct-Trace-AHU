@@ -171,6 +171,7 @@ export const COMPONENTS = {
       ventedLengthM: 0,
       diameterMm: 0,
       discharge: "perforated",
+      suspension: "cable1",
       basis: "nominal",
       nominalStaticPa: 0,
       manufacturer: "",
