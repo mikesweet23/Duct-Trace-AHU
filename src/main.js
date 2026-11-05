@@ -18,7 +18,7 @@ import { dist, routeLengthM, isVerticalRiser } from "./geom.js";
 import { pxPerMeterOf } from "./layout.js";
 import { HELP, HELP_SECTIONS, STEPS, helpMatches } from "./ui/help.js";
 import { SYSTEMS, isOutsideSystem, systemTitle } from "./systems.js";
-import { isAirSock, sockFigures, sockFlowLs, sockSchedule } from "./standards/airsock.js";
+import { sockSchedule } from "./standards/airsock.js";
 import { roomMismatch } from "./rooms.js";
 import { levelsOf, levelName, levelById, activeLevelId, firstLevelId, levelView, multiLevel, resolveLevels } from "./levels.js";
 import { rotatedSize, normDeg, turnTakeoff, turnPoint } from "./rotate.js";
@@ -70,6 +70,7 @@ const TOOLS = [
   { id: "inline", label: "In-line", key: "I", icon: "M2 10h4M14 10h4M6 6h8v8H6zM6 6l8 8", palette: "inline", scale: true },
   { hr: true },
   { id: "duct", label: "Trace", key: "T", icon: "M2 15l5-9 5 5 6-8", scale: true },
+  { id: "sock", label: "Air sock", key: "K", icon: "M2 8h4M2 12h4M6 6.5h9a3.5 3.5 0 010 7H6zM9 10h.01M12 10h.01M15 10h.01", trace: "fabric", scale: true },
 ];
 const PALETTES = {
   fan: { title: "Fans", kinds: ["fan_centrifugal", "fan_axial", "fan_plug"], note: "A fan is the plant for the system you are tracing." },
@@ -153,8 +154,11 @@ function armTool(id) {
     store.setTool("component", keep);
   } else {
     paletteOpen = null;
+    // Air sock is Trace laying fabric, always on supply
+    store.traceFabric = t.trace === "fabric";
+    if (store.traceFabric) store.activeSystem = "supply";
     if (t.place) store.setTool("component", t.place);
-    else store.setTool(id);
+    else store.setTool(t.trace ? "duct" : id);
   }
   renderRail();
   renderPalette();
@@ -207,6 +211,7 @@ const HINTS = {
 };
 function hintText() {
   const tool = store.tool;
+  if (tool === "duct" && store.traceFabric) return "<b>Air sock.</b> Start on the end of a supply duct, a dot on a run or the unit — it joins as Trace does. Click each corner: 90° and 45° lock, as for a duct. Hover the sock and click its dot to branch off it for a tee. Double-click or <kbd>Enter</kbd> ends the sock. Set <b>Height</b> and click the same point first for a galvanised drop to the sock.";
   if (tool === "component") {
     const def = componentDef(store.newComponentKind);
     if (!def) return "";
@@ -240,7 +245,7 @@ function renderHint() {
     a.textContent = "—";
     a.classList.remove("free");
   }
-  $("#tpal").classList.toggle("on", tool === "duct" && started && store.viewMode !== "3d");
+  $("#tpal").classList.toggle("on", tool === "duct" && !store.traceFabric && started && store.viewMode !== "3d");
   document.querySelectorAll("[data-tsys]").forEach((b) => b.classList.toggle("on", b.dataset.tsys === store.activeSystem));
 }
 $("#hintX").addEventListener("click", () => { hintHidden = true; renderHint(); });
@@ -835,12 +840,13 @@ function checkIssues(results) {
     }
     const joined = [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean).reduce((a, id) => a + touching(id).length, 0);
     if (!joined) out.push({ lvl: def.role === "plant" ? "warn" : "bad", msg: `${name} is not connected to any duct.`, sel: ["component", c.id] });
-    if (def.role === "terminal" && !(Number(c.props?.designFlow_ls) > 0) && !(isAirSock(c) && sockFlowLs(c, results) > 0)) out.push({ lvl: "warn", msg: `${name} has no design flow${isAirSock(c) ? " — type its total, or set the unit's supply duty for blank socks to share" : ""}.`, sel: ["component", c.id] });
+    if (def.role === "terminal" && !(Number(c.props?.designFlow_ls) > 0)) out.push({ lvl: "warn", msg: `${name} has no design flow.`, sel: ["component", c.id] });
   }
   for (const n of p.nodes) {
     if (p.components.some((c) => [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].includes(n.id))) continue;
     const t = touching(n.id);
     if (t.length === 1) {
+      if (t[0].fabric) continue; // the closed end of an air sock
       const other = p.nodes.find((x) => x.id === (t[0].a === n.id ? t[0].b : t[0].a));
       if (other && isVerticalRiser(n, other, px)) continue;
       out.push({ lvl: "warn", msg: "A run stops short in mid-air — it does not reach a terminal or a unit.", sel: ["node", n.id] });
@@ -866,9 +872,9 @@ function checkIssues(results) {
     }
   }
   const socks = sockSchedule(p, results);
-  for (const r of socks) for (const w of r.warnings) out.push({ lvl: "warn", msg: `${r.ref}: ${w}`, sel: ["component", r.id] });
+  for (const r of socks) for (const w of r.warnings) out.push({ lvl: "warn", msg: `${r.ref}: ${w}`, sel: ["segment", r.segId] });
   const nominal = socks.filter((r) => !r.confirmed);
-  if (nominal.length) out.push({ lvl: "warn", msg: `${nominal.length} air sock${nominal.length > 1 ? "s are" : " is"} on nominal sizing and pressure (${nominal.map((r) => r.ref).join(", ")}) — replace with the manufacturer's selection before issue.`, sel: ["component", nominal[0].id] });
+  if (nominal.length) out.push({ lvl: "warn", msg: `${nominal.length} air sock${nominal.length > 1 ? "s are" : " is"} on nominal sizing and pressure (${nominal.map((r) => r.ref).join(", ")}) — replace with the manufacturer's selection before issue.`, sel: ["segment", nominal[0].segId] });
   const seen = new Set();
   return out.filter((i) => { const k = i.msg + (i.sel ? i.sel.join() : ""); if (seen.has(k)) return false; seen.add(k); return true; });
 }
@@ -1113,7 +1119,6 @@ store.subscribe(() => {
     scheduled = false;
     const results = computeAll(store.project);
     lastResults = results;
-    syncSocks(results);
     canvas.setResults(results);
     view3d.setResults(results);
     panels.setResults(results);
@@ -1125,12 +1130,6 @@ store.subscribe(() => {
     if (store.viewMode === "3d") view3d.draw();
   });
 });
-
-// An air sock is drawn at the diameter its airflow needs.
-function syncSocks(results) {
-  const settings = store.project.settings;
-  store.syncSockSizes((c) => sockFigures(c, sockFlowLs(c, results), settings).diameterMm);
-}
 
 function renderLegend() {
   const p = store.project;
@@ -1147,7 +1146,6 @@ function renderLegend() {
 // initial paint
 const initial = computeAll(store.project);
 lastResults = initial;
-syncSocks(initial);
 canvas.setResults(initial);
 view3d.setResults(initial);
 panels.setResults(initial);

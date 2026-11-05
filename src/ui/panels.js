@@ -20,7 +20,7 @@ import { renderTakeoff } from "./takeoff-panel.js";
 import { FITTINGS as FAB_FITTINGS } from "../standards/fittings.js";
 import { setPieceOverride } from "../fab/change.js";
 import { SYSTEMS, SYSTEM_KEYS, COLOUR_MODES, SYSTEM_PALETTE, systemTitle } from "../systems.js";
-import { isAirSock, sockFigures, sockFlowLs, sockBasis, sockSchedule, SOCK_DISCHARGE, SOCK_BASIS, SOCK_DIAMETERS_MM, SOCK_SUSPENSION } from "../standards/airsock.js";
+import { sockFigures, sockBasis, sockSchedule, sockById, sockSegments, sockAirByRoom, sockGeometry, SOCK_DISCHARGE, SOCK_BASIS, SOCK_DIAMETERS_MM, SOCK_SUSPENSION } from "../standards/airsock.js";
 import { PROJECT_CONSTRUCTIONS, SECTION_CONSTRUCTIONS, projectConstructionLabel, sectionConstructionKey } from "../construction.js";
 
 const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
@@ -94,6 +94,14 @@ export class Panels {
       el.innerHTML = this.propertiesEmpty();
       this.bindProjectConstruction(el);
       this.bindSystemsList(el);
+      return;
+    }
+    if (sel.type === "segment" && selected.fabric) {
+      // a length of air sock: the sock's own panel, edited on the sock record
+      const sock = sockById(this.store.project, selected.sockId) || this.store.setFabric([selected], true) && sockById(this.store.project, selected.sockId);
+      el.innerHTML = this.propSock(selected, sock);
+      this.bindProperty(el, { type: "sock" }, sock);
+      this.bindSockLength(el, selected, sock);
       return;
     }
     if (sel.type === "segment") el.innerHTML = this.propSegment(selected);
@@ -319,6 +327,7 @@ export class Panels {
           ${SECTION_CONSTRUCTIONS.map((c) => `<option value="${c.key}" ${(s.shapeOverride || s.constructionType) && sectionConstructionKey(s, this.store.project.settings) === c.key ? "selected" : ""}>${c.label}</option>`).join("")}
         </select></div>
       <p class="small-note">Changing this length does not change the rest of the system. Use the branch button to switch a take-off (for example rectangular trunk, spiral legs).</p>
+      ${s.system === "supply" ? `<div class="row-actions"><button class="btn tiny" data-seg-fabric="this" title="This length becomes fabric; it joins a sock it touches">Make this length air sock</button><button class="btn ghost tiny" data-seg-fabric="branch" title="This length and everything downstream of it">Air sock from here on</button></div>` : ""}
       <div class="row-actions">
         <button class="btn tiny" data-act="applyBranch" title="This section and everything downstream toward the terminals">Apply to this branch</button>
         <button class="btn ghost tiny" data-act="clearConstruction">Use project default</button>
@@ -437,27 +446,38 @@ export class Panels {
     `;
   }
 
-  // Air sock: total airflow and "ventilated throughout", the nominal size
-  // and pressure for concept / design, then the manufacturer's selection.
-  sockFields(c) {
+  // An air sock, from any one of its lengths: what is true of the whole sock
+  // (its air, discharge, figures and selection), its legs and fittings, and
+  // what can be done to this length.
+  propSock(seg, sock) {
     const p = this.store.project;
     const unit = unitOf(this.store);
     const ul = flowUnitLabel(unit);
-    const pr = c.props || {};
-    const flowLs = sockFlowLs(c, this.results);
-    const fig = sockFigures(c, flowLs, p.settings);
+    const pr = sock.props || {};
+    const fig = sockFigures(p, sock, this.results);
     const b = sockBasis(p.settings);
     const shared = !(Number(pr.designFlow_ls) > 0);
-    const dias = [`<option value="0" ${fig.autoDia ? "selected" : ""}>Auto — ø${fig.autoDia ? fig.diameterMm : "…"} at ${b.inletVelocity} m/s</option>`]
-      .concat(SOCK_DIAMETERS_MM.map((d) => `<option value="${d}" ${!fig.autoDia && fig.diameterMm === d ? "selected" : ""}>ø${d}</option>`)).join("");
+    const segRes = this.segResult(seg.id);
     const opts = (map, cur) => Object.entries(map).map(([k, v]) => `<option value="${k}" ${cur === k ? "selected" : ""}>${v}</option>`).join("");
+    const dias = [`<option value="0" ${!(Number(pr.diameterMm) > 0) ? "selected" : ""}>Auto — each leg at ${b.inletVelocity} m/s</option>`]
+      .concat(SOCK_DIAMETERS_MM.map((d) => `<option value="${d}" ${Number(pr.diameterMm) === d ? "selected" : ""}>ø${d} throughout</option>`)).join("");
     const perM = unit === "m3/h" ? `${num(fig.m3hPerM, 1)} m³/h per m` : `${num(fig.flowPerM_ls, 1)} l/s per m`;
-    const row = sockSchedule(p, this.results).find((r) => r.id === c.id);
+    const row = sockSchedule(p, this.results).find((r) => r.id === sock.id);
     const roomLine = row?.room
       ? `<dt>Room ${row.room} — ${num(row.roomAreaM2, 1)} m²</dt><dd>${num(row.roomRateLsM2, 2)} l/s/m² from its socks</dd>`
       : `<dt>Room</dt><dd>not inside a room outline</dd>`;
+    const legs = fig.legs.length > 1
+      ? `<table class="schedule"><thead><tr><th>Leg</th><th>Dia</th><th>${ul} in</th></tr></thead><tbody>${fig.legs.map((l, i) => `<tr${l.segIds.includes(seg.id) ? ' class="on"' : ""}><td>${l.fromInlet ? "From the inlet" : `Branch ${i}`}</td><td>ø${l.diameterMm}</td><td>${lsToDisplay(l.flowLs, unit)}</td></tr>`).join("")}</tbody></table>` : "";
+    const fits = [
+      fig.bends.filter((x) => x === 90).length ? `${fig.bends.filter((x) => x === 90).length} × 90° bend` : "",
+      fig.bends.filter((x) => x === 45).length ? `${fig.bends.filter((x) => x === 45).length} × 45° bend` : "",
+      fig.tees ? `${fig.tees} × tee` : "",
+      fig.ends ? `${fig.ends} × end` : "",
+    ].filter(Boolean).join(" · ") || "straight";
+    const n = sockSegments(p, sock.id).length;
     return h`
-      <div class="section-title">Air sock</div>
+      <div class="section-title">Air sock <span class="pill">${n} length${n === 1 ? "" : "s"}</span></div>
+      <div class="field"><label>Name</label><input type="text" data-k="label" value="${(sock.label || "").replace(/"/g, "&quot;")}"/></div>
       <div class="field"><label>Total airflow (${ul})</label>
         <input type="number" step="any" data-flow-prop="designFlow_ls" value="${shared ? "" : lsToDisplay(pr.designFlow_ls, unit)}" placeholder="share of unit supply duty"/></div>
       <div class="field"><label>Discharge</label>
@@ -468,27 +488,35 @@ export class Panels {
       ${pr.ventilatedThroughout === false ? `<div class="field"><label>Vented length (m)</label><input type="number" step="0.1" data-prop-num="ventedLengthM" value="${pr.ventedLengthM || ""}"/></div>` : ""}
       <div class="field"><label>Pattern</label><select data-prop-text="discharge">${opts(SOCK_DISCHARGE, pr.discharge)}</select></div>
       <div class="field"><label>Suspension</label><select data-prop-text="suspension">${Object.entries(SOCK_SUSPENSION).map(([k, v]) => `<option value="${k}" ${(pr.suspension || "cable1") === k ? "selected" : ""}>${v.label}</option>`).join("")}</select></div>
-      <div class="field"><label>Length (m)</label><input type="number" step="0.1" data-k="widthM" value="${num(fig.lengthM, 2)}"/></div>
       <div class="field"><label>Diameter</label><select data-prop-num="diameterMm">${dias}</select></div>
-      <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-k="rot" value="${c.rot || 0}"/></div>
-      <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
       <div class="hrv-box"><dl>
-        <dt>Airflow${shared ? " (shared by length)" : ""}</dt><dd>${lsToDisplay(flowLs, unit)} ${ul}</dd>
-        <dt>Vented length</dt><dd>${num(fig.ventedLengthM, 1)} m</dd>
+        <dt>Airflow${shared ? " (shared)" : ""}</dt><dd>${lsToDisplay(fig.flowLs, unit)} ${ul}</dd>
+        <dt>Length · vented</dt><dd>${num(fig.lengthM, 1)} m · ${num(fig.ventedLengthM, 1)} m</dd>
         <dt>Discharge</dt><dd>${perM}</dd>
-        <dt>Inlet velocity at ø${fig.diameterMm}</dt><dd>${num(fig.inletVelocity, 2)} m/s</dd>
+        <dt>Inlet ø${fig.diameterMm}</dt><dd>${num(fig.inletVelocity, 2)} m/s</dd>
+        <dt>Fittings</dt><dd>${fits}</dd>
         <dt>Inlet static in the index run</dt><dd>${num(fig.staticPa, 0)} Pa — ${fig.confirmed ? "manufacturer" : "nominal"}</dd>
         ${roomLine}
       </dl></div>
+      ${legs}
       ${fig.warnings.length ? `<ul class="warn-list">${fig.warnings.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
-      <p class="small-note">The duct joins at the square end. Leave the airflow blank when you only have the system total: every blank sock on the unit shares its supply duty (set on the unit) in proportion to vented length — or room floor area, in Duct &amp; basis. Drag the handles or type the length; the diameter follows the airflow unless you pick one.</p>
+      <p class="small-note">Leave the airflow blank when you only have the system total: blank socks on the unit share its supply duty (set on the unit) by vented length — or room floor area, in Duct &amp; basis. Each leg is sized for the air entering it; the bends and tees are in the inlet static, as manufacturers quote it.</p>
+
+      <div class="section-title">This length</div>
+      <div class="field"><label>Length (m)</label><input type="text" data-seg-length="1" value="${num(segRes?.lengthM || sockGeometry(p, sock.id).lengths.get(seg.id) || 0, 2)}" placeholder="e.g. 12.5"/></div>
+      <div class="field"><label>Diameter here · air in</label><span class="badge">ø${segRes?.section?.diameterMm || fig.diameterMm} · ${lsToDisplay((segRes?.flowM3s || 0) * 1000, unit)} ${ul}</span></div>
+      <div class="row-actions" style="flex-wrap:wrap">
+        <button class="btn tiny" data-sock-act="selectAll">Select the whole sock</button>
+        <button class="btn ghost tiny" data-sock-act="galvanised">Make this length galvanised</button>
+        <button class="btn ghost tiny" data-act="delete">Delete this length</button>
+      </div>
+      <p class="small-note">To extend it or add a 90 or a tee, arm <b>Air sock</b> <kbd>K</kbd>, start on its end or click the dot on it, and click each corner.</p>
 
       <div class="section-title">Preset</div>
       <div class="field"><label>Typical figures</label>
         <select data-sock-preset="1"><option value="">${pr.preset ? `${pr.preset} (applied)` : "— apply a preset —"}</option>${listPresets(p).map((x) => `<option value="${x.name.replace(/"/g, "&quot;")}">${x.name}${x.staticPa ? ` · ${x.staticPa} Pa` : ""}</option>`).join("")}</select></div>
       ${Number(pr.typThrow_m) > 0 || Number(pr.typNR) > 0 ? `<div class="field"><label>Typical (preset)</label><span class="badge">${Number(pr.typThrow_m) > 0 ? `throw ${num(pr.typThrow_m, 1)} m` : ""}${Number(pr.typThrow_m) > 0 && Number(pr.typNR) > 0 ? " · " : ""}${Number(pr.typNR) > 0 ? `NR ${pr.typNR}` : ""}</span></div>` : ""}
       <div class="row-actions"><button class="btn ghost tiny" data-act="savePreset">Save this sock as a preset…</button></div>
-      <p class="small-note">A preset fills manufacturer, product, pattern and suspension, and its static becomes this sock's nominal figure. Build them up from the selections that come back; they are kept in this browser and in the job file.</p>
 
       <div class="section-title">Manufacturer selection</div>
       <div class="field"><label>Basis</label><select data-prop-text="basis">${opts(SOCK_BASIS, pr.basis || "nominal")}</select></div>
@@ -503,6 +531,26 @@ export class Panels {
         ? "The manufacturer's inlet static is in the index run."
         : "Still on nominal figures. When the selection comes back, type the inlet static and set the basis to <b>Manufacturer selection</b> — it then replaces the nominal figure in the index run and the report."}</p>
     `;
+  }
+
+  // What a sock's panel does to the length that was picked.
+  bindSockLength(el, seg, sock) {
+    const store = this.store;
+    el.querySelectorAll("[data-seg-length]").forEach((input) => {
+      const apply = () => { store.snapshot(); store.setEngineeringLength(seg, parseLengthM(input.value)); store.commit(); };
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); apply(); } });
+      input.addEventListener("change", apply);
+    });
+    el.querySelectorAll("[data-sock-act]").forEach((b) => b.addEventListener("click", () => {
+      const act = b.dataset.sockAct;
+      if (act === "selectAll") {
+        store.setSelection(sockSegments(store.project, sock.id).map((x) => ({ type: "segment", id: x.id })));
+      } else if (act === "galvanised") {
+        store.snapshot();
+        store.setFabric([seg], false);
+        store.commit();
+      }
+    }));
   }
 
   terminalResult(c) {
@@ -622,7 +670,7 @@ export class Panels {
     const props = Object.entries(c.props || {})
       .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k))
         && !(def.outside && (k === "freeAreaPct" || k === "designVelocity")) && !(def.openEnd && k === "bellMouth")
-        && !(def.airSock && k !== "note"))
+        )
       .map(([k, v]) => {
         const label = PROP_LABELS[k] || k;
         if (k === "note") {
@@ -676,7 +724,7 @@ export class Panels {
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
         </select></div>
       ${isPlant ? this.systemIdentityFields(c, def) : ""}
-      ${def.airSock ? this.sockFields(c) : `<div class="section-title">Size &amp; height</div>
+      ${`<div class="section-title">Size &amp; height</div>
       <div class="field"><label>Width × depth (m)</label>
         <span><input type="number" step="0.05" style="width:64px" data-k="widthM" value="${c.widthM ?? ""}"/>
         <input type="number" step="0.05" style="width:64px" data-k="depthM" value="${c.depthM ?? ""}"/></span></div>
@@ -704,9 +752,9 @@ export class Panels {
     const areaM2 = roomAreaM2(p, r);
     // terminals on this room's level, inside its outline; an air sock counts
     // by the airflow it actually gets, so a shared sock is not read as 0
-    let assignedS = 0, assignedE = 0;
+    let assignedS = sockAirByRoom(p, this.results).get(r) || 0, assignedE = 0;
     for (const c of roomTerminals(p, r)) {
-      const q = isAirSock(c) ? sockFlowLs(c, this.results) : Number(c.props?.designFlow_ls) || 0;
+      const q = Number(c.props?.designFlow_ls) || 0;
       if (c.system === "supply") assignedS += q;
       else if (c.system === "extract") assignedE += q;
     }
@@ -740,7 +788,7 @@ export class Panels {
       <div class="field"><label>Supply assigned</label>${bal(r.supplyFlow_ls, assignedS)}</div>
       <div class="field"><label>Extract assigned</label>${bal(r.extractFlow_ls, assignedE)}</div>
       <div class="field"><label>Supply / extract rate</label><span class="badge">${rate(assignedS)} · ${rate(assignedE)}</span></div>
-      <p class="small-note">Assigned = design flow of terminals inside this room outline on this level; an air sock counts by its middle. The system colours the outline and puts the room under that system in the report.</p>
+      <p class="small-note">Assigned = design flow of terminals inside this room outline on this level, plus the air sock lengths whose middle is inside it. The system colours the outline and puts the room under that system in the report.</p>
       <div class="row-actions"><button class="btn ghost tiny" data-act="delete">Delete room</button></div>
     `;
   }
@@ -887,6 +935,13 @@ export class Panels {
       input.addEventListener("change", () => {
         store.snapshot();
         obj.props[input.dataset.propNum] = input.value === "" ? 0 : Number(input.value) || 0;
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-seg-fabric]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        store.snapshot();
+        store.applyConstruction(obj, "airsock", btn.dataset.segFabric === "branch" ? "branch" : "section");
         commit();
       });
     });

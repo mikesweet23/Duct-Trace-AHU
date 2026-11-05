@@ -315,9 +315,24 @@ function makeFitting(opts) {
   });
 }
 
+// Air socks are fabric, made by the sock manufacturer: no sheet-metal pieces.
+// Where a galvanised duct meets a sock the duct ends in a spigot for it —
+// a stand-in sock terminal at that point makes the generator put a boot
+// there, not an end cap. The socks themselves go on the take-off from
+// their own schedule.
+function withoutFabric(project) {
+  if (!project.segments.some((s) => s.fabric)) return project;
+  const fabricNodes = new Set();
+  for (const s of project.segments) if (s.fabric) { fabricNodes.add(s.a); fabricNodes.add(s.b); }
+  const metal = project.segments.filter((s) => !s.fabric);
+  const metalNodes = new Set(metal.flatMap((s) => [s.a, s.b]));
+  const spigots = [...fabricNodes].filter((id) => metalNodes.has(id)).map((id) => ({ id: `sock-inlet:${id}`, kind: "air_sock", nodeId: id, system: "supply", props: {} }));
+  return { ...project, segments: metal, components: [...(project.components || []), ...spigots] };
+}
+
 export function generatePhysicalModel(rawProject, results, opts = {}) {
   // heights absolute across floors, each duct's floor named after its level
-  const project = resolveLevels(rawProject);
+  const project = withoutFabric(resolveLevels(rawProject));
   const settings = project.settings || {};
   const px = pxPerMeterOf(project);
   const elevationMode = settings.elevationMode || "orthogonal";

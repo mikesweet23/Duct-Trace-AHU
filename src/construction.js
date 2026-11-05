@@ -16,6 +16,7 @@ export const SECTION_CONSTRUCTIONS = [
   { key: "plain_circular", shape: "round", label: "Plain circular" },
   { key: "square", shape: "square", label: "Square" },
   { key: "rectangular", shape: "rect", label: "Rectangular" },
+  { key: "airsock", shape: "round", label: "Air sock (fabric)" },
 ];
 
 export function constructionToShape(key) {
@@ -39,6 +40,7 @@ export function projectConstructionLabel(settings) {
 }
 
 export function sectionConstructionKey(seg, settings) {
+  if (seg?.fabric) return "airsock";
   if (seg?.constructionType) return seg.constructionType;
   if (seg?.shapeOverride) return shapeToConstruction(seg.shapeOverride, settings);
   return shapeToConstruction(settings?.ductType || "round", settings);

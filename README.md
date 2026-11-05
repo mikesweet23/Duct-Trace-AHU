@@ -14,7 +14,8 @@ identity of its own so it is obvious which one you are in:
 - **Top bar** — Open drawing, Concept, Duct & basis, How to use, ? Help,
   Undo / Redo, then Check, 3D check, Schedule, PDF, New, Save, Open.
 - **Tool rail** down the left — Select `V`, Pan `H`, Scale `S`, Tape `M`,
-  Room `R`, AHU `A`, HRV `E`, Fan `F`, Terminal `G`, In-line `I`, Trace `T`.
+  Room `R`, AHU `A`, HRV `E`, Fan `F`, Terminal `G`, In-line `I`, Trace `T`,
+  Air sock `K`.
 - **Start board** when nothing is loaded — choose a drawing, start a concept
   or open the worked example, with every tip listed underneath.
 - **Hint card** docked top-right while a tool is armed, with *Square up*, the
@@ -166,10 +167,28 @@ with the engineer reference.
 
 ## Air socks (fabric ductwork)
 
-**Terminal → Air sock (fabric duct)** places a sock its real length and
-diameter on the plan. The click is the **inlet** (the square end the duct
-traces onto); the sock runs off from there, stretches from its far-end
-handle and turns about the inlet.
+An air sock is **traced, like a duct**: **Air sock** `K` on the rail.
+
+- **Start** on the end of a supply duct — the click pulls onto the open end
+  from up to 40 px away, so a sock is never left unjoined by a near miss —
+  or on a dot on a run, or the unit. The ghost under the cursor shows where it
+  will join.
+- **Corners** lock to 90° and 45° as for a duct; a corner is a fabric bend.
+  **Tees**: arm Air sock and click on the sock where the branch leaves it.
+  Everything traced from one start is one sock; double-click or `Enter` ends.
+- **Changing height**: set Height and click the duct end again before the
+  first fabric length — that is a galvanised drop, and the sock starts there.
+- **Converting**: any supply duct length can be made fabric (*Make this
+  length air sock*, *Air sock from here on*, or *Air sock (fabric)* in its
+  construction, alone or several at once), and back to galvanised.
+  Galvanised can't run on from fabric — the tool says so.
+- Each fabric length lets out its share of the sock's air, so the air into
+  every length is right; each **leg** (inlet to tee, tee to end) is one
+  diameter, sized for the air entering it. Fabric has no friction of its own:
+  the sock's inlet static covers its bends and tees, as manufacturers quote it.
+- Where the galvanised duct and the sock differ in size, the sock says so and
+  the take-off lists the **inlet transition** (e.g. ø500 to ø560).
+- A sock made as a one-piece terminal before this opens as a traced length.
 
 - **Ventilated throughout** — the usual case at concept: the whole length
   discharges. *Part length* takes a vented length instead.
@@ -195,17 +214,21 @@ handle and turns about the inlet.
   between the blank socks inside its outline by vented length. A sock outside
   every room puts that system back on length, with a warning. Each sock shows
   its room and the l/s per m² the room's socks give it.
-- **Take-off**: sock bodies by diameter and fabric, suspension cable or track
-  (single or twin, set per sock), drop rods estimated at 1.5 m centres
-  (Duct & basis), and an inlet connector per sock — on screen, in the
-  procurement CSV and in the take-off PDF.
+- **Take-off**: fabric by leg diameter and fabric type, fabric 90° / 45°
+  bends and tees at the size of their leg, end caps, the inlet spigot or
+  transition, suspension cable or track (single or twin, set per sock) and
+  drop rods estimated at 1.5 m centres along each straight (Duct & basis) —
+  on screen, in the procurement CSV and in the take-off PDF. No sheet-metal
+  pieces are generated for fabric; the galvanised end at a sock gets a spigot.
 - **Presets**: *Save this sock as a preset* keeps a manufacturer / fabric's
   typical static, throw, NR, pattern and suspension; applying one fills a
   sock and sets its nominal static. Kept in the browser and in the job file
   (`src/sockPresets.js`).
 
-Code: `src/standards/airsock.js`; the sharing is in `computeSystem()` in
-`src/calc/network.js`. The nominal figures are concept
+Code: `src/standards/airsock.js` (sock records, geometry, figures, schedule,
+take-off); the sharing, legs and the sock's place in the index run are in
+`computeSystem()` in `src/calc/network.js`; tracing in `traceClick()` and
+`sockStartAt()` in `src/ui/canvas.js`. The nominal figures are concept
 defaults, not any one manufacturer's data — confirm with the supplier.
 
 ## Named, numbered and coloured systems
