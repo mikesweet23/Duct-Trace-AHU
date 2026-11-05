@@ -12,9 +12,9 @@ import { totalFittingK, cornerBendK, hasListedBend } from "../standards/fittings
 import { componentDef, inlineLossPa, isDualPort, terminalK } from "../standards/components.js";
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
 import { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem, systemTitle } from "../systems.js";
-import { isAirSock, sockStaticPa, sockVentedLengthM } from "../standards/airsock.js";
-import { roomOfComponent, roomAreaM2 } from "../rooms.js";
-import { resolveLevels } from "../levels.js";
+import { sockStaticPa, sizeSockDiameterMm, sockBasis } from "../standards/airsock.js";
+import { roomAt, roomAreaM2 } from "../rooms.js";
+import { resolveLevels, levelIdOf } from "../levels.js";
 import { PORT_NODE_KEY } from "../layout.js";
 
 const FLOW_MATCH_ABS_LS = 2;
@@ -180,6 +180,8 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
   const order = [];
   const reachableSegs = new Set();
 
+  // air socks on this system: sockId → their lengths, air and inlet
+  const sockState = new Map();
   if (rootNode != null && adj.has(rootNode)) {
     const visited = new Set([rootNode]);
     const queue = [rootNode];
@@ -214,53 +216,86 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
         warnings.push(`${systemLabel(systemType)} terminals are set to ${round(typed, 0)} l/s but the unit moves ${round(opts.autoFlowLs, 0)} l/s on that side.`);
       }
     }
-    // Air socks left at 0 — "ventilated throughout", only the total known —
-    // share whatever of the unit's supply duty the other terminals do not
-    // take, in proportion to their vented length.
+    // Air socks — traced fabric lengths that let the air out along
+    // themselves. A sock with a total typed keeps it; blank socks share what
+    // the unit's supply duty has left after every typed terminal and sock,
+    // by vented length or by room floor area. Each length then lets out its
+    // share of its sock's air, lumped at its downstream end, so the flow
+    // into every length — and the sock's inlet — is right.
     if (systemType === "supply") {
-      let typed = 0;
-      const socks = [];
-      for (const [nodeId, list] of terminalNodes) {
-        if (!visited.has(nodeId)) continue;
-        for (const c of list) {
-          const q = Number(c.props?.designFlow_ls) || 0;
-          if (q > 0) typed += q;
-          else if (isAirSock(c)) socks.push({ nodeId, c, w: sockVentedLengthM(c) });
-        }
+      const recs = new Map((project.socks || []).map((k) => [k.id, k]));
+      for (const sg of segs) {
+        if (!sg.fabric || !reachableSegs.has(sg.id)) continue;
+        const id = sg.sockId || `loose:${sg.id}`;
+        if (!sockState.has(id)) sockState.set(id, { sockId: id, sock: recs.get(sg.sockId) || { id, label: "Air sock", props: {} }, segs: [], lengths: new Map(), lengthM: 0 });
+        const g = sockState.get(id);
+        const a = nodesById.get(sg.a), b = nodesById.get(sg.b);
+        const L = a && b ? engineeringLengthM(sg, a, b, pxPerMeter) : 0;
+        g.segs.push(sg);
+        g.lengths.set(sg.id, L);
+        g.lengthM += L;
       }
-      if (socks.length && settings.sockShareBy === "area") {
-        // by floor area: each room's area, split between the blank socks in
-        // it by vented length — a sock with no room outline round it falls
-        // the whole system back to sharing by length
-        const groups = new Map();
-        const loose = socks.filter((x) => {
-          const r = roomOfComponent(project, x.c);
-          if (!r) return true;
-          if (!groups.has(r)) groups.set(r, []);
-          groups.get(r).push(x);
-          return false;
-        });
-        if (loose.length) {
-          warnings.push(`${loose.length} air sock${loose.length > 1 ? "s are" : " is"} not inside a room outline, so the duty is shared by length, not floor area.`);
+      const childOf = (sg) => (parentSeg.get(sg.b)?.id === sg.id ? sg.b : parentSeg.get(sg.a)?.id === sg.id ? sg.a : null);
+      let typed = 0;
+      for (const [nodeId, list] of terminalNodes) {
+        if (visited.has(nodeId)) for (const c of list) typed += Number(c.props?.designFlow_ls) || 0;
+      }
+      const blank = [];
+      for (const g of sockState.values()) {
+        const pr = g.sock.props || {};
+        g.ventM = pr.ventilatedThroughout === false ? Math.min(g.lengthM, Math.max(0, Number(pr.ventedLengthM) || 0)) : g.lengthM;
+        const ids = new Set(g.segs.map((x) => x.id));
+        for (const sg of g.segs) {
+          const c = childOf(sg);
+          if (!c) continue;
+          const up = c === sg.b ? sg.a : sg.b;
+          const ps = parentSeg.get(up);
+          if (!ps || !ids.has(ps.id)) { g.inlet = up; break; }
+        }
+        const q = Number(pr.designFlow_ls) || 0;
+        if (q > 0) { g.flowLs = q; typed += q; } else { g.flowLs = 0; g.w = g.ventM; blank.push(g); }
+      }
+      if (blank.length && settings.sockShareBy === "area") {
+        // each room's area, split between the blank sock lengths in it
+        let loose = 0;
+        const perRoom = new Map();
+        for (const g of blank) {
+          for (const sg of g.segs) {
+            const a = nodesById.get(sg.a), b = nodesById.get(sg.b);
+            const L = g.lengthM > 0 ? (g.lengths.get(sg.id) * g.ventM) / g.lengthM : 0;
+            const r = a && b ? roomAt(project, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, levelIdOf(project, a)) : null;
+            if (!r) { if (L > 0) loose++; continue; }
+            if (!perRoom.has(r)) perRoom.set(r, []);
+            perRoom.get(r).push({ g, L });
+          }
+        }
+        if (loose) {
+          warnings.push(`${loose} air sock length${loose > 1 ? "s are" : " is"} not inside a room outline, so the duty is shared by length, not floor area.`);
         } else {
-          for (const [r, list] of groups) {
+          for (const g of blank) g.w = 0;
+          for (const [r, list] of perRoom) {
             const A = roomAreaM2(project, r);
-            const L = list.reduce((a, x) => a + x.w, 0);
-            for (const x of list) x.w = L > 0 ? (A * x.w) / L : A / list.length;
+            const Ls = list.reduce((a, x) => a + x.L, 0);
+            for (const x of list) x.g.w += Ls > 0 ? (A * x.L) / Ls : 0;
           }
         }
       }
-      if (socks.length) {
+      if (blank.length) {
         const left = Math.max(0, (opts.sockDutyLs || 0) - typed);
-        const wSum = socks.reduce((a, x) => a + x.w, 0);
-        for (const x of socks) {
-          const share = left <= 0 ? 0 : wSum > 0 ? (left * x.w) / wSum : left / socks.length;
-          demand.set(x.nodeId, (demand.get(x.nodeId) || 0) + flowToM3s(share, "l/s"));
-        }
+        const wSum = blank.reduce((a, g) => a + g.w, 0);
+        for (const g of blank) g.flowLs = left <= 0 ? 0 : wSum > 0 ? (left * g.w) / wSum : left / blank.length;
         if (left <= 0) {
           warnings.push(opts.sockDutyLs > 0
             ? `Air socks set to share the unit's supply duty, but the other terminals already take all ${round(opts.sockDutyLs, 0)} l/s.`
-            : "An air sock has no airflow — type its total, or set the unit's supply duty and leave the sock at 0 to share it by length.");
+            : "An air sock has no airflow — type its total, or set the unit's supply duty and leave the sock blank to share it.");
+        }
+      }
+      for (const g of sockState.values()) {
+        for (const sg of g.segs) {
+          const c = childOf(sg);
+          if (!c) continue;
+          const share = g.lengthM > 0 ? g.flowLs * (g.lengths.get(sg.id) / g.lengthM) : 0;
+          demand.set(c, (demand.get(c) || 0) + flowToM3s(share, "l/s"));
         }
       }
     }
@@ -284,6 +319,38 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
       : `No plant (fan/AHU) placed on the ${systemType} system — flows use per-segment overrides only.`);
   }
 
+  // A sock's legs: runs of fabric between its inlet, its tees and its ends.
+  // Each leg is one diameter, sized for the air entering it.
+  const legOf = new Map();
+  const sockV = sockBasis(settings).inletVelocity;
+  for (const g of sockState.values()) {
+    const ids = new Set(g.segs.map((x) => x.id));
+    const childOf = (sg) => (parentSeg.get(sg.b)?.id === sg.id ? sg.b : parentSeg.get(sg.a)?.id === sg.id ? sg.a : null);
+    const kids = (node) => (adj.get(node) || []).filter(({ seg, other }) => ids.has(seg.id) && parentNode.get(other) === node).map((x) => x.seg);
+    g.legs = [];
+    for (const st of g.segs) {
+      const c = childOf(st);
+      if (!c) continue;
+      const up = c === st.b ? st.a : st.b;
+      const ps = parentSeg.get(up);
+      if (ps && ids.has(ps.id) && kids(up).length < 2) continue; // mid-leg
+      const leg = { segIds: [], flowLs: (segFlow.get(st.id) || 0) * 1000, fromInlet: up === g.inlet };
+      let cur = st;
+      let guard = 0;
+      while (cur && guard++ < 10000) {
+        leg.segIds.push(cur.id);
+        legOf.set(cur.id, leg);
+        const cc = childOf(cur);
+        const k = cc ? kids(cc) : [];
+        cur = k.length === 1 ? k[0] : null;
+      }
+      leg.diameterMm = Number(g.sock.props?.diameterMm) || sizeSockDiameterMm(leg.flowLs, sockV);
+      g.legs.push(leg);
+    }
+    const first = g.legs.find((l) => l.fromInlet) || g.legs[0];
+    g.inletDiameterMm = first?.diameterMm || 0;
+  }
+
   const segsToSize = plantFilter ? segs.filter((s) => reachableSegs.has(s.id) || s.flowOverride != null) : segs;
 
   // The corner at the upstream end of a duct — two ducts meeting at a point
@@ -295,6 +362,7 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
   }
   const at3d = (n) => ({ x: n.x / pxPerMeter, y: n.y / pxPerMeter, z: Number(n.z) || 0 });
   function cornerAt(s) {
+    if (s.fabric) return null; // a sock's bends are in its inlet static
     if (hasListedBend(s.fittings || [])) return null;
     const child = parentSeg.get(s.b)?.id === s.id ? s.b : parentSeg.get(s.a)?.id === s.id ? s.a : null;
     if (!child) return null;
@@ -331,7 +399,7 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
     const graphicalM = a && b ? graphicalLengthM(a, b, pxPerMeter) : 0;
     const lengthM = a && b ? engineeringLengthM(s, a, b, pxPerMeter) : 0;
 
-    const role = inferRole(s, a, b, pxPerMeter, parentNode, terminalNodes, adj, segFlow);
+    const role = s.fabric ? "sock" : inferRole(s, a, b, pxPerMeter, parentNode, terminalNodes, adj, segFlow);
     const limits = velocityLimits(role, settings);
     const maxVelocity = limits.max;
     const minVelocity = limits.min;
@@ -339,7 +407,12 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
     const shape = s.shapeOverride || settings.ductType || "round";
     let section;
     let fr;
-    if (s.sizeOverride && (s.sizeOverride.diameterMm || s.sizeOverride.widthMm)) {
+    if (s.fabric) {
+      // fabric: its leg's diameter, no friction or fitting loss of its own
+      const dia = legOf.get(s.id)?.diameterMm || sizeSockDiameterMm(flow * 1000, sockV);
+      const area = Math.PI * (dia / 1000) ** 2 / 4;
+      section = { shape: "round", diameterMm: dia, areaM2: area, velocity: area > 0 ? flow / area : 0, gradient: 0, fabric: true, warnings: [] };
+    } else if (s.sizeOverride && (s.sizeOverride.diameterMm || s.sizeOverride.widthMm)) {
       section = { shape, ...s.sizeOverride };
       fr = frictionForSection(flow, section, commonOpts);
       section.areaM2 = fr.area;
@@ -368,8 +441,8 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
       maxV = Math.max(maxV, velocity);
     }
 
-    const withinMax = velocity <= maxVelocity + 1e-6;
-    const withinMin = flow <= 0 || velocity + 1e-6 >= minVelocity;
+    const withinMax = s.fabric || velocity <= maxVelocity + 1e-6;
+    const withinMin = s.fabric || flow <= 0 || velocity + 1e-6 >= minVelocity;
     const rec = RECOMMENDED_VELOCITY[role] || RECOMMENDED_VELOCITY.main;
     const segWarnings = [...(section.warnings || [])];
     if (flow > 0 && !withinMax) {
@@ -434,8 +507,7 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
       // and is what the commissioning sheet reads at the terminal
       const runout = parentSeg.has(nodeId) ? segResById.get(parentSeg.get(nodeId).id) : null;
       const pvRunout = runout ? dynamicPressure(runout.velocity || 0, density) : 0;
-      const fixedPa = (c) => (isAirSock(c) ? sockStaticPa(c, settings) : Number(c.props?.terminalLossPa) || 0);
-      const termLoss = list.reduce((s, c) => s + fixedPa(c) + terminalK(c) * pvRunout, 0);
+      const termLoss = list.reduce((s, c) => s + (Number(c.props?.terminalLossPa) || 0) + terminalK(c) * pvRunout, 0);
       cum += termLoss;
       const node = nodesById.get(nodeId);
       terminals.push({
@@ -454,6 +526,46 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
       if (cur === rootNode && cum > indexStaticPa) {
         indexStaticPa = cum;
         indexTerminal = nodeId;
+        indexPath = path;
+      }
+    }
+    // each air sock is one terminal at its inlet: its whole air, and the
+    // inlet static it needs on top of the duct up to it
+    for (const g of sockState.values()) {
+      if (!g.inlet) continue;
+      let cur = g.inlet;
+      let cum = 0;
+      const path = [];
+      let guard = 0;
+      while (cur !== rootNode && parentSeg.has(cur) && guard++ < 10000) {
+        const ps = parentSeg.get(cur);
+        const r = segResById.get(ps.id);
+        if (r) { cum += r.dpPa; path.push(ps.id); }
+        cur = parentNode.get(cur);
+      }
+      const termLoss = sockStaticPa(g.sock, settings);
+      cum += termLoss;
+      g.connected = cur === rootNode;
+      const feed = parentSeg.has(g.inlet) ? segResById.get(parentSeg.get(g.inlet).id) : null;
+      g.feedSection = feed?.section && !feed.section.fabric ? feed.section : null;
+      const node = nodesById.get(g.inlet);
+      terminals.push({
+        nodeId: g.inlet,
+        sockId: g.sockId,
+        runoutSegId: feed ? feed.id : null,
+        runoutVelocity: feed ? feed.velocity : 0,
+        runoutSection: feed ? feed.section : null,
+        components: [],
+        name: g.sock.label || "Air sock",
+        totalPa: cum,
+        terminalLossPa: termLoss,
+        flowM3s: flowToM3s(g.flowLs || 0, "l/s"),
+        connected: g.connected,
+        point: node ? { x: node.x, y: node.y } : null,
+      });
+      if (g.connected && cum > indexStaticPa) {
+        indexStaticPa = cum;
+        indexTerminal = g.inlet;
         indexPath = path;
       }
     }
@@ -480,7 +592,7 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
   const plantClass = pressureClassFor(indexStaticPa);
   for (const r of segResults) {
     const classMax = PRESSURE_CLASSES[plantClass]?.maxVelocity;
-    if (r.flowM3s > 0 && classMax && r.velocity > classMax + 1e-6) {
+    if (!r.section?.fabric && r.flowM3s > 0 && classMax && r.velocity > classMax + 1e-6) {
       r.warnings.push(`Velocity ${round(r.velocity, 1)} m/s exceeds DW144 Class ${plantClass} limit of ${classMax} m/s.`);
       r.withinVelocity = false;
     }
@@ -509,6 +621,17 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
     maxVelocity: maxV,
     segments: segResults,
     terminals,
+    socks: [...sockState.values()].map((g) => ({
+      sockId: g.sockId,
+      flowLs: g.flowLs || 0,
+      inletNodeId: g.inlet || null,
+      lengthM: g.lengthM,
+      ventedLengthM: g.ventM || 0,
+      inletDiameterMm: g.inletDiameterMm || 0,
+      feedSection: g.feedSection || null, // the galvanised duct that feeds it
+      legs: (g.legs || []).map((l) => ({ segIds: l.segIds, diameterMm: l.diameterMm, flowLs: l.flowLs, fromInlet: l.fromInlet })),
+      connected: !!g.connected,
+    })),
     warnings,
     balance,
   };
@@ -611,7 +734,9 @@ function systemMembership(project, systems) {
     if (componentDef(c.kind)?.role === "plant") comp.set(c.id, c.id);
     else if (c.nodeId && node.has(c.nodeId)) comp.set(c.id, node.get(c.nodeId));
   }
-  return { seg, node, comp };
+  const sock = new Map();
+  for (const sys of systems) for (const k of sys.socks || []) if (sys.plant && k.connected) sock.set(k.sockId, sys.plant.id);
+  return { seg, node, comp, sock };
 }
 
 // The colour a duct, node or component is drawn in: its system's colour when

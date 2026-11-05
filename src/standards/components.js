@@ -148,15 +148,14 @@ export const COMPONENTS = {
     foot: { w: 0.6, d: 0.3, t: 0.2 },
     props: { designFlow_ls: 100, terminalLossPa: 15, note: "" },
   },
-  // Air sock — a fabric supply duct that discharges along its length. Drawn
-  // full length on the plan (width = length, depth = diameter) with its inlet
-  // on the left-hand end, where the duct joins. A design flow of 0 takes a
-  // share of the unit's supply duty in proportion to vented length — for a
-  // job where only the total and "ventilated throughout" are known.
-  // See src/standards/airsock.js for the nominal sizing and pressure.
+  // The old one-piece air sock. Socks are now traced fabric lengths (see
+  // src/standards/airsock.js): this kind is only read to convert files
+  // that have one, and stands in for the spigot at a sock's inlet in the
+  // fabrication model. It is in no palette.
   air_sock: {
     kind: "air_sock",
     label: "Air sock (fabric duct)",
+    hidden: true, // never offered: socks are traced with the Air sock tool
     category: "terminal",
     role: "terminal",
     symbol: "SOCK",

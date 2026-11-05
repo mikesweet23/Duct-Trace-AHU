@@ -20,7 +20,7 @@ import { componentDef, isDualPort, symbolOf } from "../standards/components.js";
 import { showPrompt, toast } from "./modal.js";
 import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
 import { findSegResult, isIndexSegment, memberColor, memberPlantId } from "../calc/network.js";
-import { isAirSock, sockFigures, sockFlowLs } from "../standards/airsock.js";
+import { sockFigures, sockById, sockConfirmed } from "../standards/airsock.js";
 import { roomPlantId } from "../rooms.js";
 import { levelView, multiLevel, activeLevelId, levelIdOf, levelName, levelElevation } from "../levels.js";
 
@@ -29,7 +29,7 @@ function hexAlpha(hex, a) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
   return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : `rgba(29,78,216,${a})`;
 }
-import { snapAt, hitSegment, hitComponentAt, EQUIP_HIT_PX } from "../snap.js";
+import { snapAt, hitSegment, hitComponentAt, heightAlong, EQUIP_HIT_PX } from "../snap.js";
 import { uid } from "../state.js";
 import { systemColor, systemInfo, SYSTEM_KEYS } from "../systems.js";
 import { componentBox, componentBoxTrue, handlesOf, hitHandle, pxPerMeterOf, HANDLE_PX, isFourPort, portOffset, unitPortOffset, connPoint, componentNodeIds } from "../layout.js";
@@ -144,6 +144,7 @@ export class CanvasView {
       const wide = snapAt(p, world, { ...opts, magnetPx: EQUIP_HIT_PX * 1.6, runDots: false });
       if (wide?.kind === "component") sn = wide;
     }
+    if (!sn && this.store.traceFabric && !this.draft) sn = this.sockStartAt(world);
     if (sn) return { x: sn.at.x, y: sn.at.y, snap: sn };
     const last = this.draft ? p.nodes.find((n) => n.id === this.draft.lastNodeId) : null;
     if (!last) return { x: world.x, y: world.y, snap: null };
@@ -500,20 +501,6 @@ export class CanvasView {
       if (!c) return;
       if (!d.moved) { this.store.snapshot(); d.moved = true; }
       const px = this.pxPerMeter();
-      if (componentDef(c.kind)?.inletEnd) {
-        // an air sock turns and stretches about its inlet: point it, pull it
-        const inlet = this.store.project.nodes.find((n) => n.id === c.nodeId) || c;
-        if (d.handle.kind === "rot") {
-          const a = Math.atan2(world.y - inlet.y, world.x - inlet.x) * 180 / Math.PI;
-          this.store.resizeComponent(c, null, null, e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15);
-        } else {
-          const r = ((Number(c.rot) || 0) * Math.PI) / 180;
-          const along = (world.x - inlet.x) * Math.cos(r) + (world.y - inlet.y) * Math.sin(r);
-          this.store.resizeComponent(c, Math.max(0.5, Math.round((along / px) * 10) / 10), null, null);
-        }
-        this.store.emitSoon();
-        return;
-      }
       if (d.handle.kind === "rot") {
         const a = Math.atan2(world.y - c.y, world.x - c.x) * 180 / Math.PI + 90;
         const rot = e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15;
@@ -660,17 +647,26 @@ export class CanvasView {
     }
     const tgt = this.traceTarget(world);
     const last = this.draft ? p.nodes.find((n) => n.id === this.draft.lastNodeId) : null;
+    const fabric = !!store.traceFabric;
+
+    // Galvanised never runs on from fabric: a sock is the end of the metal.
+    if (!fabric && tgt.snap && this.isFabricOnly(tgt.snap)) {
+      toast("That's an air sock — galvanised can't run on from fabric. Use the Air sock tool to extend it or branch off it.");
+      return;
+    }
 
     // Same plan point at a different height: a riser, drawn as a marker on the
-    // plan and as a vertical in 3D.
+    // plan and as a vertical in 3D. With the Air sock tool, a riser before any
+    // fabric is laid is a galvanised drop to the sock; after, it is fabric.
     if (last && !tgt.snap && dist(last, tgt) < 6 / this.zoom && Math.abs((last.z || 0) - store.traceHeight) > 0.05) {
       store.snapshot();
       const risen = { id: uid("n"), x: last.x, y: last.y, z: store.traceHeight };
       p.nodes.push(risen);
-      store.addSegment(last, risen);
-      this.draft = { lastNodeId: risen.id, lastOff: null, count: this.draft.count + 1 };
+      const fabricRiser = fabric && this.draft.fabricLaid;
+      store.addSegment(last, risen, store.activeSystem, fabricRiser ? { fabric: true, sockId: this.sockFor(last) } : {});
+      this.draft = { ...this.draft, lastNodeId: risen.id, lastOff: null, count: this.draft.count + 1 };
       store.commit();
-      toast(`Riser to ${round(store.traceHeight, 2)} m`);
+      toast(fabric && !fabricRiser ? `Galvanised drop to ${round(store.traceHeight, 2)} m — the sock starts here` : `Riser to ${round(store.traceHeight, 2)} m`);
       return;
     }
     if (last && !tgt.snap && dist(last, tgt) < 3 / this.zoom) return; // a double tap on the same point
@@ -681,17 +677,25 @@ export class CanvasView {
       const anchored = p.components.some((c) => componentNodeIds(c).includes(node.id));
       if (!anchored && !joined) node.z = store.traceHeight;
       if (joined && !anchored && Number.isFinite(Number(node.z))) store.traceHeight = round(node.z, 2);
-      this.draft = { lastNodeId: node.id, lastOff: off, count: 0 };
+      this.draft = { lastNodeId: node.id, lastOff: off, count: 0, sockId: fabric ? store.sockAt([node.id]) : null, fabricLaid: false };
       store.commit();
+      if (fabric && !joined) toast("Start a sock on the end of a supply duct, a dot on a run or the unit — this one isn't joined to anything yet");
+      else if (fabric) toast(this.draft.sockId ? "Branching off the sock — click each corner" : "Sock starts here — click each corner, double-click or Enter to end it");
       this.hooks?.onHint?.();
       return;
     }
     if (node.id === this.draft.lastNodeId) { store.commit(); return; }
     const a = p.nodes.find((n) => n.id === this.draft.lastNodeId);
     if (!Number.isFinite(Number(node.z))) node.z = store.traceHeight;
-    const seg = store.addSegment(a, node);
-    if (seg) { seg.aOff = this.draft.lastOff; seg.bOff = off; store.fitBranch(seg); }
-    this.draft = { lastNodeId: node.id, lastOff: off, count: this.draft.count + 1 };
+    const seg = fabric
+      ? store.addSegment(a, node, "supply", { fabric: true, sockId: this.sockFor(a) })
+      : store.addSegment(a, node);
+    if (seg) {
+      seg.aOff = this.draft.lastOff; seg.bOff = off;
+      if (!seg.fabric) store.fitBranch(seg);
+      else this.draft.sockId = seg.sockId;
+    }
+    this.draft = { ...this.draft, lastNodeId: node.id, lastOff: off, count: this.draft.count + 1, fabricLaid: this.draft.fabricLaid || !!seg?.fabric };
     if (joined) {
       // joined onto a unit or an existing run: that click finishes the run
       const what = tgt.snap?.kind === "component" ? (tgt.snap.name || tgt.snap.what) : "the run";
@@ -703,6 +707,62 @@ export class CanvasView {
     }
     store.commit();
     this.hooks?.onHint?.();
+  }
+
+  // Where an air sock can start near a click: the open end of a supply duct,
+  // or a point on a sock already drawn — pulled from further than a normal
+  // snap, because "the end of the duct" is where a sock goes and a few
+  // pixels off it must not leave the sock unjoined.
+  sockStartAt(world) {
+    const p = this.lp();
+    const reach = 40 / this.zoom;
+    let best = null;
+    for (const n of p.nodes) {
+      const t = p.segments.filter((s) => s.a === n.id || s.b === n.id);
+      if (!t.length || t.some((s) => s.system !== "supply")) continue;
+      const openEnd = t.length === 1 && !t[0].fabric && !p.components.some((c) => componentNodeIds(c).includes(n.id));
+      const onSock = t.some((s) => s.fabric);
+      if (!openEnd && !onSock) continue;
+      const d = dist(n, world);
+      if (d > reach) continue;
+      const score = d - (openEnd ? reach : 0); // a duct's open end wins over a sock corner
+      if (!best || score < best.score) best = { score, n, openEnd };
+    }
+    if (best) return { kind: "node", node: best.n, at: { x: best.n.x, y: best.n.y }, off: null, d: dist(best.n, world), what: best.openEnd ? "duct end" : "sock", name: "", pulled: true };
+    // nothing to start on at an end: the nearest point along a sock, which
+    // cuts a tee in it there
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    let run = null;
+    for (const sg of p.segments) {
+      if (!sg.fabric) continue;
+      const a = byId.get(sg.a), b = byId.get(sg.b);
+      if (!a || !b) continue;
+      const r = pointSegment(world, a, b);
+      if (r.distance > reach || r.t <= 0.02 || r.t >= 0.98) continue;
+      if (!run || r.distance < run.r.distance) run = { sg, r, a, b };
+    }
+    if (!run) return null;
+    return { kind: "run", seg: run.sg, r: run.r, at: { x: run.r.point.x, y: run.r.point.y }, d: run.r.distance, z: heightAlong(run.a, run.b, run.r.t), what: "tee in the sock", name: "", pulled: true };
+  }
+
+  // The sock a new fabric length from this node belongs to: the one being
+  // drawn, the one it branches off, or a new one.
+  sockFor(node) {
+    const store = this.store;
+    if (this.draft?.sockId && store.project.socks?.some((k) => k.id === this.draft.sockId)) return this.draft.sockId;
+    const id = store.sockAt([node.id]) || store.newSock().id;
+    if (this.draft) this.draft.sockId = id;
+    return id;
+  }
+
+  // A snap onto fabric only — a sock's run, or a point with nothing but
+  // fabric on it — where galvanised may not go.
+  isFabricOnly(sn) {
+    const p = this.store.project;
+    if (sn.kind === "run") return !!sn.seg?.fabric;
+    if (sn.kind !== "node" || !sn.node) return false;
+    const t = p.segments.filter((s) => s.a === sn.node.id || s.b === sn.node.id);
+    return t.length > 0 && t.every((s) => s.fabric);
   }
 
   connect(tgt) {
@@ -1142,11 +1202,16 @@ export class CanvasView {
       const shape = res?.section?.shape || s.shapeOverride || p.settings.ductType || "round";
       if (isVerticalRiser(a, b, px)) { this.drawRiserMarker(ctx, a, b, s, selected); continue; }
       const width = this.ductWidthWorld(res, s);
+      if (s.fabric) {
+        this.drawSockLength(ctx, a, b, Math.max(width, 6 / z), this.colorOf("seg", s.id, "supply"), { selected, index: this.isIndexSeg(s.id), confirmed: sockConfirmed(sockById(p, s.sockId)) });
+        continue;
+      }
       this.drawDuctBody(ctx, a, b, width, shape, base, { selected, index: this.isIndexSeg(s.id), noFlow, overVel: res && res.withinMax === false, stripe });
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       const segLenScr = dist(a, b) * z;
       labels.push({ s, res, mx, my, a, b, width, segLenScr, noFlow });
     }
+    this.drawSockLabels(ctx, p);
     for (const L of labels) {
       const { res, mx, my, a, b, width, segLenScr, noFlow } = L;
       const off = width / 2 + 10 / z;
@@ -1164,6 +1229,81 @@ export class CanvasView {
       if (picked && Math.abs((a.z || 0) - (b.z || 0)) > 0.05) {
         this.chip(ctx, `slope Δh ${round(Math.abs((a.z || 0) - (b.z || 0)), 2)} m`, mx, my + off + 4 / z, { size: 9, color: COL.soft });
       }
+    }
+  }
+
+  // A length of air sock: a light fabric tube in the system's colour, the
+  // outline dashed while it is on nominal figures, and a row of dots each
+  // side where it lets the air out.
+  drawSockLength(ctx, a, b, width, color, flags) {
+    const z = this.zoom;
+    if (flags.selected || flags.index) {
+      ctx.strokeStyle = flags.selected ? COL.sel : COL.index;
+      ctx.globalAlpha = flags.selected ? 0.9 : 0.28;
+      ctx.lineWidth = width + (flags.selected ? 7 : 3) / z;
+      ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.lineCap = "round";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.strokeStyle = "#fbfaf7";
+    ctx.globalAlpha = 0.72;
+    ctx.lineWidth = Math.max(width - 3.2 / z, 1 / z);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.globalAlpha = 1;
+    if (!flags.confirmed && width > 6 / z) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.2 / z;
+      ctx.setLineDash([5 / z, 4 / z]);
+      ctx.lineCap = "butt";
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const L = dist(a, b);
+    if (L < 1e-6) return;
+    const ux = (b.x - a.x) / L, uy = (b.y - a.y) / L;
+    const off = width * 0.28;
+    const step = Math.max(10 / z, 0.5 * this.pxPerMeter());
+    ctx.fillStyle = color;
+    for (let t = step / 2; t < L; t += step) {
+      const x = a.x + ux * t, y = a.y + uy * t;
+      for (const sgn of [-1, 1]) {
+        ctx.beginPath(); ctx.arc(x - uy * off * sgn, y + ux * off * sgn, 1.5 / z, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  // One label per sock, by its longest length: name, airflow, l/s per m,
+  // inlet static and whether that is nominal or the manufacturer's.
+  drawSockLabels(ctx, p) {
+    const z = this.zoom;
+    const unit = normalizeFlowUnit(p.settings.flowUnit);
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    for (const sock of p.socks || []) {
+      let best = null;
+      for (const s of p.segments) {
+        if (!s.fabric || s.sockId !== sock.id) continue;
+        const a = byId.get(s.a), b = byId.get(s.b);
+        if (!a || !b || !p.nodes.includes(a)) continue; // on the level in view
+        if (this.plantHidden("seg", s.id)) continue;
+        const L = dist(a, b);
+        if (!best || L > best.L) best = { a, b, L, s };
+      }
+      if (!best || best.L * z < 40) continue;
+      const fig = sockFigures(this.store.project, sock, this.results);
+      const res = this.segResult(best.s.id);
+      const half = (res ? this.ductWidthWorld(res, best.s) : 6 / z) / 2;
+      const horiz = Math.abs(best.b.x - best.a.x) >= Math.abs(best.b.y - best.a.y);
+      const mx = (best.a.x + best.b.x) / 2, my = (best.a.y + best.b.y) / 2;
+      const lx = horiz ? mx : mx + half + 60 / z, ly = horiz ? my + half + 14 / z : my;
+      const bits = [`ø${fig.diameterMm}`];
+      if (fig.flowLs > 0) bits.push(formatFlowLs(fig.flowLs, unit), `${round(unit === "m3/h" ? fig.m3hPerM : fig.flowPerM_ls, 1)} ${unit === "m3/h" ? "m³/h" : "l/s"}/m`);
+      bits.push(`${round(fig.staticPa, 0)} Pa ${fig.confirmed ? "mfr" : "nom"}`);
+      this.chip(ctx, sock.label || "Air sock", lx, ly, { size: 10.5, bold: true });
+      this.chip(ctx, bits.join(" · "), lx, ly + 14 / z, { size: 9.5, mono: true, color: COL.soft });
     }
   }
 
@@ -1240,6 +1380,7 @@ export class CanvasView {
       if (touching.length === 2 && !n.tee && !selected) continue; // a plain corner
       const sys = touching[0]?.system;
       if (touching.length && touching.every((t) => this.plantHidden("seg", t.id))) continue;
+      if (touching.length && touching.every((t) => t.fabric) && touching.length !== 3 && !selected) continue; // a sock's end or corner — drawn by the sock
       ctx.beginPath();
       if (n.tee || touching.length >= 3) {
         ctx.arc(n.x, n.y, 4 / z, 0, Math.PI * 2);
@@ -1276,7 +1417,6 @@ export class CanvasView {
       if (c.system !== "both" && hidden?.has(c.system)) continue;
       if (this.plantHidden("comp", c.id)) continue;
       const selected = this.store.isSelected("component", c.id);
-      if (def.airSock) { this.drawAirSock(ctx, c, def, selected); continue; }
       const box = componentBox(c, px, z);
       const fill = this.bySystem() && (def.role === "plant" ? c.color : memberPlantId(this.results, "comp", c.id))
         ? (def.role === "plant" ? c.color : this.colorOf("comp", c.id, c.system))
@@ -1332,67 +1472,6 @@ export class CanvasView {
       if (isFourPort(c)) this.drawUnitPorts(ctx, c, z);
       if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
     }
-  }
-
-  // An air sock: drawn its real length and diameter, the inlet end square
-  // where the duct joins, the far end rounded, and a row of dots along the
-  // vented length to show where it discharges.
-  drawAirSock(ctx, c, def, selected) {
-    const p = this.store.project;
-    const z = this.zoom;
-    const px = this.pxPerMeter();
-    const flowLs = sockFlowLs(c, this.results);
-    const fig = sockFigures(c, flowLs, p.settings);
-    const L = Math.max(fig.lengthM * px, 12 / z);
-    const D = Math.max((fig.diameterMm / 1000) * px, 6 / z);
-    const col = this.bySystem() ? this.colorOf("comp", c.id, "supply") : def.color;
-    const rot = ((Number(c.rot) || 0) * Math.PI) / 180;
-    ctx.save();
-    ctx.translate(c.x, c.y);
-    ctx.rotate(rot);
-    const x0 = -L / 2, r = D / 2;
-    ctx.beginPath();
-    ctx.moveTo(x0, -r);
-    ctx.lineTo(L / 2 - r, -r);
-    ctx.arc(L / 2 - r, 0, r, -Math.PI / 2, Math.PI / 2);
-    ctx.lineTo(x0, r);
-    ctx.closePath();
-    ctx.globalAlpha = 0.22;
-    ctx.fillStyle = col;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.lineWidth = (selected ? 2.6 : 1.6) / z;
-    ctx.strokeStyle = selected ? COL.sel : col;
-    ctx.setLineDash(fig.confirmed ? [] : [6 / z, 3 / z]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    // inlet collar
-    ctx.fillStyle = col;
-    ctx.fillRect(x0 - 2 / z, -r, 4 / z, D);
-    // perforations along the vented length
-    const vent = fig.lengthM > 0 ? (fig.ventedLengthM / fig.lengthM) * L : 0;
-    const step = Math.max(10 / z, 0.5 * px);
-    ctx.fillStyle = col;
-    for (let x = L / 2 - Math.max(r, 4 / z) - vent + step / 2; x < L / 2 - r * 0.6; x += step) {
-      if (x < x0 + 4 / z) continue;
-      ctx.beginPath(); ctx.arc(x, -r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(x, r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.restore();
-    // labels, kept upright
-    const unit = normalizeFlowUnit(p.settings.flowUnit);
-    const below = c.y + Math.abs(Math.sin(rot)) * L / 2 + r + 12 / z;
-    ctx.fillStyle = COL.ink;
-    ctx.font = `600 ${11 / z}px ${FONT}`;
-    ctx.textAlign = "center";
-    ctx.fillText(c.label || def.label, c.x, below);
-    ctx.fillStyle = COL.soft;
-    ctx.font = `500 ${9.5 / z}px ${MONO}`;
-    const bits = [`ø${fig.diameterMm} × ${round(fig.lengthM, 1)} m`];
-    if (flowLs > 0) bits.push(formatFlowLs(flowLs, unit), `${round(unit === "m3/h" ? fig.m3hPerM : fig.flowPerM_ls, 1)} ${unit === "m3/h" ? "m³/h" : "l/s"}/m`);
-    bits.push(`${round(fig.staticPa, 0)} Pa ${fig.confirmed ? "mfr" : "nom"}`);
-    ctx.fillText(bits.join(" · "), c.x, below + 11 / z);
-    if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
   }
 
   // The four connections of an AHU or HRV serving both sides: a coloured

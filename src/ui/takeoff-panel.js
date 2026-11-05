@@ -39,9 +39,10 @@ export function renderTakeoff(store, results, el) {
   const sysRows = (takeoff.systems || []).map((g) => `<tr><td>${g.title}</td><td>${g.straightM}</td><td>${g.fittings}</td><td>${g.sheetAreaM2}</td></tr>`).join("");
   const sk = takeoff.socks;
   const sockRows = (sk?.bodies || []).map((g) => `<tr><td>Air sock ${g.size} — ${g.fabric}</td><td>${g.lengthM} m</td><td>${g.qty}</td></tr>`).join("")
+    + (sk?.fittings || []).map((g) => `<tr><td>${g.label}${g.size ? ` ${g.size}` : ""}</td><td></td><td>${g.qty}</td></tr>`).join("")
     + (sk?.suspension || []).map((g) => `<tr><td>${g.label}</td><td>${g.lengthM} m</td><td></td></tr>`).join("")
     + (sk?.drops ? `<tr><td>Drop rods / hangers (est. ${sk.dropSpacingM} m centres)</td><td></td><td>${sk.drops}</td></tr>` : "")
-    + (sk?.inlets ? `<tr><td>Inlet connectors to duct</td><td></td><td>${sk.inlets}</td></tr>` : "");
+    ;
 
   const circ = takeoff.circular.map((g) => `
     <div class="rcard">
@@ -100,7 +101,7 @@ export function renderTakeoff(store, results, el) {
     <table class="schedule"><thead><tr><th>Item</th><th></th><th>Qty</th></tr></thead><tbody>${supRows || `<tr><td colspan="3">None</td></tr>`}</tbody></table>
     ${sockRows ? `<div class="section-title">Air socks (fabric ductwork)</div>
     <table class="schedule"><thead><tr><th>Item</th><th>Length</th><th>Qty</th></tr></thead><tbody>${sockRows}</tbody></table>
-    <p class="small-note">Sock bodies by diameter and fabric; suspension and drops from each sock's suspension type. Confirm with the sock manufacturer's selection.</p>` : ""}
+    <p class="small-note">Fabric by leg diameter and fabric type, its bends, tees and end caps; suspension and drops from each sock's suspension type. Confirm with the sock manufacturer's selection.</p>` : ""}
     <div class="section-title">Insulation &amp; cladding</div>
     ${ins || `<p class="small-note">No insulation assigned. Set it on Settings, a system, or a section.</p>`}
 
