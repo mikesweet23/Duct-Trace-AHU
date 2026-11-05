@@ -155,6 +155,7 @@ export const COMPONENTS = {
   air_sock: {
     kind: "air_sock",
     label: "Air sock (fabric duct)",
+    hidden: true, // never offered: socks are traced with the Air sock tool
     category: "terminal",
     role: "terminal",
     symbol: "SOCK",

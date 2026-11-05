@@ -147,7 +147,7 @@ export class Panels {
     const rot = common(comps, (c) => Number(c.rot) || 0);
     const kind = common(terms, (c) => c.kind);
     const inLoss = common(inlines, (c) => Number(c.props?.lossPa) || 0);
-    const termKinds = Object.values(COMPONENTS).filter((x) => x.role === "terminal");
+    const termKinds = Object.values(COMPONENTS).filter((x) => x.role === "terminal" && !x.hidden);
     const constr = common(o.segments, (s) => (s.shapeOverride || s.constructionType ? sectionConstructionKey(s, this.store.project.settings) : ""));
     return h`
       <p class="small-note"><b>${count}</b> picked. Change a field and it is set on every picked item that has it. Drag any picked item to move them all; arrow keys nudge 50 mm (Shift 500 mm).</p>
@@ -510,7 +510,7 @@ export class Panels {
         <button class="btn ghost tiny" data-sock-act="galvanised">Make this length galvanised</button>
         <button class="btn ghost tiny" data-act="delete">Delete this length</button>
       </div>
-      <p class="small-note">To extend it or add a 90 or a tee, arm <b>Air sock</b> <kbd>K</kbd>, start on its end or click the dot on it, and click each corner.</p>
+      <p class="small-note">To extend it or add a 90 or a tee, arm <b>Air sock</b> <kbd>K</kbd>, click its end (or on the sock, for a tee) and click each corner.</p>
 
       <div class="section-title">Preset</div>
       <div class="field"><label>Typical figures</label>
@@ -721,7 +721,7 @@ export class Panels {
       <p class="small-note">Two connections on each face. <b>IN</b> (internal, to the building): <b style="color:#1f6fd1">supply</b> and <b style="color:#c2410c">extract</b>. <b>EX</b> (external, to outside): <b style="color:#15803d">fresh air in</b> and <b style="color:#7c4a1e">exhaust out</b>. Pick the airstream in Trace and start on its ring. Turn the unit with the handle above the box. If the model has supply and extract (or fresh air and exhaust) the other way round, swap that face below — each face swaps on its own, and ducts already on the unit move with their connection.</p>` : ""}
       <div class="field"><label>Type</label>
         <select data-k="kind">
-          ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
+          ${Object.values(COMPONENTS).filter((d) => d.category === def.category && !d.hidden).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
         </select></div>
       ${isPlant ? this.systemIdentityFields(c, def) : ""}
       ${`<div class="section-title">Size &amp; height</div>
