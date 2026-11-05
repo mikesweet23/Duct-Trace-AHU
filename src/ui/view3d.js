@@ -3,9 +3,10 @@
 
 import { isVerticalRiser } from "../geom.js";
 import { componentDef } from "../standards/components.js";
+import { resolveLevels } from "../levels.js";
 import { componentFoot, pxPerMeterOf } from "../layout.js";
 import { formatFlow, round } from "../units.js";
-import { findSegResult } from "../calc/network.js";
+import { findSegResult, memberColor, memberPlantId } from "../calc/network.js";
 import { meshPiece, pieceFill, airflowArrow, systemColor } from "./fab3d.js";
 import { sizeLabel } from "../fab/catalog.js";
 
@@ -98,7 +99,7 @@ export class View3D {
   }
 
   world() {
-    const p = this.store.project;
+    const p = this.proj();
     const s = pxPerMeterOf(p);
     const xs = [], ys = [];
     for (const n of p.nodes) { xs.push(n.x); ys.push(n.y); }
@@ -150,13 +151,22 @@ export class View3D {
     this.draw();
   }
 
+  // every floor at its own elevation — the 3D view is the whole building
+  proj() { return resolveLevels(this.store.project); }
+
   hidden(system) {
     return this.store.hiddenSystems?.has(system);
   }
 
+  // hidden with its system (unit) from the Systems list
+  plantHidden(type, id) {
+    const pid = memberPlantId(this.results, type, id);
+    return !!pid && !!this.store.hiddenPlants?.has(pid);
+  }
+
   draw() {
     const ctx = this.ctx;
-    const p = this.store.project;
+    const p = this.proj();
     ctx.save();
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
@@ -194,14 +204,17 @@ export class View3D {
       const def = componentDef(comp.kind);
       if (!def) continue;
       if (this.hidden(comp.system) && comp.system !== "both") continue;
+      if (this.plantHidden("comp", comp.id)) continue;
       const foot = componentFoot(comp);
       const z = Number.isFinite(Number(comp.heightM)) ? comp.heightM : 0;
       const center = this.toXYZ(W, comp, z);
       const grow = Math.max(1, (W.spanM / 26) * 0.7 / Math.max(foot.w, foot.d));
       const bw = foot.w * grow;
       const bd = foot.d * grow;
-      const bh = Math.max(foot.t, 0.18) * grow;
-      const fill = def.color;
+      const bh = Math.max(def.airSock ? foot.d : foot.t, 0.18) * grow;
+      const fill = def.role === "plant" && comp.color && (p.settings.colourBy || "system") === "system"
+        ? comp.color
+        : memberColor(p, this.results, "comp", comp.id, def.color);
       cuboid(center, bw, bd, bh / this.ex, foot.rot).forEach((face) => {
         items.push({ t: "poly", pts: face, fill, stroke: "rgba(0,0,0,0.35)", z: center.Z, alpha: mode === "transparent" ? 0.35 : 0.92 });
       });
@@ -254,10 +267,10 @@ export class View3D {
   }
 
   drawEngineering(items, W, mode) {
-    const p = this.store.project;
+    const p = this.proj();
     const sel = this.store.selection;
     for (const s of p.segments) {
-      if (this.hidden(s.system)) continue;
+      if (this.hidden(s.system) || this.plantHidden("seg", s.id)) continue;
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
@@ -265,7 +278,7 @@ export class View3D {
       const selected = sel?.type === "segment" && sel.id === s.id;
       const col = selected ? "#e0a422" : mode === "velocity" ? pieceFill({ velocity: res?.velocity }, "velocity")
         : mode === "pressure" ? pieceFill({ dpPa: res?.dpPa }, "pressure")
-        : systemColor(s.system);
+        : memberColor(p, this.results, "seg", s.id, systemColor(s.system));
       const za = a.z || 0, zb = b.z || 0;
       const poly = [this.toXYZ(W, a, za)];
       if (Math.abs(za - zb) > 0.02 && !isVerticalRiser(a, b, W.s)) poly.push(this.toXYZ(W, b, za));
@@ -283,7 +296,7 @@ export class View3D {
   }
 
   drawFabrication(items, W, mode) {
-    const p = this.store.project;
+    const p = this.proj();
     const sel = this.store.selection;
     const explode = this.store.exploded ? 0.18 : 0;
     const pieces = p.physical.pieces || [];
@@ -344,8 +357,8 @@ export class View3D {
 
   drawStaff(ctx, W, mode) {
     let zMax = 1;
-    for (const n of this.store.project.nodes) zMax = Math.max(zMax, n.z || 0);
-    for (const c of this.store.project.components) zMax = Math.max(zMax, c.heightM || 0);
+    for (const n of this.proj().nodes) zMax = Math.max(zMax, n.z || 0);
+    for (const c of this.proj().components) zMax = Math.max(zMax, c.heightM || 0);
     const top = Math.ceil(zMax + 0.5);
     const sx = -W.spanM * 0.55;
     const sy = -W.spanM * 0.55;

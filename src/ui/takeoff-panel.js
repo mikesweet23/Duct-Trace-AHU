@@ -4,6 +4,7 @@ import { buildTakeoff, emptyTakeoffFilters, uniqueFilterValues } from "../fab/ta
 import { takeoffCsv, procurementCsv, fabricationCsv, takeoffExcelXml, downloadText, takeoffNarrative } from "../fab/export.js";
 import { generatePhysicalModel } from "../fab/generator.js";
 import { reviewPhysicalChanges } from "../fab/change.js";
+import { systemTitle } from "../systems.js";
 
 function h(strings, ...vals) {
   return strings.reduce((a, s, i) => a + s + (vals[i] ?? ""), "");
@@ -27,9 +28,20 @@ export function renderTakeoff(store, results, el) {
 
   const review = reviewPhysicalChanges(p, results);
   const filters = { ...emptyTakeoffFilters(), ...(store.takeoffFilters || {}) };
-  const takeoff = buildTakeoff(p.physical, filters, p);
+  const takeoff = buildTakeoff(p.physical, filters, p, results);
   const vals = uniqueFilterValues(p.physical.pieces || []);
-  const opt = (arr, cur) => [`<option value="">All</option>`, ...arr.map((v) => `<option value="${v}" ${v === cur ? "selected" : ""}>${v}</option>`)].join("");
+  const opt = (arr, cur, label = (v) => v) => [`<option value="">All</option>`, ...arr.map((v) => `<option value="${v}" ${v === cur ? "selected" : ""}>${label(v)}</option>`)].join("");
+  // the AHU filter by tag and name, not the internal id — every unit on the
+  // job, so a system with only socks on it can still be picked
+  const plants = p.components.filter((c) => c.tag || c.color);
+  const ahuIds = [...new Set([...plants.map((c) => c.id), ...vals.ahu])];
+  const plantTitle = (id) => systemTitle(p.components.find((c) => c.id === id), id);
+  const sysRows = (takeoff.systems || []).map((g) => `<tr><td>${g.title}</td><td>${g.straightM}</td><td>${g.fittings}</td><td>${g.sheetAreaM2}</td></tr>`).join("");
+  const sk = takeoff.socks;
+  const sockRows = (sk?.bodies || []).map((g) => `<tr><td>Air sock ${g.size} — ${g.fabric}</td><td>${g.lengthM} m</td><td>${g.qty}</td></tr>`).join("")
+    + (sk?.suspension || []).map((g) => `<tr><td>${g.label}</td><td>${g.lengthM} m</td><td></td></tr>`).join("")
+    + (sk?.drops ? `<tr><td>Drop rods / hangers (est. ${sk.dropSpacingM} m centres)</td><td></td><td>${sk.drops}</td></tr>` : "")
+    + (sk?.inlets ? `<tr><td>Inlet connectors to duct</td><td></td><td>${sk.inlets}</td></tr>` : "");
 
   const circ = takeoff.circular.map((g) => `
     <div class="rcard">
@@ -61,7 +73,7 @@ export function renderTakeoff(store, results, el) {
     ${review.stale ? `<div class="change-banner">Engineering has changed since the model was last accepted. Review changes on the Fabrication tab before procuring.</div>` : ""}
     <div class="section-title">Filters</div>
     <div class="field"><label>System</label><select data-tf="system">${opt(vals.system, filters.system)}</select></div>
-    <div class="field"><label>AHU / plant</label><select data-tf="ahu">${opt(vals.ahu, filters.ahu)}</select></div>
+    <div class="field"><label>System (unit)</label><select data-tf="ahu">${opt(ahuIds, filters.ahu, plantTitle)}</select></div>
     <div class="field"><label>Floor</label><select data-tf="floor">${opt(vals.floor, filters.floor)}</select></div>
     <div class="field"><label>Zone</label><select data-tf="zone">${opt(vals.zone, filters.zone)}</select></div>
     <div class="field"><label>Area</label><select data-tf="area">${opt(vals.area, filters.area)}</select></div>
@@ -69,6 +81,8 @@ export function renderTakeoff(store, results, el) {
     <div class="field"><label>Size</label><select data-tf="size">${opt(vals.size, filters.size)}</select></div>
     <div class="field"><label>Duct type</label><select data-tf="type">${opt(vals.type, filters.type)}</select></div>
 
+    ${sysRows ? `<div class="section-title">By system</div>
+    <table class="schedule"><thead><tr><th>System</th><th>Straight m</th><th>Fittings</th><th>Sheet m²</th></tr></thead><tbody>${sysRows}</tbody></table>` : ""}
     <div class="section-title">Circular</div>
     ${circ || `<p class="small-note">No circular straight duct in this filter.</p>`}
     <div class="section-title">Rectangular</div>
@@ -84,6 +98,9 @@ export function renderTakeoff(store, results, el) {
     <table class="schedule"><thead><tr><th>Item</th><th>Size</th><th>Qty</th></tr></thead><tbody>${ancRows || `<tr><td colspan="3">None</td></tr>`}</tbody></table>
     <div class="section-title">Supports (estimate)</div>
     <table class="schedule"><thead><tr><th>Item</th><th></th><th>Qty</th></tr></thead><tbody>${supRows || `<tr><td colspan="3">None</td></tr>`}</tbody></table>
+    ${sockRows ? `<div class="section-title">Air socks (fabric ductwork)</div>
+    <table class="schedule"><thead><tr><th>Item</th><th>Length</th><th>Qty</th></tr></thead><tbody>${sockRows}</tbody></table>
+    <p class="small-note">Sock bodies by diameter and fabric; suspension and drops from each sock's suspension type. Confirm with the sock manufacturer's selection.</p>` : ""}
     <div class="section-title">Insulation &amp; cladding</div>
     ${ins || `<p class="small-note">No insulation assigned. Set it on Settings, a system, or a section.</p>`}
 

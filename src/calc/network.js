@@ -11,7 +11,10 @@ import { sizeDuct, frictionForSection, dynamicPressure } from "../standards/sizi
 import { totalFittingK, cornerBendK, hasListedBend } from "../standards/fittings.js";
 import { componentDef, inlineLossPa, isDualPort, terminalK } from "../standards/components.js";
 import { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } from "../standards/dw144.js";
-import { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem } from "../systems.js";
+import { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem, systemTitle } from "../systems.js";
+import { isAirSock, sockStaticPa, sockVentedLengthM } from "../standards/airsock.js";
+import { roomOfComponent, roomAreaM2 } from "../rooms.js";
+import { resolveLevels } from "../levels.js";
 import { PORT_NODE_KEY } from "../layout.js";
 
 const FLOW_MATCH_ABS_LS = 2;
@@ -211,6 +214,56 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
         warnings.push(`${systemLabel(systemType)} terminals are set to ${round(typed, 0)} l/s but the unit moves ${round(opts.autoFlowLs, 0)} l/s on that side.`);
       }
     }
+    // Air socks left at 0 — "ventilated throughout", only the total known —
+    // share whatever of the unit's supply duty the other terminals do not
+    // take, in proportion to their vented length.
+    if (systemType === "supply") {
+      let typed = 0;
+      const socks = [];
+      for (const [nodeId, list] of terminalNodes) {
+        if (!visited.has(nodeId)) continue;
+        for (const c of list) {
+          const q = Number(c.props?.designFlow_ls) || 0;
+          if (q > 0) typed += q;
+          else if (isAirSock(c)) socks.push({ nodeId, c, w: sockVentedLengthM(c) });
+        }
+      }
+      if (socks.length && settings.sockShareBy === "area") {
+        // by floor area: each room's area, split between the blank socks in
+        // it by vented length — a sock with no room outline round it falls
+        // the whole system back to sharing by length
+        const groups = new Map();
+        const loose = socks.filter((x) => {
+          const r = roomOfComponent(project, x.c);
+          if (!r) return true;
+          if (!groups.has(r)) groups.set(r, []);
+          groups.get(r).push(x);
+          return false;
+        });
+        if (loose.length) {
+          warnings.push(`${loose.length} air sock${loose.length > 1 ? "s are" : " is"} not inside a room outline, so the duty is shared by length, not floor area.`);
+        } else {
+          for (const [r, list] of groups) {
+            const A = roomAreaM2(project, r);
+            const L = list.reduce((a, x) => a + x.w, 0);
+            for (const x of list) x.w = L > 0 ? (A * x.w) / L : A / list.length;
+          }
+        }
+      }
+      if (socks.length) {
+        const left = Math.max(0, (opts.sockDutyLs || 0) - typed);
+        const wSum = socks.reduce((a, x) => a + x.w, 0);
+        for (const x of socks) {
+          const share = left <= 0 ? 0 : wSum > 0 ? (left * x.w) / wSum : left / socks.length;
+          demand.set(x.nodeId, (demand.get(x.nodeId) || 0) + flowToM3s(share, "l/s"));
+        }
+        if (left <= 0) {
+          warnings.push(opts.sockDutyLs > 0
+            ? `Air socks set to share the unit's supply duty, but the other terminals already take all ${round(opts.sockDutyLs, 0)} l/s.`
+            : "An air sock has no airflow — type its total, or set the unit's supply duty and leave the sock at 0 to share it by length.");
+        }
+      }
+    }
     const subtree = new Map();
     for (let i = order.length - 1; i >= 0; i--) {
       const n = order[i];
@@ -381,7 +434,8 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
       // and is what the commissioning sheet reads at the terminal
       const runout = parentSeg.has(nodeId) ? segResById.get(parentSeg.get(nodeId).id) : null;
       const pvRunout = runout ? dynamicPressure(runout.velocity || 0, density) : 0;
-      const termLoss = list.reduce((s, c) => s + (Number(c.props?.terminalLossPa) || 0) + terminalK(c) * pvRunout, 0);
+      const fixedPa = (c) => (isAirSock(c) ? sockStaticPa(c, settings) : Number(c.props?.terminalLossPa) || 0);
+      const termLoss = list.reduce((s, c) => s + fixedPa(c) + terminalK(c) * pvRunout, 0);
       cum += termLoss;
       const node = nodesById.get(nodeId);
       terminals.push({
@@ -432,7 +486,7 @@ export function computeSystem(project, systemType, plantFilter = undefined, opts
     }
   }
 
-  const plantLabel = plant ? (plant.label || componentDef(plant.kind)?.label || "Plant") : null;
+  const plantLabel = plant ? (systemTitle(plant) || componentDef(plant.kind)?.label || "Plant") : null;
 
   return {
     id: plant ? `${systemType}-${plant.id}` : systemType,
@@ -469,8 +523,11 @@ function nameSystems(systems) {
     const i = (seen.get(sys.systemType) || 0) + 1;
     seen.set(sys.systemType, i);
     const side = systemLabel(sys.systemType);
-    if (n === 1) sys.name = sys.plantLabel ? `${side} — ${sys.plantLabel}` : side;
-    else sys.name = `${side} ${i}${sys.plantLabel ? ` — ${sys.plantLabel}` : ""}`;
+    // "AHU-01 East offices — Supply": the system first, then the airstream
+    if (sys.plantLabel) sys.name = `${sys.plantLabel} — ${side}`;
+    else sys.name = n === 1 ? side : `${side} ${i}`;
+    sys.tag = sys.plant?.tag || "";
+    sys.color = sys.plant?.color || null;
   }
 }
 
@@ -495,7 +552,9 @@ function dualAhuWarnings(project, systems) {
   return warnings;
 }
 
-export function computeAll(project) {
+export function computeAll(rawProject) {
+  // heights absolute across floors; a single-level job passes straight through
+  const project = resolveLevels(rawProject);
   const systems = [];
   // supply and extract first: fresh air and exhaust take their flow from them
   for (const systemType of SYSTEM_KEYS) {
@@ -515,14 +574,58 @@ export function computeAll(project) {
         const hasDucts = project.segments.some((sg) => sg.system === systemType);
         if (!hasDucts) continue;
       }
-      systems.push(computeSystem(project, systemType, plant, { autoFlowLs }));
+      const sockDutyLs = systemType === "supply" ? plantDutyLs(plant.props, "supply") : 0;
+      systems.push(computeSystem(project, systemType, plant, { autoFlowLs, sockDutyLs }));
     }
   }
   pairFanSides(systems);
+  // one unit's airstreams together — AHU-01 supply, extract, fresh air,
+  // exhaust, then AHU-02 — so a floor with several systems reads in order
+  const plantOrder = new Map((project.components || []).map((c, i) => [c.id, i]));
+  const rank = (x) => (x.plant ? plantOrder.get(x.plant.id) ?? 1e6 : 1e6);
+  systems.sort((a, b) => rank(a) - rank(b) || SYSTEM_KEYS.indexOf(a.systemType) - SYSTEM_KEYS.indexOf(b.systemType));
   nameSystems(systems);
   const projectWarnings = dualAhuWarnings(project, systems);
   const pick = (t) => systems.find((s) => s.systemType === t) || emptySystem(t);
-  return { supply: pick("supply"), extract: pick("extract"), outdoor: pick("outdoor"), exhaust: pick("exhaust"), systems, projectWarnings };
+  const plantOf = systemMembership(project, systems);
+  return { supply: pick("supply"), extract: pick("extract"), outdoor: pick("outdoor"), exhaust: pick("exhaust"), systems, projectWarnings, plantOf };
+}
+
+// Which unit each duct, node and component belongs to — the system that
+// colours it on the plan and in 3D, and hides it when that system is hidden.
+function systemMembership(project, systems) {
+  const seg = new Map();
+  const node = new Map();
+  const comp = new Map();
+  const segsById = new Map(project.segments.map((s) => [s.id, s]));
+  for (const sys of systems) {
+    if (!sys.plant) continue;
+    for (const r of sys.segments) {
+      if (!r.connectedToPlant || seg.has(r.id)) continue;
+      seg.set(r.id, sys.plant.id);
+      const s = segsById.get(r.id);
+      if (s) { node.set(s.a, sys.plant.id); node.set(s.b, sys.plant.id); }
+    }
+  }
+  for (const c of project.components || []) {
+    if (componentDef(c.kind)?.role === "plant") comp.set(c.id, c.id);
+    else if (c.nodeId && node.has(c.nodeId)) comp.set(c.id, node.get(c.nodeId));
+  }
+  return { seg, node, comp };
+}
+
+// The colour a duct, node or component is drawn in: its system's colour when
+// colouring by system and it is joined to a unit, its airstream's otherwise.
+export function memberColor(project, results, type, id, fallback) {
+  if ((project.settings?.colourBy || "system") !== "system") return fallback;
+  const plantId = results?.plantOf?.[type]?.get(id);
+  if (!plantId) return fallback;
+  const plant = (project.components || []).find((c) => c.id === plantId);
+  return plant?.color || fallback;
+}
+
+export function memberPlantId(results, type, id) {
+  return results?.plantOf?.[type]?.get(id) || null;
 }
 
 // One fan pushes fresh air and supply in series, the other pulls extract and

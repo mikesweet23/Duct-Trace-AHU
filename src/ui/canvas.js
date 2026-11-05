@@ -19,7 +19,16 @@ import { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVertic
 import { componentDef, isDualPort, symbolOf } from "../standards/components.js";
 import { showPrompt, toast } from "./modal.js";
 import { formatFlowLs, normalizeFlowUnit, round } from "../units.js";
-import { findSegResult, isIndexSegment } from "../calc/network.js";
+import { findSegResult, isIndexSegment, memberColor, memberPlantId } from "../calc/network.js";
+import { isAirSock, sockFigures, sockFlowLs } from "../standards/airsock.js";
+import { roomPlantId } from "../rooms.js";
+import { levelView, multiLevel, activeLevelId, levelIdOf, levelName, levelElevation } from "../levels.js";
+
+// "#7c3aed" at an alpha, for a light room fill in the system's colour
+function hexAlpha(hex, a) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
+  return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : `rgba(29,78,216,${a})`;
+}
 import { snapAt, hitSegment, hitComponentAt, EQUIP_HIT_PX } from "../snap.js";
 import { uid } from "../state.js";
 import { systemColor, systemInfo, SYSTEM_KEYS } from "../systems.js";
@@ -126,7 +135,7 @@ export class CanvasView {
 
   // What a trace click at `world` would do — the same answer that is drawn.
   traceTarget(world) {
-    const p = this.store.project;
+    const p = this.lp();
     const opts = this.snapOpts();
     let sn = snapAt(p, world, opts);
     if (!sn) {
@@ -145,7 +154,7 @@ export class CanvasView {
   // Plan directions (radians) of the ducts of the traced system that meet at
   // a node — the duct being branched off, or the leg just drawn.
   refDirs(node) {
-    const p = this.store.project;
+    const p = this.lp();
     const px = this.pxPerMeter();
     const out = [];
     for (const s of p.segments) {
@@ -225,7 +234,7 @@ export class CanvasView {
   }
 
   extent() {
-    const p = this.store.project;
+    const p = this.lp();
     const pts = [];
     for (const n of p.nodes) pts.push(n);
     for (const c of p.components) pts.push(c);
@@ -246,10 +255,13 @@ export class CanvasView {
       v.zoom = 1; v.offsetX = w / 2 - 400; v.offsetY = h / 2 - 300; this.changed(); return;
     }
     const pad = 70;
-    const zoom = clamp(Math.min((w - pad * 2) / (e.maxX - e.minX || 1), (h - pad * 2) / (e.maxY - e.minY || 1)), 0.05, 3);
+    // clear of the status strip along the bottom, which sits over the plan
+    const status = typeof document !== "undefined" ? document.getElementById("status") : null;
+    const padBottom = Math.max(pad, (status?.offsetHeight || 0) + 40);
+    const zoom = clamp(Math.min((w - pad * 2) / (e.maxX - e.minX || 1), (h - pad - padBottom) / (e.maxY - e.minY || 1)), 0.05, 3);
     v.zoom = zoom;
     v.offsetX = (w - (e.maxX - e.minX) * zoom) / 2 - e.minX * zoom;
-    v.offsetY = (h - (e.maxY - e.minY) * zoom) / 2 - e.minY * zoom;
+    v.offsetY = pad + (h - pad - padBottom - (e.maxY - e.minY) * zoom) / 2 - e.minY * zoom;
     this.changed();
   }
 
@@ -261,17 +273,27 @@ export class CanvasView {
 
   loadBackground() {
     const bg = this.store.project.background;
-    if (!bg) { this._bg = null; this._bgUrl = null; return; }
-    if (this._bgUrl === bg.dataUrl && this._bg) return;
+    if (!bg) { this._bg = null; this._bgUrl = null; this._bgReady = Promise.resolve(); return; }
+    if (this._bgUrl === bg.dataUrl && (this._bg || this._bgReady)) return;
     const img = new Image();
-    img.onload = () => { this._bg = img; this.draw(); };
+    this._bg = null; // never draw the last level's sheet under this one
+    this._bgReady = new Promise((resolve) => {
+      img.onload = () => { this._bg = img; this.draw(); resolve(); };
+      img.onerror = () => resolve();
+    });
     img.src = bg.dataUrl;
     this._bgUrl = bg.dataUrl;
   }
 
+  // The sheet in view, loaded — for drawing each level into the report.
+  async loadBackgroundAsync() {
+    this.loadBackground();
+    await this._bgReady;
+  }
+
   // ---------------------------------------------------------------- hit test
   hit(world) {
-    const p = this.store.project;
+    const p = this.lp();
     const px = this.pxPerMeter();
     const z = this.zoom;
     const sel = this.store.selection;
@@ -478,6 +500,20 @@ export class CanvasView {
       if (!c) return;
       if (!d.moved) { this.store.snapshot(); d.moved = true; }
       const px = this.pxPerMeter();
+      if (componentDef(c.kind)?.inletEnd) {
+        // an air sock turns and stretches about its inlet: point it, pull it
+        const inlet = this.store.project.nodes.find((n) => n.id === c.nodeId) || c;
+        if (d.handle.kind === "rot") {
+          const a = Math.atan2(world.y - inlet.y, world.x - inlet.x) * 180 / Math.PI;
+          this.store.resizeComponent(c, null, null, e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15);
+        } else {
+          const r = ((Number(c.rot) || 0) * Math.PI) / 180;
+          const along = (world.x - inlet.x) * Math.cos(r) + (world.y - inlet.y) * Math.sin(r);
+          this.store.resizeComponent(c, Math.max(0.5, Math.round((along / px) * 10) / 10), null, null);
+        }
+        this.store.emitSoon();
+        return;
+      }
       if (d.handle.kind === "rot") {
         const a = Math.atan2(world.y - c.y, world.x - c.x) * 180 / Math.PI + 90;
         const rot = e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15;
@@ -555,7 +591,7 @@ export class CanvasView {
   // inside (a duct ending on a unit inside counts), rooms and tapes wholly
   // inside. With Shift the box adds to what is already picked.
   selectInBox(a, b, add = false) {
-    const p = this.store.project;
+    const p = this.lp();
     const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
     const inside = (q) => q && q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1;
     const items = add ? this.store.selectedItems().filter((i) => i.type !== "piece") : [];
@@ -616,7 +652,7 @@ export class CanvasView {
   traceClick(world) {
     const store = this.store;
     const p = store.project;
-    const equipment = hitComponentAt(p, world, { zoom: this.zoom });
+    const equipment = hitComponentAt(this.lp(), world, { zoom: this.zoom });
     if (equipment && SYSTEM_KEYS.includes(equipment.component.system) && equipment.component.system !== store.activeSystem) {
       const wanted = systemInfo(equipment.component.system);
       toast(`${equipment.component.label || equipment.what} uses ${wanted.label} (${wanted.en}). Pick ${wanted.label} and trace from the matching unit connection.`);
@@ -706,7 +742,7 @@ export class CanvasView {
   alignSnap(pt, excludeIds = []) {
     if (this.store.overrideKey) return { x: pt.x, y: pt.y, guides: [] };
     const tol = 8 / this.zoom;
-    const others = this.store.project.components.filter((c) => !excludeIds.includes(c.id));
+    const others = this.lp().components.filter((c) => !excludeIds.includes(c.id));
     let bx = null, by = null;
     for (const c of others) {
       const dx = Math.abs(c.x - pt.x), dy = Math.abs(c.y - pt.y);
@@ -756,7 +792,7 @@ export class CanvasView {
     store.snapshot();
     let c = null;
     if (def.role === "inline") {
-      const hit = hitSegment(store.project, world, 12 / this.zoom);
+      const hit = hitSegment(this.lp(), world, 12 / this.zoom);
       if (hit) c = store.placeOnRun(hit.seg, hit.r.point, kind);
     }
     if (!c) {
@@ -819,10 +855,25 @@ export class CanvasView {
       okText: "Set scale",
       note: `The line is ${Math.round(px)} px on the sheet. Every length after this comes off the drawing, so use the longest dimension you can find.`,
     });
-    if (val && Number(val) > 0) {
+    const p = this.store.project;
+    const bg = p.background;
+    if (val && Number(val) > 0 && bg?.needsScale && p.scale.pxPerMeter > 0) {
+      // a second level's sheet: the project keeps its scale and this sheet is
+      // stretched to it, so every floor shares one plan scale and origin
       this.store.snapshot();
-      this.store.project.scale.pxPerMeter = px / Number(val);
-      this.store.project.scale.calib = { a, b, meters: Number(val) };
+      const f = p.scale.pxPerMeter / (px / Number(val));
+      bg.x *= f; bg.y *= f; bg.width *= f; bg.height *= f;
+      delete bg.needsScale;
+      this.store.commit();
+      this.fit();
+      toast(`Sheet scaled to the project — ${round(p.scale.pxPerMeter, 1)} px per metre. Offset it in Duct & basis → Levels if its grid does not sit over the floor below.`);
+      this.hooks?.onScaleSet?.();
+    } else if (val && Number(val) > 0) {
+      this.store.snapshot();
+      p.scale.pxPerMeter = px / Number(val);
+      p.scale.calib = { a, b, meters: Number(val) };
+      p.scale.levelId = activeLevelId(p);
+      if (bg) delete bg.needsScale;
       this.store.commit();
       toast(`Scale set — ${round(px / Number(val), 1)} px per metre`);
       this.hooks?.onScaleSet?.();
@@ -875,8 +926,10 @@ export class CanvasView {
       } else {
         this.drawGrid(ctx);
       }
+      this.drawOtherLevels(ctx);
       this.drawRooms(ctx);
       this.drawSegments(ctx);
+      this.drawLevelRisers(ctx);
       this.drawNodes(ctx);
       this.drawComponents(ctx);
       this.drawMeasures(ctx);
@@ -928,17 +981,21 @@ export class CanvasView {
   }
 
   drawRooms(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const z = this.zoom;
     for (const r of p.rooms) {
       ctx.beginPath();
       r.points.forEach((pt, i) => (i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y)));
       ctx.closePath();
       const selected = this.store.isSelected("room", r.id);
-      ctx.fillStyle = selected ? "rgba(224,164,34,0.12)" : "rgba(29,78,216,0.04)";
+      // a room on a system takes its colour (when colouring by system)
+      const plantId = this.bySystem() ? roomPlantId(p, r, this.results) : null;
+      const plant = plantId ? p.components.find((c) => c.id === plantId) : null;
+      if (plant && this.store.hiddenPlants?.has(plant.id)) continue;
+      ctx.fillStyle = selected ? "rgba(224,164,34,0.12)" : plant?.color ? hexAlpha(plant.color, 0.06) : "rgba(29,78,216,0.04)";
       ctx.fill();
-      ctx.lineWidth = (selected ? 2 : 1.2) / z;
-      ctx.strokeStyle = selected ? COL.sel : "rgba(29,36,51,0.45)";
+      ctx.lineWidth = (selected ? 2 : plant ? 1.6 : 1.2) / z;
+      ctx.strokeStyle = selected ? COL.sel : plant?.color || "rgba(29,36,51,0.45)";
       ctx.setLineDash([6 / z, 4 / z]);
       ctx.stroke();
       ctx.setLineDash([]);
@@ -946,7 +1003,7 @@ export class CanvasView {
       ctx.fillStyle = COL.ink;
       ctx.font = `700 ${12.5 / z}px ${FONT}`;
       ctx.textAlign = "center";
-      ctx.fillText(r.name, c.x, c.y - 4 / z);
+      ctx.fillText(plant?.tag ? `${r.name}  ·  ${plant.tag}` : r.name, c.x, c.y - 4 / z);
       const unit = normalizeFlowUnit(p.settings.flowUnit);
       const parts = [];
       if (r.supplyFlow_ls) parts.push(`S ${formatFlowLs(r.supplyFlow_ls, unit)}`);
@@ -960,6 +1017,91 @@ export class CanvasView {
   }
 
   segResult(id) { return findSegResult(this.results, id); }
+
+  // The level in view: its nodes, units, rooms and the ducts on it. Reads
+  // only — anything new goes on store.project (and is stamped onto this level).
+  lp() { return levelView(this.store.project); }
+
+  // The other floors, faintly, to line a sheet or a riser up against.
+  drawOtherLevels(ctx) {
+    const p = this.store.project;
+    if (!multiLevel(p)) return;
+    const lv = activeLevelId(p);
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    ctx.lineCap = "round";
+    for (const s of p.segments) {
+      const a = byId.get(s.a), b = byId.get(s.b);
+      if (!a || !b) continue;
+      const la = levelIdOf(p, a), lb = levelIdOf(p, b);
+      if (la === lv || lb === lv || la !== lb) continue;
+      ctx.strokeStyle = this.colorOf("seg", s.id, s.system);
+      ctx.lineWidth = 4 / this.zoom;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // A duct between floors: a riser marker at the end on this level, with
+  // the floor it goes to.
+  drawLevelRisers(ctx) {
+    const p = this.store.project;
+    if (!multiLevel(p)) return;
+    const lv = activeLevelId(p);
+    const z = this.zoom;
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    for (const s of p.segments) {
+      const a = byId.get(s.a), b = byId.get(s.b);
+      if (!a || !b) continue;
+      const la = levelIdOf(p, a), lb = levelIdOf(p, b);
+      if (la === lb || (la !== lv && lb !== lv)) continue;
+      if (this.plantHidden("seg", s.id) || this.store.hiddenSystems?.has(s.system)) continue;
+      const here = la === lv ? a : b;
+      const otherLv = la === lv ? lb : la;
+      const up = levelElevation(p, otherLv) > levelElevation(p, lv);
+      const selected = this.store.isSelected("segment", s.id);
+      const col = selected ? COL.sel : this.colorOf("seg", s.id, s.system);
+      const r = 10 / z;
+      ctx.beginPath(); ctx.arc(here.x, here.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff"; ctx.fill();
+      ctx.lineWidth = 2.4 / z; ctx.strokeStyle = col; ctx.stroke();
+      ctx.beginPath();
+      const d = up ? -1 : 1;
+      ctx.moveTo(here.x, here.y - 5 * d / z); ctx.lineTo(here.x, here.y + 5 * d / z);
+      ctx.moveTo(here.x - 3.5 / z, here.y - 1.5 * d / z); ctx.lineTo(here.x, here.y - 5 * d / z); ctx.lineTo(here.x + 3.5 / z, here.y - 1.5 * d / z);
+      ctx.stroke();
+      const res = this.segResult(s.id);
+      const size = res?.section ? (res.section.shape === "round" ? `ø${res.section.diameterMm}` : `${res.section.widthMm}×${res.section.heightMm}`) : "";
+      this.chip(ctx, `${up ? "up to" : "down to"} ${levelName(p, otherLv)}${size ? ` · ${size}` : ""}`, here.x, here.y + 21 / z, { size: 9.5, mono: true, border: col });
+    }
+  }
+
+  // Nodes that end in a riser to another floor — drawn by drawLevelRisers.
+  levelRiserNodes() {
+    const p = this.store.project;
+    const out = new Set();
+    if (!multiLevel(p)) return out;
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    for (const s of p.segments) {
+      const a = byId.get(s.a), b = byId.get(s.b);
+      if (a && b && levelIdOf(p, a) !== levelIdOf(p, b)) { out.add(a.id); out.add(b.id); }
+    }
+    return out;
+  }
+
+  // Colour by system: a duct, node or component joined to a unit takes the
+  // unit's colour; anything loose (or colouring by airstream) its airstream's.
+  colorOf(type, id, airstream) {
+    return memberColor(this.store.project, this.results, type, id, systemColor(airstream));
+  }
+  bySystem() { return (this.store.project.settings.colourBy || "system") === "system"; }
+  plantHidden(type, id) {
+    const hp = this.store.hiddenPlants;
+    if (!hp?.size) return false;
+    const pid = memberPlantId(this.results, type, id);
+    return !!pid && hp.has(pid);
+  }
   isIndexSeg(id) { return isIndexSegment(this.results, id); }
 
   ductWidthWorld(res, seg) {
@@ -978,7 +1120,7 @@ export class CanvasView {
   }
 
   drawSegments(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const sel = this.store.selection;
     const z = this.zoom;
     const px = this.pxPerMeter();
@@ -986,19 +1128,21 @@ export class CanvasView {
     // bodies first, then labels over every body, so a label is never under a duct
     const labels = [];
     for (const s of p.segments) {
-      if (hidden?.has(s.system)) continue;
+      if (hidden?.has(s.system) || this.plantHidden("seg", s.id)) continue;
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
       const res = this.segResult(s.id);
       const selected = this.store.isSelected("segment", s.id)
         || (sel?.type === "piece" && this.store.getSelected()?.segmentId === s.id);
-      const base = systemColor(s.system);
+      const base = this.colorOf("seg", s.id, s.system);
+      // the airstream still shows as a stripe down a system-coloured duct
+      const stripe = this.bySystem() && base !== systemColor(s.system) ? systemColor(s.system) : null;
       const noFlow = !res || res.flowM3s <= 0;
       const shape = res?.section?.shape || s.shapeOverride || p.settings.ductType || "round";
       if (isVerticalRiser(a, b, px)) { this.drawRiserMarker(ctx, a, b, s, selected); continue; }
       const width = this.ductWidthWorld(res, s);
-      this.drawDuctBody(ctx, a, b, width, shape, base, { selected, index: this.isIndexSeg(s.id), noFlow, overVel: res && res.withinMax === false });
+      this.drawDuctBody(ctx, a, b, width, shape, base, { selected, index: this.isIndexSeg(s.id), noFlow, overVel: res && res.withinMax === false, stripe });
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       const segLenScr = dist(a, b) * z;
       labels.push({ s, res, mx, my, a, b, width, segLenScr, noFlow });
@@ -1042,8 +1186,14 @@ export class CanvasView {
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
+    if (flags.stripe && width > 5 / z) {
+      ctx.strokeStyle = flags.stripe;
+      ctx.lineWidth = Math.max(1.4 / z, width * 0.22);
+      ctx.lineCap = "butt";
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
     if (width > 7 / z) {
-      if (shape === "round") {
+      if (shape === "round" && !flags.stripe) {
         // spiral: a light centre stripe reads as a round duct
         ctx.strokeStyle = "rgba(255,255,255,0.35)";
         ctx.lineWidth = Math.max(1 / z, width * 0.14);
@@ -1067,7 +1217,7 @@ export class CanvasView {
     ctx.fillStyle = "#fff";
     ctx.fill();
     ctx.lineWidth = 2 / z;
-    ctx.strokeStyle = selected ? COL.sel : systemColor(seg.system);
+    ctx.strokeStyle = selected ? COL.sel : this.colorOf("seg", seg.id, seg.system);
     ctx.stroke();
     ctx.beginPath();
     const s = dz >= 0 ? -1 : 1;
@@ -1078,22 +1228,25 @@ export class CanvasView {
   }
 
   drawNodes(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const z = this.zoom;
     const sel = this.store.selection;
+    const toFloor = this.levelRiserNodes();
     for (const n of p.nodes) {
       if (p.components.some((c) => componentNodeIds(c).includes(n.id))) continue;
       const selected = this.store.isSelected("node", n.id);
+      if (toFloor.has(n.id) && !selected) continue; // drawn as a riser to another floor
       const touching = p.segments.filter((s) => s.a === n.id || s.b === n.id);
       if (touching.length === 2 && !n.tee && !selected) continue; // a plain corner
       const sys = touching[0]?.system;
+      if (touching.length && touching.every((t) => this.plantHidden("seg", t.id))) continue;
       ctx.beginPath();
       if (n.tee || touching.length >= 3) {
         ctx.arc(n.x, n.y, 4 / z, 0, Math.PI * 2);
         ctx.fillStyle = "#fff";
         ctx.fill();
         ctx.lineWidth = 2 / z;
-        ctx.strokeStyle = selected ? COL.sel : systemColor(sys);
+        ctx.strokeStyle = selected ? COL.sel : this.colorOf("node", n.id, sys);
         ctx.stroke();
       } else if (touching.length <= 1) {
         // an open end — worth seeing, it usually means a run that stops short
@@ -1112,7 +1265,7 @@ export class CanvasView {
   }
 
   drawComponents(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const sel = this.store.selection;
     const z = this.zoom;
     const px = this.pxPerMeter();
@@ -1121,13 +1274,18 @@ export class CanvasView {
       const def = componentDef(c.kind);
       if (!def) continue;
       if (c.system !== "both" && hidden?.has(c.system)) continue;
+      if (this.plantHidden("comp", c.id)) continue;
       const selected = this.store.isSelected("component", c.id);
+      if (def.airSock) { this.drawAirSock(ctx, c, def, selected); continue; }
       const box = componentBox(c, px, z);
+      const fill = this.bySystem() && (def.role === "plant" ? c.color : memberPlantId(this.results, "comp", c.id))
+        ? (def.role === "plant" ? c.color : this.colorOf("comp", c.id, c.system))
+        : def.color;
       ctx.save();
       ctx.translate(c.x, c.y);
       ctx.rotate((box.rot * Math.PI) / 180);
       this.roundRect(ctx, -box.w / 2, -box.d / 2, box.w, box.d, Math.min(4 / z, Math.min(box.w, box.d) * 0.12));
-      ctx.fillStyle = def.color;
+      ctx.fillStyle = fill;
       ctx.fill();
       if (isFourPort(c)) {
         ctx.save();
@@ -1154,7 +1312,7 @@ export class CanvasView {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.rotate(-(box.rot * Math.PI) / 180); // turn the symbol, never the text
-      ctx.fillText(symbolOf(c), 0, 0);
+      ctx.fillText(def.role === "plant" && c.tag ? c.tag : symbolOf(c), 0, 0);
       ctx.restore();
       ctx.textBaseline = "alphabetic";
 
@@ -1174,6 +1332,67 @@ export class CanvasView {
       if (isFourPort(c)) this.drawUnitPorts(ctx, c, z);
       if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
     }
+  }
+
+  // An air sock: drawn its real length and diameter, the inlet end square
+  // where the duct joins, the far end rounded, and a row of dots along the
+  // vented length to show where it discharges.
+  drawAirSock(ctx, c, def, selected) {
+    const p = this.store.project;
+    const z = this.zoom;
+    const px = this.pxPerMeter();
+    const flowLs = sockFlowLs(c, this.results);
+    const fig = sockFigures(c, flowLs, p.settings);
+    const L = Math.max(fig.lengthM * px, 12 / z);
+    const D = Math.max((fig.diameterMm / 1000) * px, 6 / z);
+    const col = this.bySystem() ? this.colorOf("comp", c.id, "supply") : def.color;
+    const rot = ((Number(c.rot) || 0) * Math.PI) / 180;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(rot);
+    const x0 = -L / 2, r = D / 2;
+    ctx.beginPath();
+    ctx.moveTo(x0, -r);
+    ctx.lineTo(L / 2 - r, -r);
+    ctx.arc(L / 2 - r, 0, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(x0, r);
+    ctx.closePath();
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = (selected ? 2.6 : 1.6) / z;
+    ctx.strokeStyle = selected ? COL.sel : col;
+    ctx.setLineDash(fig.confirmed ? [] : [6 / z, 3 / z]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // inlet collar
+    ctx.fillStyle = col;
+    ctx.fillRect(x0 - 2 / z, -r, 4 / z, D);
+    // perforations along the vented length
+    const vent = fig.lengthM > 0 ? (fig.ventedLengthM / fig.lengthM) * L : 0;
+    const step = Math.max(10 / z, 0.5 * px);
+    ctx.fillStyle = col;
+    for (let x = L / 2 - Math.max(r, 4 / z) - vent + step / 2; x < L / 2 - r * 0.6; x += step) {
+      if (x < x0 + 4 / z) continue;
+      ctx.beginPath(); ctx.arc(x, -r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    // labels, kept upright
+    const unit = normalizeFlowUnit(p.settings.flowUnit);
+    const below = c.y + Math.abs(Math.sin(rot)) * L / 2 + r + 12 / z;
+    ctx.fillStyle = COL.ink;
+    ctx.font = `600 ${11 / z}px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.fillText(c.label || def.label, c.x, below);
+    ctx.fillStyle = COL.soft;
+    ctx.font = `500 ${9.5 / z}px ${MONO}`;
+    const bits = [`ø${fig.diameterMm} × ${round(fig.lengthM, 1)} m`];
+    if (flowLs > 0) bits.push(formatFlowLs(flowLs, unit), `${round(unit === "m3/h" ? fig.m3hPerM : fig.flowPerM_ls, 1)} ${unit === "m3/h" ? "m³/h" : "l/s"}/m`);
+    bits.push(`${round(fig.staticPa, 0)} Pa ${fig.confirmed ? "mfr" : "nom"}`);
+    ctx.fillText(bits.join(" · "), c.x, below + 11 / z);
+    if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
   }
 
   // The four connections of an AHU or HRV serving both sides: a coloured
@@ -1224,11 +1443,15 @@ export class CanvasView {
       }
     }
     const t = `${round(box.foot.w, 2)} × ${round(box.foot.d, 2)} m${box.rot ? `  ${round(box.rot, 1)}°` : ""}`;
-    this.chip(ctx, t, c.x, c.y - Math.max(box.w, box.d) / 2 - 36 / z, { mono: true, bg: COL.sel, color: "#241a00", size: 9.5 });
+    // above the box as it actually sits on the sheet, so a long air sock's
+    // chip stays next to it rather than half its length away
+    const r = ((box.rot || 0) * Math.PI) / 180;
+    const halfH = Math.abs(Math.sin(r)) * box.w / 2 + Math.abs(Math.cos(r)) * box.d / 2;
+    this.chip(ctx, t, c.x, c.y - halfH - 36 / z, { mono: true, bg: COL.sel, color: "#241a00", size: 9.5 });
   }
 
   drawMeasures(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const z = this.zoom;
     for (const m of p.measures || []) {
       const selected = this.store.isSelected("measure", m.id);
@@ -1297,7 +1520,7 @@ export class CanvasView {
 
   drawDrafts(ctx) {
     const z = this.zoom;
-    const p = this.store.project;
+    const p = this.lp();
     const tool = this.store.tool;
     if (this.marquee) {
       const { a, b } = this.marquee;

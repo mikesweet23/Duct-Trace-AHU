@@ -8,6 +8,9 @@ import { allComputedSystems } from "../calc/network.js";
 import { formatFlow, formatFlowLs, flowUnitLabel, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { roleLabel, sectionSizeLabel, sectionShapeLabel } from "../format.js";
 import { buildCommissioning } from "./commissioning.js";
+import { sockSchedule, sockBasis } from "../standards/airsock.js";
+import { systemTitle } from "../systems.js";
+import { roomPlantId, roomAirflow } from "../rooms.js";
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -389,7 +392,34 @@ function plantOn(sys, c) {
   return sys.plant && c.id === sys.plant.id;
 }
 
-export function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg = null }) {
+// The project, or one system of it: with `plantId` the report covers just
+// that unit — its airstreams, the ducts and terminals joined to it, its rooms
+// and its air socks.
+export function scopeToSystem(project, results, plantId) {
+  const plant = (project.components || []).find((c) => c.id === plantId);
+  if (!plant) return { project, results };
+  const comp = results?.plantOf?.comp || new Map();
+  const seg = results?.plantOf?.seg || new Map();
+  const systems = allComputedSystems(results).filter((s) => s.plant?.id === plantId);
+  const title = systemTitle(plant, "");
+  const scoped = {
+    ...project,
+    components: project.components.filter((c) => c.id === plantId || comp.get(c.id) === plantId),
+    segments: project.segments.filter((s) => seg.get(s.id) === plantId),
+    rooms: (project.rooms || []).filter((r) => roomPlantId(project, r, results) === plantId),
+  };
+  const keep = (w) => !title || w.includes(title) || w.includes(plant.label || "\u0000");
+  return {
+    project: scoped,
+    results: { ...results, systems, projectWarnings: (results.projectWarnings || []).filter(keep) },
+    title,
+  };
+}
+
+export function buildProjectPdf({ project: fullProject, results: fullResults, planJpeg, isoJpeg, logoJpeg = null, plantId = null, plans = null }) {
+  const scope = plantId ? scopeToSystem(fullProject, fullResults, plantId) : { project: fullProject, results: fullResults, title: "" };
+  const project = scope.project;
+  const results = scope.results;
   const unit = project.settings?.flowUnit || "l/s";
   const unitLabel = flowUnitLabel(unit);
   const systems = allComputedSystems(results);
@@ -398,7 +428,7 @@ export function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg 
   const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
   w.pageNo = 1;
 
-  w.cover("Ductwork design report", "adi Climate Systems  -  ductwork sizing to DW144 / BESA and CIBSE Guide B");
+  w.cover(scope.title ? `Ductwork design report  -  ${scope.title}` : "Ductwork design report", "adi Climate Systems  -  ductwork sizing to DW144 / BESA and CIBSE Guide B");
   w.kv([
     ["Mode", project.mode === "drawing" ? "Drawing" : "Concept"],
     ["Flow unit", unitLabel],
@@ -442,28 +472,39 @@ export function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg 
   if (!project.rooms?.length) w.para("No rooms outlined.");
   else {
     w.table(
-      ["Room", `Supply (${unitLabel})`, `Extract (${unitLabel})`],
-      project.rooms.map((r) => [
-        r.name,
-        formatFlowLs(r.supplyFlow_ls, unit).replace(` ${unitLabel}`, ""),
-        formatFlowLs(r.extractFlow_ls, unit).replace(` ${unitLabel}`, ""),
-      ]),
-      [220, 120, 120]
+      ["Room", "System", "Area m2", `Supply (${unitLabel})`, `Extract (${unitLabel})`, "Sup l/s/m2"],
+      project.rooms.map((r) => {
+        const pid = roomPlantId(project, r, results);
+        const air = roomAirflow(project, r, results);
+        return [
+          r.name.slice(0, 26),
+          pid ? systemTitle(project.components.find((c) => c.id === pid), "").slice(0, 22) : "-",
+          r1(air.areaM2),
+          formatFlowLs(r.supplyFlow_ls, unit).replace(` ${unitLabel}`, ""),
+          formatFlowLs(r.extractFlow_ls, unit).replace(` ${unitLabel}`, ""),
+          air.areaM2 > 0 ? r2(air.supplyLsM2) : "-",
+        ];
+      }),
+      [130, 110, 50, 70, 70, 60]
     );
   }
 
   writeLouvres(w, project, results, unit, unitLabel);
+  writeAirSocks(w, project, results, unit, unitLabel);
   writeCommissioning(w, project, results, unit, unitLabel);
 
-  if (planJpeg) {
-    w.heading("Plan layout", 14);
-    w.para("Traced ductwork, plant and terminals as shown on the plan. Risers appear as markers only.");
-    w.image(planJpeg, "Figure 1  -  Plan");
+  // one plan per level when the job has several floors
+  const planList = plans?.length ? plans : planJpeg ? [{ jpeg: planJpeg, name: "" }] : [];
+  let fig = 1;
+  for (const pl of planList) {
+    w.heading(pl.name ? `Plan layout  -  ${pl.name}` : "Plan layout", 14);
+    w.para(`Traced ductwork, plant and terminals as shown on the plan${scope.title ? `, ${scope.title} only` : ""}. Risers appear as markers only.`);
+    w.image(pl.jpeg, `Figure ${fig++}  -  Plan${pl.name ? ` ${pl.name}` : ""}`);
   }
   if (isoJpeg) {
     w.heading("3D layout", 14);
-    w.para("Isometric review of the same network, including vertical risers and component heights (m AFFL).");
-    w.image(isoJpeg, "Figure 2  -  3D");
+    w.para("Isometric review of the same network, including vertical risers and component heights (m AFFL; levels at their elevation).");
+    w.image(isoJpeg, `Figure ${fig}  -  3D`);
   }
 
   w.para("Calculations use Darcy-Weisbach with Colebrook-White (Swamee-Jain) and Huebscher equivalent diameter for rectangular / square ducts. Verify against manufacturer data before construction.", 8);
@@ -498,6 +539,41 @@ function writeLouvres(w, project, results, unit, unitLabel) {
     ]);
     w.table(["Shape", "Size mm", "Face m2", "Free m2", "Free m/s", "Face m/s"], rows, [80, 100, 70, 70, 80, 80]);
   }
+}
+
+// Air socks: nominal sizing and pressure at concept / design, replaced by the
+// manufacturer's selection when it is in. The Basis column says which.
+function writeAirSocks(w, project, results, unit, unitLabel) {
+  const rows = sockSchedule(project, results);
+  if (!rows.length) return;
+  const b = sockBasis(project.settings);
+  w.heading("Air socks  -  fabric ductwork", 13);
+  w.para(`Socks marked Nominal are sized for a ${b.inletVelocity} m/s inlet velocity and carry a nominal ${b.nominalStaticPa} Pa inlet static in the index run. Replace with the manufacturer's selection (inlet static, throw, NR, reference) before the design is issued for construction. A sock with no flow typed shares the unit's supply duty in proportion to its vented length ("ventilated throughout").`, 8.5);
+  w.table(
+    ["Ref", "System", `Flow ${unitLabel}`, "Len m", "Vented m", "Dia mm", "Inlet m/s", `${unitLabel}/m`, "Pa", "Basis"],
+    rows.map((r) => [
+      r.ref.slice(0, 18),
+      (r.system || "-").slice(0, 14),
+      formatFlowLs(r.flowLs, unit).replace(` ${unitLabel}`, "") + (r.shared ? "*" : ""),
+      r1(r.lengthM),
+      r1(r.ventedLengthM),
+      r.diameterMm + (r.autoDia ? "" : "!"),
+      r2(r.inletVelocity),
+      unit === "m3/h" ? r0(r.m3hPerM) : r1(r.flowPerM_ls),
+      r0(r.staticPa),
+      r.basisLabel,
+    ]),
+    [62, 70, 50, 38, 44, 42, 46, 44, 32, 66]
+  );
+  w.para("* flow shared from the unit's supply duty by vented length.  ! diameter typed rather than auto-sized.", 7.5);
+  const mfr = rows.filter((r) => r.manufacturer || r.product || r.selectionRef || r.throwM || r.nr);
+  if (mfr.length) {
+    w.table(["Ref", "Manufacturer", "Product", "Selection ref", "Discharge", "Throw m", "NR"],
+      mfr.map((r) => [r.ref.slice(0, 18), r.manufacturer.slice(0, 18), r.product.slice(0, 18), r.selectionRef.slice(0, 16), r.discharge.split(" — ")[0], r.throwM ? r1(r.throwM) : "-", r.nr || "-"]),
+      [62, 80, 80, 70, 70, 50, 32]);
+  }
+  const warn = rows.flatMap((r) => r.warnings.map((x) => `${r.ref}: ${x}`));
+  w.warnList(warn);
 }
 
 // Commissioning: what the balancing engineer sets to and records against,
@@ -562,7 +638,7 @@ function writeCommissioning(w, project, results, unit, unitLabel) {
     w.heading("Unit test record", 12);
     for (const p of plants) {
       const def = componentDef(p.kind);
-      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantLabel === (p.label || def?.label))?.totalLs || 0;
+      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantId === p.id)?.totalLs || 0;
       const rows = [
         [`Supply air volume (${unitLabel})`, formatFlowLs(flow("supply"), unit)],
         [`Extract air volume (${unitLabel})`, formatFlowLs(flow("extract"), unit)],
@@ -575,7 +651,7 @@ function writeCommissioning(w, project, results, unit, unitLabel) {
         ["Filter pressure drops (clean)", "-"],
       ];
       if (p.kind === "hrv") rows.push(["Heat recovery temperature efficiency (%)", r0(Number(p.props?.recoveryEfficiencyPct) || 0)], ["Summer bypass operation", p.props?.summerBypass === false ? "none fitted" : "check"]);
-      w.heading(p.label || def?.label || "Unit", 10);
+      w.heading(systemTitle(p, def?.label || "Unit"), 10);
       w.table(["Item", "Design", "Measured", "Init"], rows.map((r) => [r[0], String(r[1]), "", ""]), [220, 120, 120, 50]);
     }
   }
@@ -737,6 +813,20 @@ export function buildTakeoffPdf({ project, takeoff, logoJpeg = null }) {
   const joints = (takeoff.joints || []).map((g) => [g.label, g.size, g.qty]);
   if (joints.length) w.table(["Joint", "Size", "Qty"], joints, [220, 120, 40]);
   else w.para("None.");
+  if ((takeoff.systems || []).length > 1) {
+    w.heading("By system", 12);
+    w.table(["System", "Straight m", "Fittings", "Sheet m2"], takeoff.systems.map((g) => [g.title, g.straightM, g.fittings, g.sheetAreaM2]), [200, 80, 70, 80]);
+  }
+  const sk = takeoff.socks;
+  if (sk?.bodies?.length) {
+    w.heading("Air socks  -  fabric ductwork", 12);
+    w.table(["Item", "Size", "Qty", "Length m", "Refs"], [
+      ...sk.bodies.map((g) => [`Air sock ${g.fabric}`.slice(0, 40), g.size, g.qty, g.lengthM, g.refs.join(" ").slice(0, 40)]),
+      ...sk.suspension.map((g) => [g.label, "", "", g.lengthM, ""]),
+      ...(sk.drops ? [[`Drop rods / hangers (est. ${sk.dropSpacingM} m centres)`, "", sk.drops, "", ""]] : []),
+      ...(sk.inlets ? [["Inlet connector to duct", "", sk.inlets, "", ""]] : []),
+    ], [190, 60, 36, 56, 130]);
+  }
   w.heading("Insulation", 12);
   const ins = (takeoff.insulation || []).map((g) => [`${g.thicknessMm} mm ${g.type}`, g.areaM2, g.cladding || "", g.claddingAreaM2 || ""]);
   if (ins.length) w.table(["Insulation", "Area m2", "Cladding", "Clad m2"], ins, [180, 70, 100, 70]);

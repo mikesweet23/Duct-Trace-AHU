@@ -46,3 +46,57 @@ export function fanSide(key) {
 export function isOutsideSystem(key) {
   return !!SYSTEMS[key]?.outside;
 }
+
+// ---------------------------------------------------------------------------
+// Named, numbered and coloured systems.
+//
+// A floor often carries several systems — AHU-01 to the east offices, AHU-02
+// to the west, an HRV to the meeting rooms. Each unit or fan is one system:
+// it carries a tag (AHU-01), a name (East offices) and a colour, and every
+// duct and terminal joined to it takes that colour on the plan, in 3D and in
+// the report. The airstream still shows: a stripe down the duct, the ring on
+// the unit and the system's name ("AHU-01 East offices — Supply").
+//
+// Colours avoid the selection gold, the index-run pink and the over-velocity
+// red so those still read.
+export const SYSTEM_PALETTE = [
+  "#1f6fd1", // blue
+  "#7c3aed", // violet
+  "#0d9488", // teal
+  "#ea580c", // orange
+  "#4d7c0f", // olive
+  "#0891b2", // cyan
+  "#9f1239", // wine
+  "#475569", // slate
+  "#a855f7", // lilac
+  "#854d0e", // bronze
+  "#15803d", // green
+  "#1e3a8a", // navy
+];
+
+// How the plan colours ducts: by system (each unit its own colour) or by
+// airstream (supply blue, extract orange…, the EN 16798-3 convention).
+export const COLOUR_MODES = { system: "By system (unit colour)", airstream: "By airstream (supply / extract / fresh / exhaust)" };
+
+export function nextSystemColor(used = []) {
+  const taken = new Set(used.map((c) => String(c || "").toLowerCase()));
+  return SYSTEM_PALETTE.find((c) => !taken.has(c.toLowerCase())) || SYSTEM_PALETTE[used.length % SYSTEM_PALETTE.length];
+}
+
+// AHU-01, AHU-02, HRV-01, FAN-01 … the next free number for that prefix.
+export function nextSystemTag(prefix, usedTags = []) {
+  const re = new RegExp(`^${prefix}-(\\d+)$`, "i");
+  let max = 0;
+  for (const t of usedTags) {
+    const m = re.exec(String(t || "").trim());
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `${prefix}-${String(max + 1).padStart(2, "0")}`;
+}
+
+// "AHU-01 East offices", or just one of the two, or the fallback.
+export function systemTitle(plant, fallback = "") {
+  if (!plant) return fallback;
+  const bits = [plant.tag, plant.label].map((x) => String(x || "").trim()).filter(Boolean);
+  return bits.length ? bits.join(" ") : fallback;
+}

@@ -15,6 +15,7 @@ export const CATEGORIES = {
 export const COMPONENTS = {
   ahu: {
     kind: "ahu",
+    tagPrefix: "AHU",
     label: "Air Handling Unit",
     category: "plant",
     role: "plant",
@@ -38,6 +39,7 @@ export const COMPONENTS = {
   // and the available static either side.
   hrv: {
     kind: "hrv",
+    tagPrefix: "HRV",
     label: "Heat recovery unit (MVHR)",
     category: "plant",
     role: "plant",
@@ -63,6 +65,7 @@ export const COMPONENTS = {
   },
   fan_centrifugal: {
     kind: "fan_centrifugal",
+    tagPrefix: "FAN",
     label: "Centrifugal fan",
     category: "plant",
     role: "plant",
@@ -73,6 +76,7 @@ export const COMPONENTS = {
   },
   fan_axial: {
     kind: "fan_axial",
+    tagPrefix: "FAN",
     label: "Axial fan",
     category: "plant",
     role: "plant",
@@ -83,6 +87,7 @@ export const COMPONENTS = {
   },
   fan_plug: {
     kind: "fan_plug",
+    tagPrefix: "FAN",
     label: "EC plug fan",
     category: "plant",
     role: "plant",
@@ -142,6 +147,41 @@ export const COMPONENTS = {
     color: "#059669",
     foot: { w: 0.6, d: 0.3, t: 0.2 },
     props: { designFlow_ls: 100, terminalLossPa: 15, note: "" },
+  },
+  // Air sock — a fabric supply duct that discharges along its length. Drawn
+  // full length on the plan (width = length, depth = diameter) with its inlet
+  // on the left-hand end, where the duct joins. A design flow of 0 takes a
+  // share of the unit's supply duty in proportion to vented length — for a
+  // job where only the total and "ventilated throughout" are known.
+  // See src/standards/airsock.js for the nominal sizing and pressure.
+  air_sock: {
+    kind: "air_sock",
+    label: "Air sock (fabric duct)",
+    category: "terminal",
+    role: "terminal",
+    symbol: "SOCK",
+    color: "#0e7490",
+    system: "supply",
+    airSock: true,
+    inletEnd: true,
+    foot: { w: 10, d: 0.4, t: 0.4 },
+    props: {
+      designFlow_ls: 0,
+      ventilatedThroughout: true,
+      ventedLengthM: 0,
+      diameterMm: 0,
+      discharge: "perforated",
+      suspension: "cable1",
+      basis: "nominal",
+      nominalStaticPa: 0,
+      manufacturer: "",
+      product: "",
+      selectionRef: "",
+      mfrStaticPa: 0,
+      mfrThrow_m: 0,
+      mfrNR: 0,
+      note: "",
+    },
   },
   // An open duct end, supply or extract. Its loss is the velocity pressure
   // at the duct times a K: a supply open end throws its velocity pressure

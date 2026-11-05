@@ -495,6 +495,24 @@ table.schedule tr.over-vel td { color: var(--alarm); }
   .adi-bar .title-block h1 { font-size: 15px; }
   #bSteps { display: none; } /* How to use is also on ? Help */
 }
+
+/* Systems: colour swatches and the per-system list */
+.swatch-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.swatch-row input[type="color"] { width: 30px; height: 24px; padding: 0; border: 1px solid rgba(0,0,0,0.2); border-radius: 4px; background: none; }
+.swatch { width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.25); padding: 0; cursor: pointer; }
+.swatch.on { outline: 2px solid #e0a422; outline-offset: 1px; }
+.sys-row { display: grid; grid-template-columns: 28px 74px 1fr auto; gap: 4px; align-items: center; margin: 4px 0 8px; }
+.sys-row input[type="color"] { width: 28px; height: 24px; padding: 0; border: 1px solid rgba(0,0,0,0.2); border-radius: 4px; background: none; }
+.sys-row input[type="text"] { min-width: 0; }
+.sys-row .link-btn { grid-column: 2 / -1; text-align: left; font-size: 11px; }
+.sys-row.off { opacity: 0.5; }
+.st .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+/* Level switcher in the zoom bar */
+.zoomer select#zFloor { border: none; height: 32px; padding: 0 6px; font: 600 12.5px Archivo, system-ui, sans-serif; color: var(--ink); background: var(--white); max-width: 170px; border-right: 1px solid rgba(0,0,0,0.08); }
+.lvl-row { display: grid; grid-template-columns: 1fr 70px auto auto; gap: 4px; align-items: center; margin: 4px 0; }
+.lvl-row input { min-width: 0; }
+.lvl-row.on input[type="text"] { font-weight: 700; }
 </style>
 <!-- PDF reader for drawings supplied as PDF. Images need nothing. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -595,6 +613,7 @@ table.schedule tr.over-vel td { color: var(--alarm); }
       <div class="status" id="status"></div>
 
       <div class="zoomer" id="zoomer">
+        <select id="zFloor" title="Level in view — each floor has its own drawing"></select>
         <button id="zRot" title="Rotate the drawing — quarter turns, or straighten a scan a degree at a time">&#8635;</button>
         <button id="zOut" title="Zoom out">&minus;</button>
         <div class="lvl" id="zLvl">100%</div>
@@ -900,6 +919,7 @@ const CATEGORIES = {
 const COMPONENTS = {
   ahu: {
     kind: "ahu",
+    tagPrefix: "AHU",
     label: "Air Handling Unit",
     category: "plant",
     role: "plant",
@@ -923,6 +943,7 @@ const COMPONENTS = {
   // and the available static either side.
   hrv: {
     kind: "hrv",
+    tagPrefix: "HRV",
     label: "Heat recovery unit (MVHR)",
     category: "plant",
     role: "plant",
@@ -948,6 +969,7 @@ const COMPONENTS = {
   },
   fan_centrifugal: {
     kind: "fan_centrifugal",
+    tagPrefix: "FAN",
     label: "Centrifugal fan",
     category: "plant",
     role: "plant",
@@ -958,6 +980,7 @@ const COMPONENTS = {
   },
   fan_axial: {
     kind: "fan_axial",
+    tagPrefix: "FAN",
     label: "Axial fan",
     category: "plant",
     role: "plant",
@@ -968,6 +991,7 @@ const COMPONENTS = {
   },
   fan_plug: {
     kind: "fan_plug",
+    tagPrefix: "FAN",
     label: "EC plug fan",
     category: "plant",
     role: "plant",
@@ -1027,6 +1051,41 @@ const COMPONENTS = {
     color: "#059669",
     foot: { w: 0.6, d: 0.3, t: 0.2 },
     props: { designFlow_ls: 100, terminalLossPa: 15, note: "" },
+  },
+  // Air sock — a fabric supply duct that discharges along its length. Drawn
+  // full length on the plan (width = length, depth = diameter) with its inlet
+  // on the left-hand end, where the duct joins. A design flow of 0 takes a
+  // share of the unit's supply duty in proportion to vented length — for a
+  // job where only the total and "ventilated throughout" are known.
+  // See src/standards/airsock.js for the nominal sizing and pressure.
+  air_sock: {
+    kind: "air_sock",
+    label: "Air sock (fabric duct)",
+    category: "terminal",
+    role: "terminal",
+    symbol: "SOCK",
+    color: "#0e7490",
+    system: "supply",
+    airSock: true,
+    inletEnd: true,
+    foot: { w: 10, d: 0.4, t: 0.4 },
+    props: {
+      designFlow_ls: 0,
+      ventilatedThroughout: true,
+      ventedLengthM: 0,
+      diameterMm: 0,
+      discharge: "perforated",
+      suspension: "cable1",
+      basis: "nominal",
+      nominalStaticPa: 0,
+      manufacturer: "",
+      product: "",
+      selectionRef: "",
+      mfrStaticPa: 0,
+      mfrThrow_m: 0,
+      mfrNR: 0,
+      note: "",
+    },
   },
   // An open duct end, supply or extract. Its loss is the velocity pressure
   // at the duct times a K: a supply open end throws its velocity pressure
@@ -1418,11 +1477,17 @@ function preferredPort(c, system) {
   return { nodeId: c.nodeId, off: null };
 }
 
+// Where a single-connection component joins its duct, in its own frame:
+// the middle for most, the left-hand end for an air sock (its inlet).
+function terminalPortOffset(c) {
+  return componentDef(c?.kind)?.inletEnd ? { u: -1, v: 0 } : null;
+}
+
 // Every node id a component owns.
 function componentNodeIds(c) {
   return [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean);
 }
-return { MIN_FOOT_M, HANDLE_PX, defaultFootprint, defaultHeightM, componentFoot, pxPerMeterOf, componentBoxTrue, componentBox, connPoint, snapOnComponent, distToComponentBox, handlesOf, hitHandle, PORT_LAYOUTS, unitPortOffset, portOffset, PORT_NODE_KEY, isFourPort, preferredPort, componentNodeIds };
+return { MIN_FOOT_M, HANDLE_PX, defaultFootprint, defaultHeightM, componentFoot, pxPerMeterOf, componentBoxTrue, componentBox, connPoint, snapOnComponent, distToComponentBox, handlesOf, hitHandle, PORT_LAYOUTS, unitPortOffset, portOffset, PORT_NODE_KEY, isFourPort, preferredPort, terminalPortOffset, componentNodeIds };
 })();
 
 // ---- src/snap.js ----
@@ -2093,6 +2158,257 @@ function applyConstruction(project, startSeg, constructionKey, scope = "section"
 return { PROJECT_CONSTRUCTIONS, SECTION_CONSTRUCTIONS, constructionToShape, shapeToConstruction, projectConstructionLabel, sectionConstructionKey, setSegmentConstruction, downstreamSegments, applyConstruction };
 })();
 
+// ---- src/systems.js ----
+__m["src/systems.js"] = (() => {
+// The four airstreams of a ventilation unit, named to BS EN 16798-3:
+//
+//   ODA  outdoor air   fresh air in from outside, to the unit
+//   SUP  supply air    from the unit, into the building
+//   ETA  extract air   from the building, back to the unit
+//   EHA  exhaust air   stale air from the unit, out to outside
+//
+// The supply fan pushes ODA + SUP in series and the extract fan pulls
+// ETA + EHA in series, so each fan's available static has to cover the
+// ductwork on both sides of it. That pairing is `fan` below.
+//
+// Colours follow the usual schematic convention: outdoor green, supply blue,
+// extract yellow-orange, exhaust brown.
+//
+// On screen the codes are IN (internal — supply and extract, the building
+// side of the unit) and EX (external — fresh air and exhaust, the outside
+// side); `en` keeps the EN 16798-3 abbreviation for reference.
+
+const SYSTEMS = {
+  supply:  { key: "supply",  code: "IN", en: "SUP", label: "Supply",    long: "Supply air — into the building",   color: "#1f6fd1", fan: "supply",  outside: false, towardUnit: false },
+  extract: { key: "extract", code: "IN", en: "ETA", label: "Extract",   long: "Extract air — back from the building", color: "#c2410c", fan: "extract", outside: false, towardUnit: true },
+  outdoor: { key: "outdoor", code: "EX", en: "ODA", label: "Fresh air", long: "Outdoor air — fresh air in from outside", color: "#15803d", fan: "supply",  outside: true,  towardUnit: true },
+  exhaust: { key: "exhaust", code: "EX", en: "EHA", label: "Exhaust",   long: "Exhaust air — stale air out to outside", color: "#7c4a1e", fan: "extract", outside: true,  towardUnit: false },
+};
+
+const SYSTEM_KEYS = ["supply", "extract", "outdoor", "exhaust"];
+
+function systemInfo(key) {
+  return SYSTEMS[key] || SYSTEMS.supply;
+}
+
+function systemColor(key) {
+  return systemInfo(key).color;
+}
+
+function systemLabel(key) {
+  return systemInfo(key).label;
+}
+
+// Which fan of a two-port unit moves this airstream: ODA rides with SUP,
+// EHA with ETA.
+function fanSide(key) {
+  return systemInfo(key).fan;
+}
+
+function isOutsideSystem(key) {
+  return !!SYSTEMS[key]?.outside;
+}
+
+// ---------------------------------------------------------------------------
+// Named, numbered and coloured systems.
+//
+// A floor often carries several systems — AHU-01 to the east offices, AHU-02
+// to the west, an HRV to the meeting rooms. Each unit or fan is one system:
+// it carries a tag (AHU-01), a name (East offices) and a colour, and every
+// duct and terminal joined to it takes that colour on the plan, in 3D and in
+// the report. The airstream still shows: a stripe down the duct, the ring on
+// the unit and the system's name ("AHU-01 East offices — Supply").
+//
+// Colours avoid the selection gold, the index-run pink and the over-velocity
+// red so those still read.
+const SYSTEM_PALETTE = [
+  "#1f6fd1", // blue
+  "#7c3aed", // violet
+  "#0d9488", // teal
+  "#ea580c", // orange
+  "#4d7c0f", // olive
+  "#0891b2", // cyan
+  "#9f1239", // wine
+  "#475569", // slate
+  "#a855f7", // lilac
+  "#854d0e", // bronze
+  "#15803d", // green
+  "#1e3a8a", // navy
+];
+
+// How the plan colours ducts: by system (each unit its own colour) or by
+// airstream (supply blue, extract orange…, the EN 16798-3 convention).
+const COLOUR_MODES = { system: "By system (unit colour)", airstream: "By airstream (supply / extract / fresh / exhaust)" };
+
+function nextSystemColor(used = []) {
+  const taken = new Set(used.map((c) => String(c || "").toLowerCase()));
+  return SYSTEM_PALETTE.find((c) => !taken.has(c.toLowerCase())) || SYSTEM_PALETTE[used.length % SYSTEM_PALETTE.length];
+}
+
+// AHU-01, AHU-02, HRV-01, FAN-01 … the next free number for that prefix.
+function nextSystemTag(prefix, usedTags = []) {
+  const re = new RegExp(`^${prefix}-(\\d+)$`, "i");
+  let max = 0;
+  for (const t of usedTags) {
+    const m = re.exec(String(t || "").trim());
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `${prefix}-${String(max + 1).padStart(2, "0")}`;
+}
+
+// "AHU-01 East offices", or just one of the two, or the fallback.
+function systemTitle(plant, fallback = "") {
+  if (!plant) return fallback;
+  const bits = [plant.tag, plant.label].map((x) => String(x || "").trim()).filter(Boolean);
+  return bits.length ? bits.join(" ") : fallback;
+}
+return { SYSTEMS, SYSTEM_KEYS, systemInfo, systemColor, systemLabel, fanSide, isOutsideSystem, SYSTEM_PALETTE, COLOUR_MODES, nextSystemColor, nextSystemTag, systemTitle };
+})();
+
+// ---- src/levels.js ----
+__m["src/levels.js"] = (() => {
+// Floors / levels. A job often runs over several floors, each with its own
+// drawing. Every node, unit, terminal, room and tape measure belongs to one
+// level; the plan shows the level being worked on (the others faintly, to
+// line up risers against), and a riser between levels is a duct whose two
+// ends sit on different levels at the same point on plan.
+//
+// Heights stay as typed — metres above that level's finished floor (AFFL).
+// The level's own elevation is added only where heights are compared across
+// floors: the solve, the fabrication model, 3D and installed lengths, via
+// resolveLevels(). A project with one level (or every level at 0 m) is
+// passed through untouched, so nothing changes for a single-floor job.
+//
+// All levels share one plan scale and one origin: a drawing loaded onto a
+// second level is scaled to the project's scale when its own scale is set,
+// and can be offset so its grid sits over the floor below.
+
+const FIRST_LEVEL_ID = "L0";
+
+function defaultLevel() {
+  return { id: FIRST_LEVEL_ID, name: "Ground floor", elevationM: 0, background: null };
+}
+
+// Make sure a project has at least one level and a valid active level.
+function ensureLevels(p) {
+  if (!Array.isArray(p.levels) || !p.levels.length) p.levels = [defaultLevel()];
+  for (const l of p.levels) {
+    if (!l.id) l.id = `L${Math.random().toString(36).slice(2, 8)}`;
+    if (!Number.isFinite(Number(l.elevationM))) l.elevationM = 0;
+    if (l.name == null) l.name = "";
+    if (l.background === undefined) l.background = null;
+  }
+  if (!p.levels.some((l) => l.id === p.activeLevel)) p.activeLevel = p.levels[0].id;
+  return p;
+}
+
+function levelsOf(p) {
+  return Array.isArray(p?.levels) && p.levels.length ? p.levels : [defaultLevel()];
+}
+
+function multiLevel(p) {
+  return levelsOf(p).length > 1;
+}
+
+function firstLevelId(p) {
+  return levelsOf(p)[0].id;
+}
+
+function activeLevelId(p) {
+  const ls = levelsOf(p);
+  return ls.some((l) => l.id === p?.activeLevel) ? p.activeLevel : ls[0].id;
+}
+
+function levelById(p, id) {
+  return levelsOf(p).find((l) => l.id === id) || null;
+}
+
+// The level an item sits on; anything from before levels is on the first.
+function levelIdOf(p, item) {
+  const id = item?.levelId;
+  return id && levelById(p, id) ? id : firstLevelId(p);
+}
+
+function levelElevation(p, id) {
+  return Number(levelById(p, id)?.elevationM) || 0;
+}
+
+function levelName(p, id) {
+  const l = levelById(p, id);
+  if (!l) return "";
+  return l.name || `Level ${levelsOf(p).indexOf(l)}`;
+}
+
+function nodeLevelId(p, nodeId, nodesById = null) {
+  const n = nodesById ? nodesById.get(nodeId) : p.nodes.find((x) => x.id === nodeId);
+  return levelIdOf(p, n);
+}
+
+// A duct whose two ends are on different levels: a riser between floors.
+function isLevelRiser(p, s, nodesById = null) {
+  return nodeLevelId(p, s.a, nodesById) !== nodeLevelId(p, s.b, nodesById);
+}
+
+function onLevel(p, item, levelId = activeLevelId(p)) {
+  return levelIdOf(p, item) === levelId;
+}
+
+// The plan's view of one level: its nodes, units, terminals, rooms and tape
+// measures, and the ducts with both ends on it. The arrays are new, the
+// items are the project's own, so editing an item edits the project — but
+// anything new must be pushed onto the project, never onto this view.
+function levelView(p, levelId = activeLevelId(p)) {
+  if (!multiLevel(p)) return p;
+  const nodes = p.nodes.filter((n) => levelIdOf(p, n) === levelId);
+  const ids = new Set(nodes.map((n) => n.id));
+  return {
+    ...p,
+    nodes,
+    segments: p.segments.filter((s) => ids.has(s.a) && ids.has(s.b)),
+    components: (p.components || []).filter((c) => levelIdOf(p, c) === levelId),
+    rooms: (p.rooms || []).filter((r) => levelIdOf(p, r) === levelId),
+    measures: (p.measures || []).filter((m) => levelIdOf(p, m) === levelId),
+  };
+}
+
+// Anything made without a level (a new node, unit, room…) goes on the level
+// being worked on. Returns how many items it stamped.
+function stampLevels(p) {
+  if (!Array.isArray(p?.levels) || !p.levels.length) return 0;
+  const id = activeLevelId(p);
+  let n = 0;
+  for (const list of [p.nodes, p.components, p.rooms, p.measures]) {
+    for (const it of list || []) {
+      if (!it.levelId || !levelById(p, it.levelId)) { it.levelId = id; n++; }
+    }
+  }
+  return n;
+}
+
+// The project as the calculations need it: heights absolute (level
+// elevation + AFFL) and each duct's floor named after its level when none is
+// typed. Copies only what changes; a single-level job comes back as is.
+function resolveLevels(p) {
+  if (!multiLevel(p)) return p;
+  const elev = new Map(levelsOf(p).map((l) => [l.id, Number(l.elevationM) || 0]));
+  const nodes = p.nodes.map((n) => {
+    const e = elev.get(levelIdOf(p, n)) || 0;
+    return e ? { ...n, z: (Number(n.z) || 0) + e } : n;
+  });
+  const byId = new Map(p.nodes.map((n) => [n.id, n]));
+  return {
+    ...p,
+    nodes,
+    components: (p.components || []).map((c) => {
+      const e = elev.get(levelIdOf(p, c)) || 0;
+      return e ? { ...c, heightM: (Number(c.heightM) || 0) + e } : c;
+    }),
+    segments: p.segments.map((s) => (s.floor ? s : { ...s, floor: levelName(p, levelIdOf(p, byId.get(s.a))) })),
+  };
+}
+return { FIRST_LEVEL_ID, defaultLevel, ensureLevels, levelsOf, multiLevel, firstLevelId, activeLevelId, levelById, levelIdOf, levelElevation, levelName, nodeLevelId, isLevelRiser, onLevel, levelView, stampLevels, resolveLevels };
+})();
+
 // ---- src/state.js ----
 __m["src/state.js"] = (() => {
 // Central application state: the project model, selection, active tool, undo
@@ -2100,11 +2416,13 @@ __m["src/state.js"] = (() => {
 
 const { dist } = __m["src/geom.js"];
 const { defaultProps, componentDef, isDualPort } = __m["src/standards/components.js"];
-const { connPoint, defaultFootprint, defaultHeightM, portOffset, unitPortOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } = __m["src/layout.js"];
+const { connPoint, defaultFootprint, defaultHeightM, portOffset, unitPortOffset, terminalPortOffset, pxPerMeterOf, isFourPort, componentNodeIds, PORT_NODE_KEY, PORT_LAYOUTS } = __m["src/layout.js"];
 const { heightAlong } = __m["src/snap.js"];
 const { normalizeFlowUnit } = __m["src/units.js"];
 const { RECOMMENDED_VELOCITY } = __m["src/standards/dw144.js"];
 const { applyConstruction, setSegmentConstruction } = __m["src/construction.js"];
+const { nextSystemColor, nextSystemTag } = __m["src/systems.js"];
+const { ensureLevels, stampLevels, activeLevelId, levelIdOf, levelView, levelById, firstLevelId, multiLevel, FIRST_LEVEL_ID } = __m["src/levels.js"];
 
 const STORAGE_KEY = "duct-trace-ahu:project";
 const MULTI_TYPES = new Set(["component", "segment", "node", "room", "measure"]);
@@ -2144,6 +2462,13 @@ function defaultSettings() {
       runout: RECOMMENDED_VELOCITY.runout.min,
     },
     conceptPxPerMeter: 50,
+    colourBy: "system", // "system" (each unit its own colour) | "airstream"
+    sockInletVelocity: 6, // m/s — air sock auto diameter
+    sockMaxInletVelocity: 8, // m/s — warn above
+    sockNominalStaticPa: 100, // Pa — air sock inlet static until the manufacturer's figure is in
+    sockMinStaticPa: 50, // Pa — warn below
+    sockShareBy: "length", // "length" | "area" — how blank socks share the unit's duty
+    sockDropSpacingM: 1.5, // m — air sock suspension drops, for the take-off
     flowUnit: "l/s",
     snapPoints: true,
     ortho: true,
@@ -2182,6 +2507,9 @@ function newProject(name = "Untitled project") {
     components: [],
     rooms: [],
     measures: [], // tape measures: [{ id, pts: [{x,y}] }] — plan metres only, never a duct
+    levels: [{ id: FIRST_LEVEL_ID, name: "Ground floor", elevationM: 0, background: null }],
+    activeLevel: FIRST_LEVEL_ID,
+    sockPresets: [], // air sock presets carried with the job (also kept in this browser)
     physical: null,
     engineeringLocked: false,
   };
@@ -2245,7 +2573,31 @@ function migrateProject(raw) {
       syncPorts(p, c);
     }
   }
+  assignSystemIdentities(p);
+  // floors: anything from before levels is on the first one
+  ensureLevels(p);
+  const first = firstLevelId(p);
+  for (const list of [p.nodes, p.components, p.rooms, p.measures]) {
+    for (const it of list || []) if (!it.levelId || !levelById(p, it.levelId)) it.levelId = first;
+  }
+  if (!Array.isArray(p.sockPresets)) p.sockPresets = [];
   return p;
+}
+
+// Every unit and fan is a system with a tag (AHU-01) and a colour. A unit
+// without them — a new one, or one saved before systems were named — gets
+// the next free tag for its kind and the next unused colour.
+function assignSystemIdentity(project, c) {
+  const def = componentDef(c.kind);
+  if (def?.role !== "plant") return c;
+  const others = (project.components || []).filter((x) => x !== c && componentDef(x.kind)?.role === "plant");
+  if (!String(c.tag || "").trim()) c.tag = nextSystemTag(def.tagPrefix || "SYS", others.map((x) => x.tag));
+  if (!c.color) c.color = nextSystemColor(others.map((x) => x.color));
+  return c;
+}
+
+function assignSystemIdentities(project) {
+  for (const c of project.components || []) assignSystemIdentity(project, c);
 }
 
 // Puts every connection node of a component on its casing. A four-port unit
@@ -2256,7 +2608,7 @@ function syncPorts(project, c) {
   const z = Number.isFinite(Number(c.heightM)) ? c.heightM : project.settings.defaultAhuHeight;
   for (const [system, key] of Object.entries(PORT_NODE_KEY)) {
     if (!four && system !== "supply") continue;
-    const at = connPoint(c, four ? unitPortOffset(c, system) : null, px);
+    const at = connPoint(c, four ? unitPortOffset(c, system) : terminalPortOffset(c), px);
     let n = c[key] ? project.nodes.find((x) => x.id === c[key]) : null;
     if (!n) {
       if (system === "supply") continue;
@@ -2283,6 +2635,7 @@ class Store {
     this.visualMode = "centreline"; // centreline | simple3d | fabrication | transparent | airflow | velocity | pressure | installation
     this.exploded = false;
     this.hiddenSystems = new Set();
+    this.hiddenPlants = new Set(); // unit / fan ids whose system is hidden on the plan
     this.takeoffFilters = { scope: "project", system: "", ahu: "", floor: "", zone: "", branch: "", size: "", type: "", area: "" };
     this.listeners = new Set();
     this.undoStack = [];
@@ -2295,7 +2648,70 @@ class Store {
   }
 
   emit() {
+    // anything just made (a node, a unit, a room…) is on the level in view
+    stampLevels(this.project);
     for (const fn of this.listeners) fn(this);
+  }
+
+  // ------------------------------------------------------------- levels
+  // The plan shows one level. Its drawing lives on the project as
+  // `background` while it is in view, and on its level otherwise.
+  setActiveLevel(id) {
+    const p = this.project;
+    ensureLevels(p);
+    const to = levelById(p, id);
+    if (!to || id === p.activeLevel) return false;
+    stampLevels(p);
+    const from = levelById(p, p.activeLevel);
+    if (from) from.background = p.background || null;
+    p.background = to.background || null;
+    to.background = null;
+    p.activeLevel = id;
+    this.selection = null;
+    return true;
+  }
+
+  // Swap the background in and out without touching undo or storage — for
+  // drawing each level's plan into the report.
+  levelBackground(id) {
+    const p = this.project;
+    return id === p.activeLevel ? p.background : levelById(p, id)?.background || null;
+  }
+
+  addLevel(name, elevationM) {
+    const p = this.project;
+    ensureLevels(p);
+    const id = uid("L");
+    const top = p.levels.reduce((m, l) => Math.max(m, Number(l.elevationM) || 0), 0);
+    p.levels.push({ id, name: name || `Level ${p.levels.length}`, elevationM: Number.isFinite(Number(elevationM)) ? Number(elevationM) : top + 4, background: null });
+    return id;
+  }
+
+  // Only an empty level goes — nothing on it, no drawing.
+  levelIsEmpty(id) {
+    const p = this.project;
+    const on = (it) => levelIdOf(p, it) === id;
+    return !p.nodes.some(on) && !p.components.some(on) && !(p.rooms || []).some(on) && !(p.measures || []).some(on) && !this.levelBackground(id);
+  }
+
+  deleteLevel(id) {
+    const p = this.project;
+    if (p.levels.length < 2 || !this.levelIsEmpty(id)) return false;
+    if (p.activeLevel === id) this.setActiveLevel(p.levels.find((l) => l.id !== id).id);
+    p.levels = p.levels.filter((l) => l.id !== id);
+    return true;
+  }
+
+  // A riser from a point on this level to another: a node at the same point
+  // on plan on that level, at its default duct height, and the duct between.
+  riserToLevel(node, levelId) {
+    const p = this.project;
+    if (!levelById(p, levelId) || levelIdOf(p, node) === levelId) return null;
+    const top = { id: uid("n"), x: node.x, y: node.y, z: p.settings.defaultDuctHeight ?? 3.2, levelId };
+    p.nodes.push(top);
+    const sys = p.segments.find((s) => s.a === node.id || s.b === node.id)?.system || this.activeSystem;
+    const seg = this.addSegment(node, top, sys, { roleOverride: "riser" });
+    return { node: top, seg };
   }
 
   // Undo steps hold the take-off, not the drawing: the sheet's image (often
@@ -2366,7 +2782,17 @@ class Store {
   persist() {
     try {
       const bg = this.project.background;
-      const lite = bg ? { ...this.project, background: { ...bg, dataUrl: null, stored: true } } : this.project;
+      let lite = bg ? { ...this.project, background: { ...bg, dataUrl: null, stored: true } } : this.project;
+      // the other levels' drawings: each under its own key, like the one in view
+      if ((this.project.levels || []).some((l) => l.background?.dataUrl)) {
+        lite = { ...lite, levels: this.project.levels.map((l) => {
+          if (!l.background?.dataUrl) return l;
+          try {
+            if (localStorage.getItem(`${STORAGE_KEY}:drawing:${l.id}`)?.length !== l.background.dataUrl.length) localStorage.setItem(`${STORAGE_KEY}:drawing:${l.id}`, l.background.dataUrl);
+          } catch (e) { this.drawingNotStored = true; }
+          return { ...l, background: { ...l.background, dataUrl: null, stored: true } };
+        }) };
+      }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(lite));
       const token = bg ? `${bg.dataUrl?.length || 0}:${bg.width}x${bg.height}` : "";
       if (token !== this._bgToken) {
@@ -2396,6 +2822,12 @@ class Store {
           else data.background = null;
         }
         if (data.background) delete data.background.stored;
+        for (const l of data.levels || []) {
+          if (l.background && !l.background.dataUrl) {
+            const img = localStorage.getItem(`${STORAGE_KEY}:drawing:${l.id}`);
+            if (img) { l.background.dataUrl = img; delete l.background.stored; } else l.background = null;
+          }
+        }
         this.project = migrateProject(data);
         this.traceHeight = this.project.settings.defaultDuctHeight;
         const bg = this.project.background;
@@ -2454,7 +2886,7 @@ class Store {
   }
 
   selectAll() {
-    const p = this.project;
+    const p = levelView(this.project);
     this.setSelection([
       ...p.components.map((c) => ({ type: "component", id: c.id })),
       ...p.segments.map((s) => ({ type: "segment", id: s.id })),
@@ -2588,6 +3020,7 @@ class Store {
       const same = p.components.filter((x) => x.kind === c.kind).length + 1;
       const def = componentDef(c.kind);
       copy.label = `${c.kind === "ahu" ? "AHU" : c.kind === "hrv" ? "HRV" : def?.label || "Item"} ${same}`;
+      if (def?.role === "plant") { copy.tag = ""; copy.color = ""; assignSystemIdentity(p, copy); }
       for (const key of ["nodeId", "returnNodeId", "outdoorNodeId", "exhaustNodeId"]) copy[key] = c[key] ? copyNode(c[key]) : null;
       p.components.push(copy);
       this.syncComponentPorts(copy);
@@ -2624,8 +3057,10 @@ class Store {
   findNodeAt(point, tol = NODE_MERGE_TOL, z = null) {
     let best = null;
     let bestD = tol;
+    const lv = activeLevelId(this.project);
     for (const n of this.project.nodes) {
       if (z != null && Math.abs((n.z || 0) - z) > Z_MERGE_TOL) continue;
+      if (levelIdOf(this.project, n) !== lv) continue; // never join across floors
       const d = dist(n, point);
       if (d <= bestD) {
         best = n;
@@ -2700,9 +3135,14 @@ class Store {
       heightM,
       props: defaultProps(kind),
     };
-    const n = this.findOrCreateNode(point, heightM);
+    if (def.inletEnd) {
+      // an air sock: the click is the inlet, the sock runs off to the right
+      c.x = point.x + (foot.w / 2) * pxPerMeterOf(this.project);
+    }
+    const n = this.findOrCreateNode(point, c.heightM);
     c.nodeId = n.id;
-    n.z = heightM;
+    n.z = c.heightM;
+    assignSystemIdentity(this.project, c);
     this.project.components.push(c);
     this.syncComponentPorts(c);
     return c;
@@ -2719,10 +3159,35 @@ class Store {
   }
 
   resizeComponent(c, widthM, depthM, rot) {
+    // an air sock keeps its inlet where the duct joins it: it grows and
+    // turns about that end, not about its middle
+    const inletEnd = !!componentDef(c.kind)?.inletEnd;
+    const px = pxPerMeterOf(this.project);
+    const end = (w, deg) => {
+      const r = ((Number(deg) || 0) * Math.PI) / 180;
+      return { x: Math.cos(r) * (w / 2) * px, y: Math.sin(r) * (w / 2) * px };
+    };
+    const before = inletEnd ? end(Number(c.widthM) || 0, c.rot) : null;
+    const inlet = before ? { x: c.x - before.x, y: c.y - before.y } : null;
     if (widthM != null) c.widthM = Math.max(0.08, widthM);
     if (depthM != null) c.depthM = Math.max(0.08, depthM);
     if (rot != null) c.rot = ((rot % 360) + 360) % 360;
+    if (inlet) {
+      const after = end(c.widthM, c.rot);
+      c.x = inlet.x + after.x;
+      c.y = inlet.y + after.y;
+    }
     this.syncComponentPorts(c);
+  }
+
+  // An air sock's drawn diameter follows the airflow it carries, unless a
+  // diameter is typed. Called after each solve; nothing is persisted here.
+  syncSockSizes(flowOf) {
+    for (const c of this.project.components) {
+      if (!componentDef(c.kind)?.airSock) continue;
+      const d = flowOf(c);
+      if (d > 0 && Math.abs((Number(c.depthM) || 0) - d / 1000) > 1e-6) c.depthM = d / 1000;
+    }
   }
 
   setComponentSystem(c, system) {
@@ -3146,6 +3611,8 @@ function seedDemo(store) {
     { id: "rm3", name: "Meeting", points: [{ x: 500, y: 500 }, { x: 760, y: 500 }, { x: 760, y: 640 }, { x: 500, y: 640 }], supplyFlow_ls: 90, extractFlow_ls: 120 },
   ];
 
+  assignSystemIdentities(p);
+  p.components.find((c) => c.kind === "ahu").label = "Office floor";
   store.project = p;
   store.selection = null;
   store.traceHeight = p.settings.defaultDuctHeight;
@@ -3167,7 +3634,7 @@ function seedDemo(store) {
   }
   store.commit();
 }
-return { uid, defaultSettings, newProject, migrateProject, Store, seedDemo, serveSystem };
+return { uid, defaultSettings, newProject, migrateProject, assignSystemIdentity, assignSystemIdentities, Store, seedDemo, serveSystem };
 })();
 
 // ---- src/ui/modal.js ----
@@ -3780,57 +4247,345 @@ function alternativesFor(type, shape) {
 return { FITTINGS, FITTING_ALTERNATIVES, fittingDef, fittingLoss, cornerBendK, hasListedBend, totalFittingK, alternativesFor };
 })();
 
-// ---- src/systems.js ----
-__m["src/systems.js"] = (() => {
-// The four airstreams of a ventilation unit, named to BS EN 16798-3:
-//
-//   ODA  outdoor air   fresh air in from outside, to the unit
-//   SUP  supply air    from the unit, into the building
-//   ETA  extract air   from the building, back to the unit
-//   EHA  exhaust air   stale air from the unit, out to outside
-//
-// The supply fan pushes ODA + SUP in series and the extract fan pulls
-// ETA + EHA in series, so each fan's available static has to cover the
-// ductwork on both sides of it. That pairing is `fan` below.
-//
-// Colours follow the usual schematic convention: outdoor green, supply blue,
-// extract yellow-orange, exhaust brown.
-//
-// On screen the codes are IN (internal — supply and extract, the building
-// side of the unit) and EX (external — fresh air and exhaust, the outside
-// side); `en` keeps the EN 16798-3 abbreviation for reference.
+// ---- src/rooms.js ----
+__m["src/rooms.js"] = (() => {
+// Rooms: their floor area, which room a terminal sits in, and the system
+// that serves them. A room belongs to a level like everything else.
 
-const SYSTEMS = {
-  supply:  { key: "supply",  code: "IN", en: "SUP", label: "Supply",    long: "Supply air — into the building",   color: "#1f6fd1", fan: "supply",  outside: false, towardUnit: false },
-  extract: { key: "extract", code: "IN", en: "ETA", label: "Extract",   long: "Extract air — back from the building", color: "#c2410c", fan: "extract", outside: false, towardUnit: true },
-  outdoor: { key: "outdoor", code: "EX", en: "ODA", label: "Fresh air", long: "Outdoor air — fresh air in from outside", color: "#15803d", fan: "supply",  outside: true,  towardUnit: true },
-  exhaust: { key: "exhaust", code: "EX", en: "EHA", label: "Exhaust",   long: "Exhaust air — stale air out to outside", color: "#7c4a1e", fan: "extract", outside: true,  towardUnit: false },
+const { polygonArea, pointInPolygon } = __m["src/geom.js"];
+const { pxPerMeterOf } = __m["src/layout.js"];
+const { levelIdOf } = __m["src/levels.js"];
+const { componentDef } = __m["src/standards/components.js"];
+
+function roomAreaM2(p, r) {
+  const px = pxPerMeterOf(p);
+  return Math.abs(polygonArea(r.points || [])) / (px * px);
+}
+
+function roomAt(p, pt, levelId) {
+  if (!pt) return null;
+  return (p.rooms || []).find((r) => levelIdOf(p, r) === levelId && (r.points || []).length >= 3 && pointInPolygon(pt, r.points)) || null;
+}
+
+// Where a terminal is for room purposes: an air sock by its middle (it is
+// long — its inlet may be in the corridor), anything else by its connection.
+function terminalPoint(p, c) {
+  if (componentDef(c.kind)?.airSock) return { x: c.x, y: c.y };
+  return p.nodes.find((n) => n.id === c.nodeId) || { x: c.x, y: c.y };
+}
+
+function roomOfComponent(p, c) {
+  return roomAt(p, terminalPoint(p, c), levelIdOf(p, c));
+}
+
+// The terminals inside a room, on its level.
+function roomTerminals(p, r) {
+  const lv = levelIdOf(p, r);
+  return (p.components || []).filter((c) => componentDef(c.kind)?.role === "terminal"
+    && levelIdOf(p, c) === lv && pointInPolygon(terminalPoint(p, c), r.points || []));
+}
+
+// Which systems actually feed a room: the units its terminals are joined to,
+// with how many terminals each.
+function roomSystems(p, r, results) {
+  const out = new Map();
+  for (const c of roomTerminals(p, r)) {
+    const pid = results?.plantOf?.comp?.get(c.id);
+    if (pid) out.set(pid, (out.get(pid) || 0) + 1);
+  }
+  return out;
+}
+
+// The system a room is on: the one it is assigned to, else the only one
+// its terminals are joined to. Null when unassigned and fed by none or
+// several.
+function roomPlantId(p, r, results) {
+  if (r.plantId && (p.components || []).some((c) => c.id === r.plantId)) return r.plantId;
+  const fed = roomSystems(p, r, results);
+  return fed.size === 1 ? [...fed.keys()][0] : null;
+}
+
+// A room assigned to one system with terminals joined to another.
+function roomMismatch(p, r, results) {
+  if (!r.plantId) return [];
+  return [...roomSystems(p, r, results).keys()].filter((id) => id !== r.plantId);
+}
+
+// The airflow a terminal gets from the solve — an air sock sharing its
+// unit's duty included — or its typed figure without one.
+function terminalFlowLs(c, results) {
+  for (const sys of results?.systems || []) {
+    for (const t of sys.terminals || []) {
+      if (t.components?.length === 1 && t.components[0].id === c.id) return t.flowM3s * 1000;
+    }
+  }
+  return Number(c.props?.designFlow_ls) || 0;
+}
+
+// Supply and extract airflow of the terminals in a room, and per m².
+function roomAirflow(p, r, results = null) {
+  let supplyLs = 0, extractLs = 0;
+  for (const c of roomTerminals(p, r)) {
+    const q = terminalFlowLs(c, results);
+    if (c.system === "extract") extractLs += q;
+    else if (c.system === "supply") supplyLs += q;
+  }
+  const areaM2 = roomAreaM2(p, r);
+  return { supplyLs, extractLs, areaM2, supplyLsM2: areaM2 > 0 ? supplyLs / areaM2 : 0, extractLsM2: areaM2 > 0 ? extractLs / areaM2 : 0 };
+}
+return { roomAreaM2, roomAt, terminalPoint, roomOfComponent, roomTerminals, roomSystems, roomPlantId, roomMismatch, terminalFlowLs, roomAirflow };
+})();
+
+// ---- src/standards/airsock.js ----
+__m["src/standards/airsock.js"] = (() => {
+// Air socks — fabric (textile) supply ducts that discharge along their
+// length. At concept and design stage all that is usually known is the total
+// air the sock has to deliver and that the space is "ventilated throughout",
+// so the sock is sized and costed here on nominal figures:
+//
+//   - diameter from a target inlet velocity (default 6 m/s, cap 8 m/s),
+//   - an inlet static pressure the sock needs to stay taut and throw
+//     (default 100 Pa nominal, manufacturers usually ask for at least ~50 Pa),
+//   - discharge spread evenly over the vented length (l/s per metre).
+//
+// Once the manufacturer has made a selection their figures replace these:
+// set the basis to "manufacturer" and type their inlet static, throw, NR and
+// selection reference. The nominal figures stay visible for comparison.
+//
+// These are concept defaults, not any one manufacturer's data — always
+// confirm with the sock supplier before construction.
+
+const { componentDef } = __m["src/standards/components.js"];
+const { roomOfComponent, roomAreaM2 } = __m["src/rooms.js"];
+const { levelIdOf, levelName, multiLevel } = __m["src/levels.js"];
+
+const SOCK_DIAMETERS_MM = [160, 200, 250, 315, 355, 400, 450, 500, 560, 630, 710, 800, 900, 1000, 1120, 1250, 1400, 1600];
+
+const SOCK_DISCHARGE = {
+  perforated: "Perforated — directional jets",
+  micro: "Micro-perforated — low velocity, mixing",
+  permeable: "Permeable fabric — diffuse, draught-free",
+  nozzle: "Nozzles — long throw",
+  orifice: "Orifices / slots",
 };
 
-const SYSTEM_KEYS = ["supply", "extract", "outdoor", "exhaust"];
+// How the sock hangs: one or two runs of cable or track along its length.
+const SOCK_SUSPENSION = {
+  cable1: { label: "Single cable", rows: 1, kind: "Suspension cable" },
+  cable2: { label: "Twin cable", rows: 2, kind: "Suspension cable" },
+  track1: { label: "Single track / rail", rows: 1, kind: "Suspension track" },
+  track2: { label: "Twin track / rail", rows: 2, kind: "Suspension track" },
+  none: { label: "None / by others", rows: 0, kind: "" },
+};
 
-function systemInfo(key) {
-  return SYSTEMS[key] || SYSTEMS.supply;
+const SOCK_BASIS = {
+  nominal: "Nominal (concept / design)",
+  manufacturer: "Manufacturer selection",
+};
+
+const SOCK_DEFAULTS = {
+  inletVelocity: 6, // m/s, target for the auto diameter
+  maxInletVelocity: 8, // m/s, warn above
+  nominalStaticPa: 100, // Pa at the sock inlet
+  minStaticPa: 50, // Pa, below this a sock may not stay inflated
+  dropSpacingM: 1.5, // m between drop rods / hangers on each suspension run
+};
+
+function isAirSock(c) {
+  return !!componentDef(c?.kind)?.airSock;
 }
 
-function systemColor(key) {
-  return systemInfo(key).color;
+function settingOr(settings, key, fallback) {
+  const v = Number(settings?.[key]);
+  return v > 0 ? v : fallback;
 }
 
-function systemLabel(key) {
-  return systemInfo(key).label;
+function sockBasis(settings = {}) {
+  return {
+    inletVelocity: settingOr(settings, "sockInletVelocity", SOCK_DEFAULTS.inletVelocity),
+    maxInletVelocity: settingOr(settings, "sockMaxInletVelocity", SOCK_DEFAULTS.maxInletVelocity),
+    nominalStaticPa: settingOr(settings, "sockNominalStaticPa", SOCK_DEFAULTS.nominalStaticPa),
+    minStaticPa: settingOr(settings, "sockMinStaticPa", SOCK_DEFAULTS.minStaticPa),
+    dropSpacingM: settingOr(settings, "sockDropSpacingM", SOCK_DEFAULTS.dropSpacingM),
+  };
 }
 
-// Which fan of a two-port unit moves this airstream: ODA rides with SUP,
-// EHA with ETA.
-function fanSide(key) {
-  return systemInfo(key).fan;
+function sockLengthM(c) {
+  return Math.max(0, Number(c?.widthM) || 0);
 }
 
-function isOutsideSystem(key) {
-  return !!SYSTEMS[key]?.outside;
+// "Ventilated throughout": the whole length discharges. Otherwise only the
+// vented length typed on the sock does (the rest is a plain fabric carrier).
+function sockVentedLengthM(c) {
+  const L = sockLengthM(c);
+  if (c?.props?.ventilatedThroughout !== false) return L;
+  const v = Number(c?.props?.ventedLengthM) || 0;
+  return Math.max(0, Math.min(L, v));
 }
-return { SYSTEMS, SYSTEM_KEYS, systemInfo, systemColor, systemLabel, fanSide, isOutsideSystem };
+
+// Smallest standard sock diameter that keeps the inlet at or under the
+// target velocity; the largest if none does.
+function sizeSockDiameterMm(flowLs, velocity = SOCK_DEFAULTS.inletVelocity) {
+  const q = Math.max(0, Number(flowLs) || 0) / 1000;
+  if (q <= 0) return SOCK_DIAMETERS_MM[0];
+  for (const d of SOCK_DIAMETERS_MM) {
+    const a = Math.PI * (d / 1000) ** 2 / 4;
+    if (q / a <= velocity + 1e-9) return d;
+  }
+  return SOCK_DIAMETERS_MM[SOCK_DIAMETERS_MM.length - 1];
+}
+
+function sockDiameterMm(c, flowLs, settings = {}) {
+  const typed = Number(c?.props?.diameterMm) || 0;
+  if (typed > 0) return typed;
+  return sizeSockDiameterMm(flowLs, sockBasis(settings).inletVelocity);
+}
+
+// The inlet static the sock adds to the index run: the manufacturer's figure
+// once there is one, the nominal figure until then.
+function sockStaticPa(c, settings = {}) {
+  const pr = c?.props || {};
+  if (pr.basis === "manufacturer" && Number(pr.mfrStaticPa) > 0) return Number(pr.mfrStaticPa);
+  if (Number(pr.nominalStaticPa) > 0) return Number(pr.nominalStaticPa);
+  return sockBasis(settings).nominalStaticPa;
+}
+
+function sockConfirmed(c) {
+  return c?.props?.basis === "manufacturer" && Number(c?.props?.mfrStaticPa) > 0;
+}
+
+// Everything a schedule or the inspector shows for one sock, at the airflow
+// it actually carries (its own figure, or its share of the unit's duty).
+function sockFigures(c, flowLs, settings = {}) {
+  const basis = sockBasis(settings);
+  const q = Math.max(0, Number(flowLs) || 0);
+  const lengthM = sockLengthM(c);
+  const ventedLengthM = sockVentedLengthM(c);
+  const autoDia = !(Number(c?.props?.diameterMm) > 0);
+  const diameterMm = sockDiameterMm(c, q, settings);
+  const areaM2 = Math.PI * (diameterMm / 1000) ** 2 / 4;
+  const inletVelocity = areaM2 > 0 ? q / 1000 / areaM2 : 0;
+  const flowPerM_ls = ventedLengthM > 0 ? q / ventedLengthM : 0;
+  const staticPa = sockStaticPa(c, settings);
+  const confirmed = sockConfirmed(c);
+  const warnings = [];
+  if (q > 0 && inletVelocity > basis.maxInletVelocity + 1e-6) {
+    warnings.push(`Inlet velocity ${inletVelocity.toFixed(1)} m/s is above ${basis.maxInletVelocity} m/s — go up a diameter or split the sock.`);
+  }
+  if (lengthM > 0 && ventedLengthM <= 0) warnings.push("No vented length — the sock would not discharge any air.");
+  if (staticPa < basis.minStaticPa) warnings.push(`Inlet static ${staticPa} Pa is below the ${basis.minStaticPa} Pa a sock usually needs to stay inflated.`);
+  return {
+    flowLs: q,
+    lengthM,
+    ventedLengthM,
+    diameterMm,
+    autoDia,
+    areaM2,
+    inletVelocity,
+    flowPerM_ls,
+    m3hPerM: flowPerM_ls * 3.6,
+    staticPa,
+    confirmed,
+    basisLabel: confirmed ? "Manufacturer" : "Nominal",
+    warnings,
+  };
+}
+
+// The airflow a sock actually carries: its share from the solve if it is
+// joined to a unit, otherwise the figure typed on it.
+function sockFlowLs(c, results) {
+  const systems = results?.systems || [];
+  for (const sys of systems) {
+    const t = (sys.terminals || []).find((x) => x.nodeId === c.nodeId && x.components?.some((k) => k.id === c.id));
+    if (t) {
+      // a node with more than one terminal on it: this sock's own share
+      if (t.components.length === 1) return t.flowM3s * 1000;
+    }
+  }
+  return Number(c?.props?.designFlow_ls) || 0;
+}
+
+// One row per sock, for the inspector, the report, the take-off and Check.
+// With each, the room it sits in and the supply rate (l/s per m²) that the
+// socks in that room give it.
+function sockSchedule(project, results) {
+  const settings = project?.settings || {};
+  const plants = new Map((project?.components || []).map((c) => [c.id, c]));
+  const socks = (project?.components || []).filter(isAirSock);
+  const flows = new Map(socks.map((c) => [c.id, sockFlowLs(c, results)]));
+  const rooms = new Map(socks.map((c) => [c.id, roomOfComponent(project, c)]));
+  const roomFlow = new Map();
+  for (const c of socks) {
+    const r = rooms.get(c.id);
+    if (r) roomFlow.set(r, (roomFlow.get(r) || 0) + flows.get(c.id));
+  }
+  return socks.map((c, i) => {
+    const flowLs = flows.get(c.id);
+    const fig = sockFigures(c, flowLs, settings);
+    const plantId = results?.plantOf?.comp?.get(c.id) || null;
+    const plant = plantId ? plants.get(plantId) : null;
+    const room = rooms.get(c.id);
+    const areaM2 = room ? roomAreaM2(project, room) : 0;
+    return {
+      id: c.id,
+      plantId,
+      level: multiLevel(project) ? levelName(project, levelIdOf(project, c)) : "",
+      room: room?.name || "",
+      roomAreaM2: areaM2,
+      roomRateLsM2: areaM2 > 0 ? (roomFlow.get(room) || 0) / areaM2 : 0,
+      suspension: c.props?.suspension || "cable1",
+      ref: c.label || `Air sock ${i + 1}`,
+      system: plant ? [plant.tag, plant.label].filter(Boolean).join(" ") : "",
+      shared: !(Number(c.props?.designFlow_ls) > 0),
+      discharge: SOCK_DISCHARGE[c.props?.discharge] || c.props?.discharge || "",
+      manufacturer: c.props?.manufacturer || "",
+      product: c.props?.product || "",
+      selectionRef: c.props?.selectionRef || "",
+      throwM: Number(c.props?.mfrThrow_m) || 0,
+      nr: Number(c.props?.mfrNR) || 0,
+      ...fig,
+    };
+  });
+}
+
+// Procurement lines for the socks: the sock bodies grouped by size and
+// fabric, the suspension cable or track, and the drop rods it hangs from.
+// Drops are an estimate at the spacing in Duct & basis.
+function sockTakeoff(project, results, filters = {}) {
+  const b = sockBasis(project?.settings);
+  const rows = sockSchedule(project, results).filter((r) =>
+    (!filters.ahu || r.plantId === filters.ahu) && (!filters.floor || r.level === filters.floor));
+  const bodies = new Map();
+  const suspension = new Map();
+  let drops = 0;
+  let inlets = 0;
+  for (const r of rows) {
+    const fabric = [r.manufacturer, r.product].filter(Boolean).join(" ") || "Fabric — to manufacturer";
+    const kb = `${r.diameterMm}|${fabric}|${r.discharge}`;
+    if (!bodies.has(kb)) bodies.set(kb, { size: `dia ${r.diameterMm}`, diameterMm: r.diameterMm, fabric, discharge: r.discharge, qty: 0, lengthM: 0, refs: [] });
+    const g = bodies.get(kb);
+    g.qty += 1;
+    g.lengthM += r.lengthM;
+    g.refs.push(r.ref);
+    inlets += 1;
+    const sus = SOCK_SUSPENSION[r.suspension] || SOCK_SUSPENSION.cable1;
+    if (sus.rows > 0 && r.lengthM > 0) {
+      if (!suspension.has(sus.kind)) suspension.set(sus.kind, { label: sus.kind, lengthM: 0 });
+      suspension.get(sus.kind).lengthM += sus.rows * r.lengthM;
+      drops += sus.rows * (Math.ceil(r.lengthM / b.dropSpacingM) + 1);
+    }
+  }
+  const r2 = (v) => Math.round(v * 100) / 100;
+  return {
+    rows,
+    bodies: [...bodies.values()].map((g) => ({ ...g, lengthM: r2(g.lengthM) })),
+    suspension: [...suspension.values()].map((g) => ({ ...g, lengthM: r2(g.lengthM) })),
+    drops,
+    inlets,
+    dropSpacingM: b.dropSpacingM,
+  };
+}
+return { SOCK_DIAMETERS_MM, SOCK_DISCHARGE, SOCK_SUSPENSION, SOCK_BASIS, SOCK_DEFAULTS, isAirSock, sockBasis, sockLengthM, sockVentedLengthM, sizeSockDiameterMm, sockDiameterMm, sockStaticPa, sockConfirmed, sockFigures, sockFlowLs, sockSchedule, sockTakeoff };
 })();
 
 // ---- src/calc/network.js ----
@@ -3848,7 +4603,10 @@ const { sizeDuct, frictionForSection, dynamicPressure } = __m["src/standards/siz
 const { totalFittingK, cornerBendK, hasListedBend } = __m["src/standards/fittings.js"];
 const { componentDef, inlineLossPa, isDualPort, terminalK } = __m["src/standards/components.js"];
 const { RECOMMENDED_VELOCITY, pressureClassFor, PRESSURE_CLASSES } = __m["src/standards/dw144.js"];
-const { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem } = __m["src/systems.js"];
+const { SYSTEM_KEYS, systemLabel, fanSide, isOutsideSystem, systemTitle } = __m["src/systems.js"];
+const { isAirSock, sockStaticPa, sockVentedLengthM } = __m["src/standards/airsock.js"];
+const { roomOfComponent, roomAreaM2 } = __m["src/rooms.js"];
+const { resolveLevels } = __m["src/levels.js"];
 const { PORT_NODE_KEY } = __m["src/layout.js"];
 
 const FLOW_MATCH_ABS_LS = 2;
@@ -4048,6 +4806,56 @@ function computeSystem(project, systemType, plantFilter = undefined, opts = {}) 
         warnings.push(`${systemLabel(systemType)} terminals are set to ${round(typed, 0)} l/s but the unit moves ${round(opts.autoFlowLs, 0)} l/s on that side.`);
       }
     }
+    // Air socks left at 0 — "ventilated throughout", only the total known —
+    // share whatever of the unit's supply duty the other terminals do not
+    // take, in proportion to their vented length.
+    if (systemType === "supply") {
+      let typed = 0;
+      const socks = [];
+      for (const [nodeId, list] of terminalNodes) {
+        if (!visited.has(nodeId)) continue;
+        for (const c of list) {
+          const q = Number(c.props?.designFlow_ls) || 0;
+          if (q > 0) typed += q;
+          else if (isAirSock(c)) socks.push({ nodeId, c, w: sockVentedLengthM(c) });
+        }
+      }
+      if (socks.length && settings.sockShareBy === "area") {
+        // by floor area: each room's area, split between the blank socks in
+        // it by vented length — a sock with no room outline round it falls
+        // the whole system back to sharing by length
+        const groups = new Map();
+        const loose = socks.filter((x) => {
+          const r = roomOfComponent(project, x.c);
+          if (!r) return true;
+          if (!groups.has(r)) groups.set(r, []);
+          groups.get(r).push(x);
+          return false;
+        });
+        if (loose.length) {
+          warnings.push(`${loose.length} air sock${loose.length > 1 ? "s are" : " is"} not inside a room outline, so the duty is shared by length, not floor area.`);
+        } else {
+          for (const [r, list] of groups) {
+            const A = roomAreaM2(project, r);
+            const L = list.reduce((a, x) => a + x.w, 0);
+            for (const x of list) x.w = L > 0 ? (A * x.w) / L : A / list.length;
+          }
+        }
+      }
+      if (socks.length) {
+        const left = Math.max(0, (opts.sockDutyLs || 0) - typed);
+        const wSum = socks.reduce((a, x) => a + x.w, 0);
+        for (const x of socks) {
+          const share = left <= 0 ? 0 : wSum > 0 ? (left * x.w) / wSum : left / socks.length;
+          demand.set(x.nodeId, (demand.get(x.nodeId) || 0) + flowToM3s(share, "l/s"));
+        }
+        if (left <= 0) {
+          warnings.push(opts.sockDutyLs > 0
+            ? `Air socks set to share the unit's supply duty, but the other terminals already take all ${round(opts.sockDutyLs, 0)} l/s.`
+            : "An air sock has no airflow — type its total, or set the unit's supply duty and leave the sock at 0 to share it by length.");
+        }
+      }
+    }
     const subtree = new Map();
     for (let i = order.length - 1; i >= 0; i--) {
       const n = order[i];
@@ -4218,7 +5026,8 @@ function computeSystem(project, systemType, plantFilter = undefined, opts = {}) 
       // and is what the commissioning sheet reads at the terminal
       const runout = parentSeg.has(nodeId) ? segResById.get(parentSeg.get(nodeId).id) : null;
       const pvRunout = runout ? dynamicPressure(runout.velocity || 0, density) : 0;
-      const termLoss = list.reduce((s, c) => s + (Number(c.props?.terminalLossPa) || 0) + terminalK(c) * pvRunout, 0);
+      const fixedPa = (c) => (isAirSock(c) ? sockStaticPa(c, settings) : Number(c.props?.terminalLossPa) || 0);
+      const termLoss = list.reduce((s, c) => s + fixedPa(c) + terminalK(c) * pvRunout, 0);
       cum += termLoss;
       const node = nodesById.get(nodeId);
       terminals.push({
@@ -4269,7 +5078,7 @@ function computeSystem(project, systemType, plantFilter = undefined, opts = {}) 
     }
   }
 
-  const plantLabel = plant ? (plant.label || componentDef(plant.kind)?.label || "Plant") : null;
+  const plantLabel = plant ? (systemTitle(plant) || componentDef(plant.kind)?.label || "Plant") : null;
 
   return {
     id: plant ? `${systemType}-${plant.id}` : systemType,
@@ -4306,8 +5115,11 @@ function nameSystems(systems) {
     const i = (seen.get(sys.systemType) || 0) + 1;
     seen.set(sys.systemType, i);
     const side = systemLabel(sys.systemType);
-    if (n === 1) sys.name = sys.plantLabel ? `${side} — ${sys.plantLabel}` : side;
-    else sys.name = `${side} ${i}${sys.plantLabel ? ` — ${sys.plantLabel}` : ""}`;
+    // "AHU-01 East offices — Supply": the system first, then the airstream
+    if (sys.plantLabel) sys.name = `${sys.plantLabel} — ${side}`;
+    else sys.name = n === 1 ? side : `${side} ${i}`;
+    sys.tag = sys.plant?.tag || "";
+    sys.color = sys.plant?.color || null;
   }
 }
 
@@ -4332,7 +5144,9 @@ function dualAhuWarnings(project, systems) {
   return warnings;
 }
 
-function computeAll(project) {
+function computeAll(rawProject) {
+  // heights absolute across floors; a single-level job passes straight through
+  const project = resolveLevels(rawProject);
   const systems = [];
   // supply and extract first: fresh air and exhaust take their flow from them
   for (const systemType of SYSTEM_KEYS) {
@@ -4352,14 +5166,58 @@ function computeAll(project) {
         const hasDucts = project.segments.some((sg) => sg.system === systemType);
         if (!hasDucts) continue;
       }
-      systems.push(computeSystem(project, systemType, plant, { autoFlowLs }));
+      const sockDutyLs = systemType === "supply" ? plantDutyLs(plant.props, "supply") : 0;
+      systems.push(computeSystem(project, systemType, plant, { autoFlowLs, sockDutyLs }));
     }
   }
   pairFanSides(systems);
+  // one unit's airstreams together — AHU-01 supply, extract, fresh air,
+  // exhaust, then AHU-02 — so a floor with several systems reads in order
+  const plantOrder = new Map((project.components || []).map((c, i) => [c.id, i]));
+  const rank = (x) => (x.plant ? plantOrder.get(x.plant.id) ?? 1e6 : 1e6);
+  systems.sort((a, b) => rank(a) - rank(b) || SYSTEM_KEYS.indexOf(a.systemType) - SYSTEM_KEYS.indexOf(b.systemType));
   nameSystems(systems);
   const projectWarnings = dualAhuWarnings(project, systems);
   const pick = (t) => systems.find((s) => s.systemType === t) || emptySystem(t);
-  return { supply: pick("supply"), extract: pick("extract"), outdoor: pick("outdoor"), exhaust: pick("exhaust"), systems, projectWarnings };
+  const plantOf = systemMembership(project, systems);
+  return { supply: pick("supply"), extract: pick("extract"), outdoor: pick("outdoor"), exhaust: pick("exhaust"), systems, projectWarnings, plantOf };
+}
+
+// Which unit each duct, node and component belongs to — the system that
+// colours it on the plan and in 3D, and hides it when that system is hidden.
+function systemMembership(project, systems) {
+  const seg = new Map();
+  const node = new Map();
+  const comp = new Map();
+  const segsById = new Map(project.segments.map((s) => [s.id, s]));
+  for (const sys of systems) {
+    if (!sys.plant) continue;
+    for (const r of sys.segments) {
+      if (!r.connectedToPlant || seg.has(r.id)) continue;
+      seg.set(r.id, sys.plant.id);
+      const s = segsById.get(r.id);
+      if (s) { node.set(s.a, sys.plant.id); node.set(s.b, sys.plant.id); }
+    }
+  }
+  for (const c of project.components || []) {
+    if (componentDef(c.kind)?.role === "plant") comp.set(c.id, c.id);
+    else if (c.nodeId && node.has(c.nodeId)) comp.set(c.id, node.get(c.nodeId));
+  }
+  return { seg, node, comp };
+}
+
+// The colour a duct, node or component is drawn in: its system's colour when
+// colouring by system and it is joined to a unit, its airstream's otherwise.
+function memberColor(project, results, type, id, fallback) {
+  if ((project.settings?.colourBy || "system") !== "system") return fallback;
+  const plantId = results?.plantOf?.[type]?.get(id);
+  if (!plantId) return fallback;
+  const plant = (project.components || []).find((c) => c.id === plantId);
+  return plant?.color || fallback;
+}
+
+function memberPlantId(results, type, id) {
+  return results?.plantOf?.[type]?.get(id) || null;
 }
 
 // One fan pushes fresh air and supply in series, the other pulls extract and
@@ -4401,7 +5259,7 @@ function findSegResult(results, id) {
 function isIndexSegment(results, id) {
   return allComputedSystems(results).some((sys) => sys.indexPath?.includes(id));
 }
-return { computeSystem, computeAll, allComputedSystems, findSegResult, isIndexSegment, flowsMatch, flowMatchTolLs, plantsFor };
+return { computeSystem, computeAll, memberColor, memberPlantId, allComputedSystems, findSegResult, isIndexSegment, flowsMatch, flowMatchTolLs, plantsFor };
 })();
 
 // ---- src/ui/canvas.js ----
@@ -4427,7 +5285,16 @@ const { dist, pointInPolygon, polygonCentroid, orthoPoint, offsetPoly, isVertica
 const { componentDef, isDualPort, symbolOf } = __m["src/standards/components.js"];
 const { showPrompt, toast } = __m["src/ui/modal.js"];
 const { formatFlowLs, normalizeFlowUnit, round } = __m["src/units.js"];
-const { findSegResult, isIndexSegment } = __m["src/calc/network.js"];
+const { findSegResult, isIndexSegment, memberColor, memberPlantId } = __m["src/calc/network.js"];
+const { isAirSock, sockFigures, sockFlowLs } = __m["src/standards/airsock.js"];
+const { roomPlantId } = __m["src/rooms.js"];
+const { levelView, multiLevel, activeLevelId, levelIdOf, levelName, levelElevation } = __m["src/levels.js"];
+
+// "#7c3aed" at an alpha, for a light room fill in the system's colour
+function hexAlpha(hex, a) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
+  return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : `rgba(29,78,216,${a})`;
+}
 const { snapAt, hitSegment, hitComponentAt, EQUIP_HIT_PX } = __m["src/snap.js"];
 const { uid } = __m["src/state.js"];
 const { systemColor, systemInfo, SYSTEM_KEYS } = __m["src/systems.js"];
@@ -4534,7 +5401,7 @@ class CanvasView {
 
   // What a trace click at `world` would do — the same answer that is drawn.
   traceTarget(world) {
-    const p = this.store.project;
+    const p = this.lp();
     const opts = this.snapOpts();
     let sn = snapAt(p, world, opts);
     if (!sn) {
@@ -4553,7 +5420,7 @@ class CanvasView {
   // Plan directions (radians) of the ducts of the traced system that meet at
   // a node — the duct being branched off, or the leg just drawn.
   refDirs(node) {
-    const p = this.store.project;
+    const p = this.lp();
     const px = this.pxPerMeter();
     const out = [];
     for (const s of p.segments) {
@@ -4633,7 +5500,7 @@ class CanvasView {
   }
 
   extent() {
-    const p = this.store.project;
+    const p = this.lp();
     const pts = [];
     for (const n of p.nodes) pts.push(n);
     for (const c of p.components) pts.push(c);
@@ -4654,10 +5521,13 @@ class CanvasView {
       v.zoom = 1; v.offsetX = w / 2 - 400; v.offsetY = h / 2 - 300; this.changed(); return;
     }
     const pad = 70;
-    const zoom = clamp(Math.min((w - pad * 2) / (e.maxX - e.minX || 1), (h - pad * 2) / (e.maxY - e.minY || 1)), 0.05, 3);
+    // clear of the status strip along the bottom, which sits over the plan
+    const status = typeof document !== "undefined" ? document.getElementById("status") : null;
+    const padBottom = Math.max(pad, (status?.offsetHeight || 0) + 40);
+    const zoom = clamp(Math.min((w - pad * 2) / (e.maxX - e.minX || 1), (h - pad - padBottom) / (e.maxY - e.minY || 1)), 0.05, 3);
     v.zoom = zoom;
     v.offsetX = (w - (e.maxX - e.minX) * zoom) / 2 - e.minX * zoom;
-    v.offsetY = (h - (e.maxY - e.minY) * zoom) / 2 - e.minY * zoom;
+    v.offsetY = pad + (h - pad - padBottom - (e.maxY - e.minY) * zoom) / 2 - e.minY * zoom;
     this.changed();
   }
 
@@ -4669,17 +5539,27 @@ class CanvasView {
 
   loadBackground() {
     const bg = this.store.project.background;
-    if (!bg) { this._bg = null; this._bgUrl = null; return; }
-    if (this._bgUrl === bg.dataUrl && this._bg) return;
+    if (!bg) { this._bg = null; this._bgUrl = null; this._bgReady = Promise.resolve(); return; }
+    if (this._bgUrl === bg.dataUrl && (this._bg || this._bgReady)) return;
     const img = new Image();
-    img.onload = () => { this._bg = img; this.draw(); };
+    this._bg = null; // never draw the last level's sheet under this one
+    this._bgReady = new Promise((resolve) => {
+      img.onload = () => { this._bg = img; this.draw(); resolve(); };
+      img.onerror = () => resolve();
+    });
     img.src = bg.dataUrl;
     this._bgUrl = bg.dataUrl;
   }
 
+  // The sheet in view, loaded — for drawing each level into the report.
+  async loadBackgroundAsync() {
+    this.loadBackground();
+    await this._bgReady;
+  }
+
   // ---------------------------------------------------------------- hit test
   hit(world) {
-    const p = this.store.project;
+    const p = this.lp();
     const px = this.pxPerMeter();
     const z = this.zoom;
     const sel = this.store.selection;
@@ -4886,6 +5766,20 @@ class CanvasView {
       if (!c) return;
       if (!d.moved) { this.store.snapshot(); d.moved = true; }
       const px = this.pxPerMeter();
+      if (componentDef(c.kind)?.inletEnd) {
+        // an air sock turns and stretches about its inlet: point it, pull it
+        const inlet = this.store.project.nodes.find((n) => n.id === c.nodeId) || c;
+        if (d.handle.kind === "rot") {
+          const a = Math.atan2(world.y - inlet.y, world.x - inlet.x) * 180 / Math.PI;
+          this.store.resizeComponent(c, null, null, e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15);
+        } else {
+          const r = ((Number(c.rot) || 0) * Math.PI) / 180;
+          const along = (world.x - inlet.x) * Math.cos(r) + (world.y - inlet.y) * Math.sin(r);
+          this.store.resizeComponent(c, Math.max(0.5, Math.round((along / px) * 10) / 10), null, null);
+        }
+        this.store.emitSoon();
+        return;
+      }
       if (d.handle.kind === "rot") {
         const a = Math.atan2(world.y - c.y, world.x - c.x) * 180 / Math.PI + 90;
         const rot = e.shiftKey ? Math.round(a) : Math.round(a / 15) * 15;
@@ -4963,7 +5857,7 @@ class CanvasView {
   // inside (a duct ending on a unit inside counts), rooms and tapes wholly
   // inside. With Shift the box adds to what is already picked.
   selectInBox(a, b, add = false) {
-    const p = this.store.project;
+    const p = this.lp();
     const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
     const inside = (q) => q && q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1;
     const items = add ? this.store.selectedItems().filter((i) => i.type !== "piece") : [];
@@ -5024,7 +5918,7 @@ class CanvasView {
   traceClick(world) {
     const store = this.store;
     const p = store.project;
-    const equipment = hitComponentAt(p, world, { zoom: this.zoom });
+    const equipment = hitComponentAt(this.lp(), world, { zoom: this.zoom });
     if (equipment && SYSTEM_KEYS.includes(equipment.component.system) && equipment.component.system !== store.activeSystem) {
       const wanted = systemInfo(equipment.component.system);
       toast(`${equipment.component.label || equipment.what} uses ${wanted.label} (${wanted.en}). Pick ${wanted.label} and trace from the matching unit connection.`);
@@ -5114,7 +6008,7 @@ class CanvasView {
   alignSnap(pt, excludeIds = []) {
     if (this.store.overrideKey) return { x: pt.x, y: pt.y, guides: [] };
     const tol = 8 / this.zoom;
-    const others = this.store.project.components.filter((c) => !excludeIds.includes(c.id));
+    const others = this.lp().components.filter((c) => !excludeIds.includes(c.id));
     let bx = null, by = null;
     for (const c of others) {
       const dx = Math.abs(c.x - pt.x), dy = Math.abs(c.y - pt.y);
@@ -5164,7 +6058,7 @@ class CanvasView {
     store.snapshot();
     let c = null;
     if (def.role === "inline") {
-      const hit = hitSegment(store.project, world, 12 / this.zoom);
+      const hit = hitSegment(this.lp(), world, 12 / this.zoom);
       if (hit) c = store.placeOnRun(hit.seg, hit.r.point, kind);
     }
     if (!c) {
@@ -5227,10 +6121,25 @@ class CanvasView {
       okText: "Set scale",
       note: `The line is ${Math.round(px)} px on the sheet. Every length after this comes off the drawing, so use the longest dimension you can find.`,
     });
-    if (val && Number(val) > 0) {
+    const p = this.store.project;
+    const bg = p.background;
+    if (val && Number(val) > 0 && bg?.needsScale && p.scale.pxPerMeter > 0) {
+      // a second level's sheet: the project keeps its scale and this sheet is
+      // stretched to it, so every floor shares one plan scale and origin
       this.store.snapshot();
-      this.store.project.scale.pxPerMeter = px / Number(val);
-      this.store.project.scale.calib = { a, b, meters: Number(val) };
+      const f = p.scale.pxPerMeter / (px / Number(val));
+      bg.x *= f; bg.y *= f; bg.width *= f; bg.height *= f;
+      delete bg.needsScale;
+      this.store.commit();
+      this.fit();
+      toast(`Sheet scaled to the project — ${round(p.scale.pxPerMeter, 1)} px per metre. Offset it in Duct & basis → Levels if its grid does not sit over the floor below.`);
+      this.hooks?.onScaleSet?.();
+    } else if (val && Number(val) > 0) {
+      this.store.snapshot();
+      p.scale.pxPerMeter = px / Number(val);
+      p.scale.calib = { a, b, meters: Number(val) };
+      p.scale.levelId = activeLevelId(p);
+      if (bg) delete bg.needsScale;
       this.store.commit();
       toast(`Scale set — ${round(px / Number(val), 1)} px per metre`);
       this.hooks?.onScaleSet?.();
@@ -5283,8 +6192,10 @@ class CanvasView {
       } else {
         this.drawGrid(ctx);
       }
+      this.drawOtherLevels(ctx);
       this.drawRooms(ctx);
       this.drawSegments(ctx);
+      this.drawLevelRisers(ctx);
       this.drawNodes(ctx);
       this.drawComponents(ctx);
       this.drawMeasures(ctx);
@@ -5336,17 +6247,21 @@ class CanvasView {
   }
 
   drawRooms(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const z = this.zoom;
     for (const r of p.rooms) {
       ctx.beginPath();
       r.points.forEach((pt, i) => (i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y)));
       ctx.closePath();
       const selected = this.store.isSelected("room", r.id);
-      ctx.fillStyle = selected ? "rgba(224,164,34,0.12)" : "rgba(29,78,216,0.04)";
+      // a room on a system takes its colour (when colouring by system)
+      const plantId = this.bySystem() ? roomPlantId(p, r, this.results) : null;
+      const plant = plantId ? p.components.find((c) => c.id === plantId) : null;
+      if (plant && this.store.hiddenPlants?.has(plant.id)) continue;
+      ctx.fillStyle = selected ? "rgba(224,164,34,0.12)" : plant?.color ? hexAlpha(plant.color, 0.06) : "rgba(29,78,216,0.04)";
       ctx.fill();
-      ctx.lineWidth = (selected ? 2 : 1.2) / z;
-      ctx.strokeStyle = selected ? COL.sel : "rgba(29,36,51,0.45)";
+      ctx.lineWidth = (selected ? 2 : plant ? 1.6 : 1.2) / z;
+      ctx.strokeStyle = selected ? COL.sel : plant?.color || "rgba(29,36,51,0.45)";
       ctx.setLineDash([6 / z, 4 / z]);
       ctx.stroke();
       ctx.setLineDash([]);
@@ -5354,7 +6269,7 @@ class CanvasView {
       ctx.fillStyle = COL.ink;
       ctx.font = `700 ${12.5 / z}px ${FONT}`;
       ctx.textAlign = "center";
-      ctx.fillText(r.name, c.x, c.y - 4 / z);
+      ctx.fillText(plant?.tag ? `${r.name}  ·  ${plant.tag}` : r.name, c.x, c.y - 4 / z);
       const unit = normalizeFlowUnit(p.settings.flowUnit);
       const parts = [];
       if (r.supplyFlow_ls) parts.push(`S ${formatFlowLs(r.supplyFlow_ls, unit)}`);
@@ -5368,6 +6283,91 @@ class CanvasView {
   }
 
   segResult(id) { return findSegResult(this.results, id); }
+
+  // The level in view: its nodes, units, rooms and the ducts on it. Reads
+  // only — anything new goes on store.project (and is stamped onto this level).
+  lp() { return levelView(this.store.project); }
+
+  // The other floors, faintly, to line a sheet or a riser up against.
+  drawOtherLevels(ctx) {
+    const p = this.store.project;
+    if (!multiLevel(p)) return;
+    const lv = activeLevelId(p);
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    ctx.lineCap = "round";
+    for (const s of p.segments) {
+      const a = byId.get(s.a), b = byId.get(s.b);
+      if (!a || !b) continue;
+      const la = levelIdOf(p, a), lb = levelIdOf(p, b);
+      if (la === lv || lb === lv || la !== lb) continue;
+      ctx.strokeStyle = this.colorOf("seg", s.id, s.system);
+      ctx.lineWidth = 4 / this.zoom;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // A duct between floors: a riser marker at the end on this level, with
+  // the floor it goes to.
+  drawLevelRisers(ctx) {
+    const p = this.store.project;
+    if (!multiLevel(p)) return;
+    const lv = activeLevelId(p);
+    const z = this.zoom;
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    for (const s of p.segments) {
+      const a = byId.get(s.a), b = byId.get(s.b);
+      if (!a || !b) continue;
+      const la = levelIdOf(p, a), lb = levelIdOf(p, b);
+      if (la === lb || (la !== lv && lb !== lv)) continue;
+      if (this.plantHidden("seg", s.id) || this.store.hiddenSystems?.has(s.system)) continue;
+      const here = la === lv ? a : b;
+      const otherLv = la === lv ? lb : la;
+      const up = levelElevation(p, otherLv) > levelElevation(p, lv);
+      const selected = this.store.isSelected("segment", s.id);
+      const col = selected ? COL.sel : this.colorOf("seg", s.id, s.system);
+      const r = 10 / z;
+      ctx.beginPath(); ctx.arc(here.x, here.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff"; ctx.fill();
+      ctx.lineWidth = 2.4 / z; ctx.strokeStyle = col; ctx.stroke();
+      ctx.beginPath();
+      const d = up ? -1 : 1;
+      ctx.moveTo(here.x, here.y - 5 * d / z); ctx.lineTo(here.x, here.y + 5 * d / z);
+      ctx.moveTo(here.x - 3.5 / z, here.y - 1.5 * d / z); ctx.lineTo(here.x, here.y - 5 * d / z); ctx.lineTo(here.x + 3.5 / z, here.y - 1.5 * d / z);
+      ctx.stroke();
+      const res = this.segResult(s.id);
+      const size = res?.section ? (res.section.shape === "round" ? `ø${res.section.diameterMm}` : `${res.section.widthMm}×${res.section.heightMm}`) : "";
+      this.chip(ctx, `${up ? "up to" : "down to"} ${levelName(p, otherLv)}${size ? ` · ${size}` : ""}`, here.x, here.y + 21 / z, { size: 9.5, mono: true, border: col });
+    }
+  }
+
+  // Nodes that end in a riser to another floor — drawn by drawLevelRisers.
+  levelRiserNodes() {
+    const p = this.store.project;
+    const out = new Set();
+    if (!multiLevel(p)) return out;
+    const byId = new Map(p.nodes.map((n) => [n.id, n]));
+    for (const s of p.segments) {
+      const a = byId.get(s.a), b = byId.get(s.b);
+      if (a && b && levelIdOf(p, a) !== levelIdOf(p, b)) { out.add(a.id); out.add(b.id); }
+    }
+    return out;
+  }
+
+  // Colour by system: a duct, node or component joined to a unit takes the
+  // unit's colour; anything loose (or colouring by airstream) its airstream's.
+  colorOf(type, id, airstream) {
+    return memberColor(this.store.project, this.results, type, id, systemColor(airstream));
+  }
+  bySystem() { return (this.store.project.settings.colourBy || "system") === "system"; }
+  plantHidden(type, id) {
+    const hp = this.store.hiddenPlants;
+    if (!hp?.size) return false;
+    const pid = memberPlantId(this.results, type, id);
+    return !!pid && hp.has(pid);
+  }
   isIndexSeg(id) { return isIndexSegment(this.results, id); }
 
   ductWidthWorld(res, seg) {
@@ -5386,7 +6386,7 @@ class CanvasView {
   }
 
   drawSegments(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const sel = this.store.selection;
     const z = this.zoom;
     const px = this.pxPerMeter();
@@ -5394,19 +6394,21 @@ class CanvasView {
     // bodies first, then labels over every body, so a label is never under a duct
     const labels = [];
     for (const s of p.segments) {
-      if (hidden?.has(s.system)) continue;
+      if (hidden?.has(s.system) || this.plantHidden("seg", s.id)) continue;
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
       const res = this.segResult(s.id);
       const selected = this.store.isSelected("segment", s.id)
         || (sel?.type === "piece" && this.store.getSelected()?.segmentId === s.id);
-      const base = systemColor(s.system);
+      const base = this.colorOf("seg", s.id, s.system);
+      // the airstream still shows as a stripe down a system-coloured duct
+      const stripe = this.bySystem() && base !== systemColor(s.system) ? systemColor(s.system) : null;
       const noFlow = !res || res.flowM3s <= 0;
       const shape = res?.section?.shape || s.shapeOverride || p.settings.ductType || "round";
       if (isVerticalRiser(a, b, px)) { this.drawRiserMarker(ctx, a, b, s, selected); continue; }
       const width = this.ductWidthWorld(res, s);
-      this.drawDuctBody(ctx, a, b, width, shape, base, { selected, index: this.isIndexSeg(s.id), noFlow, overVel: res && res.withinMax === false });
+      this.drawDuctBody(ctx, a, b, width, shape, base, { selected, index: this.isIndexSeg(s.id), noFlow, overVel: res && res.withinMax === false, stripe });
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       const segLenScr = dist(a, b) * z;
       labels.push({ s, res, mx, my, a, b, width, segLenScr, noFlow });
@@ -5450,8 +6452,14 @@ class CanvasView {
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
+    if (flags.stripe && width > 5 / z) {
+      ctx.strokeStyle = flags.stripe;
+      ctx.lineWidth = Math.max(1.4 / z, width * 0.22);
+      ctx.lineCap = "butt";
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
     if (width > 7 / z) {
-      if (shape === "round") {
+      if (shape === "round" && !flags.stripe) {
         // spiral: a light centre stripe reads as a round duct
         ctx.strokeStyle = "rgba(255,255,255,0.35)";
         ctx.lineWidth = Math.max(1 / z, width * 0.14);
@@ -5475,7 +6483,7 @@ class CanvasView {
     ctx.fillStyle = "#fff";
     ctx.fill();
     ctx.lineWidth = 2 / z;
-    ctx.strokeStyle = selected ? COL.sel : systemColor(seg.system);
+    ctx.strokeStyle = selected ? COL.sel : this.colorOf("seg", seg.id, seg.system);
     ctx.stroke();
     ctx.beginPath();
     const s = dz >= 0 ? -1 : 1;
@@ -5486,22 +6494,25 @@ class CanvasView {
   }
 
   drawNodes(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const z = this.zoom;
     const sel = this.store.selection;
+    const toFloor = this.levelRiserNodes();
     for (const n of p.nodes) {
       if (p.components.some((c) => componentNodeIds(c).includes(n.id))) continue;
       const selected = this.store.isSelected("node", n.id);
+      if (toFloor.has(n.id) && !selected) continue; // drawn as a riser to another floor
       const touching = p.segments.filter((s) => s.a === n.id || s.b === n.id);
       if (touching.length === 2 && !n.tee && !selected) continue; // a plain corner
       const sys = touching[0]?.system;
+      if (touching.length && touching.every((t) => this.plantHidden("seg", t.id))) continue;
       ctx.beginPath();
       if (n.tee || touching.length >= 3) {
         ctx.arc(n.x, n.y, 4 / z, 0, Math.PI * 2);
         ctx.fillStyle = "#fff";
         ctx.fill();
         ctx.lineWidth = 2 / z;
-        ctx.strokeStyle = selected ? COL.sel : systemColor(sys);
+        ctx.strokeStyle = selected ? COL.sel : this.colorOf("node", n.id, sys);
         ctx.stroke();
       } else if (touching.length <= 1) {
         // an open end — worth seeing, it usually means a run that stops short
@@ -5520,7 +6531,7 @@ class CanvasView {
   }
 
   drawComponents(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const sel = this.store.selection;
     const z = this.zoom;
     const px = this.pxPerMeter();
@@ -5529,13 +6540,18 @@ class CanvasView {
       const def = componentDef(c.kind);
       if (!def) continue;
       if (c.system !== "both" && hidden?.has(c.system)) continue;
+      if (this.plantHidden("comp", c.id)) continue;
       const selected = this.store.isSelected("component", c.id);
+      if (def.airSock) { this.drawAirSock(ctx, c, def, selected); continue; }
       const box = componentBox(c, px, z);
+      const fill = this.bySystem() && (def.role === "plant" ? c.color : memberPlantId(this.results, "comp", c.id))
+        ? (def.role === "plant" ? c.color : this.colorOf("comp", c.id, c.system))
+        : def.color;
       ctx.save();
       ctx.translate(c.x, c.y);
       ctx.rotate((box.rot * Math.PI) / 180);
       this.roundRect(ctx, -box.w / 2, -box.d / 2, box.w, box.d, Math.min(4 / z, Math.min(box.w, box.d) * 0.12));
-      ctx.fillStyle = def.color;
+      ctx.fillStyle = fill;
       ctx.fill();
       if (isFourPort(c)) {
         ctx.save();
@@ -5562,7 +6578,7 @@ class CanvasView {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.rotate(-(box.rot * Math.PI) / 180); // turn the symbol, never the text
-      ctx.fillText(symbolOf(c), 0, 0);
+      ctx.fillText(def.role === "plant" && c.tag ? c.tag : symbolOf(c), 0, 0);
       ctx.restore();
       ctx.textBaseline = "alphabetic";
 
@@ -5582,6 +6598,67 @@ class CanvasView {
       if (isFourPort(c)) this.drawUnitPorts(ctx, c, z);
       if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
     }
+  }
+
+  // An air sock: drawn its real length and diameter, the inlet end square
+  // where the duct joins, the far end rounded, and a row of dots along the
+  // vented length to show where it discharges.
+  drawAirSock(ctx, c, def, selected) {
+    const p = this.store.project;
+    const z = this.zoom;
+    const px = this.pxPerMeter();
+    const flowLs = sockFlowLs(c, this.results);
+    const fig = sockFigures(c, flowLs, p.settings);
+    const L = Math.max(fig.lengthM * px, 12 / z);
+    const D = Math.max((fig.diameterMm / 1000) * px, 6 / z);
+    const col = this.bySystem() ? this.colorOf("comp", c.id, "supply") : def.color;
+    const rot = ((Number(c.rot) || 0) * Math.PI) / 180;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(rot);
+    const x0 = -L / 2, r = D / 2;
+    ctx.beginPath();
+    ctx.moveTo(x0, -r);
+    ctx.lineTo(L / 2 - r, -r);
+    ctx.arc(L / 2 - r, 0, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(x0, r);
+    ctx.closePath();
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = (selected ? 2.6 : 1.6) / z;
+    ctx.strokeStyle = selected ? COL.sel : col;
+    ctx.setLineDash(fig.confirmed ? [] : [6 / z, 3 / z]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // inlet collar
+    ctx.fillStyle = col;
+    ctx.fillRect(x0 - 2 / z, -r, 4 / z, D);
+    // perforations along the vented length
+    const vent = fig.lengthM > 0 ? (fig.ventedLengthM / fig.lengthM) * L : 0;
+    const step = Math.max(10 / z, 0.5 * px);
+    ctx.fillStyle = col;
+    for (let x = L / 2 - Math.max(r, 4 / z) - vent + step / 2; x < L / 2 - r * 0.6; x += step) {
+      if (x < x0 + 4 / z) continue;
+      ctx.beginPath(); ctx.arc(x, -r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, r * 0.55, 1.5 / z, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    // labels, kept upright
+    const unit = normalizeFlowUnit(p.settings.flowUnit);
+    const below = c.y + Math.abs(Math.sin(rot)) * L / 2 + r + 12 / z;
+    ctx.fillStyle = COL.ink;
+    ctx.font = `600 ${11 / z}px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.fillText(c.label || def.label, c.x, below);
+    ctx.fillStyle = COL.soft;
+    ctx.font = `500 ${9.5 / z}px ${MONO}`;
+    const bits = [`ø${fig.diameterMm} × ${round(fig.lengthM, 1)} m`];
+    if (flowLs > 0) bits.push(formatFlowLs(flowLs, unit), `${round(unit === "m3/h" ? fig.m3hPerM : fig.flowPerM_ls, 1)} ${unit === "m3/h" ? "m³/h" : "l/s"}/m`);
+    bits.push(`${round(fig.staticPa, 0)} Pa ${fig.confirmed ? "mfr" : "nom"}`);
+    ctx.fillText(bits.join(" · "), c.x, below + 11 / z);
+    if (selected && this.store.selection?.type === "component") this.drawHandles(ctx, c);
   }
 
   // The four connections of an AHU or HRV serving both sides: a coloured
@@ -5632,11 +6709,15 @@ class CanvasView {
       }
     }
     const t = `${round(box.foot.w, 2)} × ${round(box.foot.d, 2)} m${box.rot ? `  ${round(box.rot, 1)}°` : ""}`;
-    this.chip(ctx, t, c.x, c.y - Math.max(box.w, box.d) / 2 - 36 / z, { mono: true, bg: COL.sel, color: "#241a00", size: 9.5 });
+    // above the box as it actually sits on the sheet, so a long air sock's
+    // chip stays next to it rather than half its length away
+    const r = ((box.rot || 0) * Math.PI) / 180;
+    const halfH = Math.abs(Math.sin(r)) * box.w / 2 + Math.abs(Math.cos(r)) * box.d / 2;
+    this.chip(ctx, t, c.x, c.y - halfH - 36 / z, { mono: true, bg: COL.sel, color: "#241a00", size: 9.5 });
   }
 
   drawMeasures(ctx) {
-    const p = this.store.project;
+    const p = this.lp();
     const z = this.zoom;
     for (const m of p.measures || []) {
       const selected = this.store.isSelected("measure", m.id);
@@ -5705,7 +6786,7 @@ class CanvasView {
 
   drawDrafts(ctx) {
     const z = this.zoom;
-    const p = this.store.project;
+    const p = this.lp();
     const tool = this.store.tool;
     if (this.marquee) {
       const { a, b } = this.marquee;
@@ -6260,9 +7341,10 @@ __m["src/ui/view3d.js"] = (() => {
 
 const { isVerticalRiser } = __m["src/geom.js"];
 const { componentDef } = __m["src/standards/components.js"];
+const { resolveLevels } = __m["src/levels.js"];
 const { componentFoot, pxPerMeterOf } = __m["src/layout.js"];
 const { formatFlow, round } = __m["src/units.js"];
-const { findSegResult } = __m["src/calc/network.js"];
+const { findSegResult, memberColor, memberPlantId } = __m["src/calc/network.js"];
 const { meshPiece, pieceFill, airflowArrow, systemColor } = __m["src/ui/fab3d.js"];
 const { sizeLabel } = __m["src/fab/catalog.js"];
 
@@ -6355,7 +7437,7 @@ class View3D {
   }
 
   world() {
-    const p = this.store.project;
+    const p = this.proj();
     const s = pxPerMeterOf(p);
     const xs = [], ys = [];
     for (const n of p.nodes) { xs.push(n.x); ys.push(n.y); }
@@ -6407,13 +7489,22 @@ class View3D {
     this.draw();
   }
 
+  // every floor at its own elevation — the 3D view is the whole building
+  proj() { return resolveLevels(this.store.project); }
+
   hidden(system) {
     return this.store.hiddenSystems?.has(system);
   }
 
+  // hidden with its system (unit) from the Systems list
+  plantHidden(type, id) {
+    const pid = memberPlantId(this.results, type, id);
+    return !!pid && !!this.store.hiddenPlants?.has(pid);
+  }
+
   draw() {
     const ctx = this.ctx;
-    const p = this.store.project;
+    const p = this.proj();
     ctx.save();
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
@@ -6451,14 +7542,17 @@ class View3D {
       const def = componentDef(comp.kind);
       if (!def) continue;
       if (this.hidden(comp.system) && comp.system !== "both") continue;
+      if (this.plantHidden("comp", comp.id)) continue;
       const foot = componentFoot(comp);
       const z = Number.isFinite(Number(comp.heightM)) ? comp.heightM : 0;
       const center = this.toXYZ(W, comp, z);
       const grow = Math.max(1, (W.spanM / 26) * 0.7 / Math.max(foot.w, foot.d));
       const bw = foot.w * grow;
       const bd = foot.d * grow;
-      const bh = Math.max(foot.t, 0.18) * grow;
-      const fill = def.color;
+      const bh = Math.max(def.airSock ? foot.d : foot.t, 0.18) * grow;
+      const fill = def.role === "plant" && comp.color && (p.settings.colourBy || "system") === "system"
+        ? comp.color
+        : memberColor(p, this.results, "comp", comp.id, def.color);
       cuboid(center, bw, bd, bh / this.ex, foot.rot).forEach((face) => {
         items.push({ t: "poly", pts: face, fill, stroke: "rgba(0,0,0,0.35)", z: center.Z, alpha: mode === "transparent" ? 0.35 : 0.92 });
       });
@@ -6511,10 +7605,10 @@ class View3D {
   }
 
   drawEngineering(items, W, mode) {
-    const p = this.store.project;
+    const p = this.proj();
     const sel = this.store.selection;
     for (const s of p.segments) {
-      if (this.hidden(s.system)) continue;
+      if (this.hidden(s.system) || this.plantHidden("seg", s.id)) continue;
       const a = p.nodes.find((n) => n.id === s.a);
       const b = p.nodes.find((n) => n.id === s.b);
       if (!a || !b) continue;
@@ -6522,7 +7616,7 @@ class View3D {
       const selected = sel?.type === "segment" && sel.id === s.id;
       const col = selected ? "#e0a422" : mode === "velocity" ? pieceFill({ velocity: res?.velocity }, "velocity")
         : mode === "pressure" ? pieceFill({ dpPa: res?.dpPa }, "pressure")
-        : systemColor(s.system);
+        : memberColor(p, this.results, "seg", s.id, systemColor(s.system));
       const za = a.z || 0, zb = b.z || 0;
       const poly = [this.toXYZ(W, a, za)];
       if (Math.abs(za - zb) > 0.02 && !isVerticalRiser(a, b, W.s)) poly.push(this.toXYZ(W, b, za));
@@ -6540,7 +7634,7 @@ class View3D {
   }
 
   drawFabrication(items, W, mode) {
-    const p = this.store.project;
+    const p = this.proj();
     const sel = this.store.selection;
     const explode = this.store.exploded ? 0.18 : 0;
     const pieces = p.physical.pieces || [];
@@ -6601,8 +7695,8 @@ class View3D {
 
   drawStaff(ctx, W, mode) {
     let zMax = 1;
-    for (const n of this.store.project.nodes) zMax = Math.max(zMax, n.z || 0);
-    for (const c of this.store.project.components) zMax = Math.max(zMax, c.heightM || 0);
+    for (const n of this.proj().nodes) zMax = Math.max(zMax, n.z || 0);
+    for (const c of this.proj().components) zMax = Math.max(zMax, c.heightM || 0);
     const top = Math.ceil(zMax + 0.5);
     const sx = -W.spanM * 0.55;
     const sy = -W.spanM * 0.55;
@@ -6781,11 +7875,92 @@ function flowHeading(unit) {
 return { sectionSizeLabel, sectionShapeLabel, roleLabel, flowHeading, formatFlow, formatFlowLs, lsToDisplay, normalizeFlowUnit, flowUnitLabel };
 })();
 
+// ---- src/sockPresets.js ----
+__m["src/sockPresets.js"] = (() => {
+// Air sock presets: the typical figures for a manufacturer's fabric and
+// discharge pattern, built up from the selections (EPCs) that come back on
+// jobs. Applying one to a sock fills its manufacturer, product, pattern and
+// suspension, and puts the preset's static in as the sock's nominal figure —
+// it stays "nominal" (and Check keeps asking) until the job's own selection
+// is typed in.
+//
+// Kept in two places: this browser (so every job sees them) and the job file
+// (so a job opened on another machine still has the ones it used).
+
+const KEY = "duct-trace-ahu:sock-presets";
+
+function readLocal() {
+  try {
+    const v = JSON.parse(localStorage.getItem(KEY) || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function writeLocal(list) {
+  try { localStorage.setItem(KEY, JSON.stringify(list)); } catch (e) { /* storage may be unavailable */ }
+}
+
+// The job's presets, then this browser's, by name.
+function listPresets(project) {
+  const out = new Map();
+  for (const p of [...(project?.sockPresets || []), ...readLocal()]) {
+    if (p?.name && !out.has(p.name)) out.set(p.name, p);
+  }
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function presetFromSock(c, name) {
+  const pr = c?.props || {};
+  const confirmed = pr.basis === "manufacturer" && Number(pr.mfrStaticPa) > 0;
+  return {
+    name: String(name || "").trim(),
+    manufacturer: pr.manufacturer || "",
+    product: pr.product || "",
+    discharge: pr.discharge || "perforated",
+    suspension: pr.suspension || "cable1",
+    staticPa: confirmed ? Number(pr.mfrStaticPa) : Number(pr.nominalStaticPa) || 0,
+    throwM: Number(pr.mfrThrow_m) || Number(pr.typThrow_m) || 0,
+    nr: Number(pr.mfrNR) || Number(pr.typNR) || 0,
+    source: pr.selectionRef || "",
+  };
+}
+
+function savePreset(project, preset) {
+  if (!preset?.name) return false;
+  const put = (list) => [...list.filter((p) => p.name !== preset.name), preset];
+  project.sockPresets = put(project.sockPresets || []);
+  writeLocal(put(readLocal()));
+  return true;
+}
+
+function deletePreset(project, name) {
+  project.sockPresets = (project.sockPresets || []).filter((p) => p.name !== name);
+  writeLocal(readLocal().filter((p) => p.name !== name));
+}
+
+function applyPreset(c, preset) {
+  if (!c || !preset) return;
+  const pr = (c.props = c.props || {});
+  pr.preset = preset.name;
+  if (preset.manufacturer) pr.manufacturer = preset.manufacturer;
+  if (preset.product) pr.product = preset.product;
+  if (preset.discharge) pr.discharge = preset.discharge;
+  if (preset.suspension) pr.suspension = preset.suspension;
+  if (Number(preset.staticPa) > 0) pr.nominalStaticPa = Number(preset.staticPa);
+  pr.typThrow_m = Number(preset.throwM) || 0;
+  pr.typNR = Number(preset.nr) || 0;
+}
+return { listPresets, presetFromSock, savePreset, deletePreset, applyPreset };
+})();
+
 // ---- src/fab/generator.js ----
 __m["src/fab/generator.js"] = (() => {
 // Convert the Stage 1 centreline network into a fabrication model.
 // Stage 1 remains the calculation source; this file only interprets it.
 
+const { resolveLevels } = __m["src/levels.js"];
 const { angleBetween, dist, isVerticalRiser } = __m["src/geom.js"];
 const { componentDef } = __m["src/standards/components.js"];
 const { FITTINGS, alternativesFor } = __m["src/standards/fittings.js"];
@@ -7079,7 +8254,9 @@ function makeFitting(opts) {
   });
 }
 
-function generatePhysicalModel(project, results, opts = {}) {
+function generatePhysicalModel(rawProject, results, opts = {}) {
+  // heights absolute across floors, each duct's floor named after its level
+  const project = resolveLevels(rawProject);
   const settings = project.settings || {};
   const px = pxPerMeterOf(project);
   const elevationMode = settings.elevationMode || "orthogonal";
@@ -7858,6 +9035,8 @@ __m["src/fab/takeoff.js"] = (() => {
 const { round } = __m["src/units.js"];
 const { sizeKey, sizeLabel } = __m["src/fab/catalog.js"];
 const { FITTINGS } = __m["src/standards/fittings.js"];
+const { sockTakeoff } = __m["src/standards/airsock.js"];
+const { systemTitle } = __m["src/systems.js"];
 
 function pieceQty(p) {
   return Number(p.qty) > 0 ? Number(p.qty) : 1;
@@ -7934,7 +9113,9 @@ function pushGroup(map, key, seed, update) {
   update(map.get(key));
 }
 
-function buildTakeoff(model, filters = {}, project = null) {
+// `results` (the network solve) is optional: with it the air socks carry the
+// airflow — and so the diameter — they actually get.
+function buildTakeoff(model, filters = {}, project = null, results = null) {
   const pieces = filterPieces(model?.pieces || [], filters, project);
   const rows = pieces.map(takeoffRow);
 
@@ -8050,8 +9231,31 @@ function buildTakeoff(model, filters = {}, project = null) {
     return g;
   };
 
+  // the same quantities split by the unit each piece belongs to
+  const bySystem = new Map();
+  for (const p of pieces) {
+    if (p.kind === "support") continue;
+    const key = p.plantId || "";
+    if (!bySystem.has(key)) bySystem.set(key, { plantId: key, straightM: 0, sheetAreaM2: 0, fittings: 0, pieces: 0 });
+    const g = bySystem.get(key);
+    g.pieces += pieceQty(p);
+    if (p.kind === "straight") g.straightM += p.lengthM || 0;
+    if (p.category === "fitting") g.fittings += pieceQty(p);
+    g.sheetAreaM2 += p.sheetAreaM2 || 0;
+  }
+  const plantsById = new Map((project?.components || []).map((c) => [c.id, c]));
+  const systems = [...bySystem.values()].map((g) => ({
+    ...g,
+    title: g.plantId ? systemTitle(plantsById.get(g.plantId), "Unit") : "Not on a unit",
+    straightM: round(g.straightM, 2),
+    sheetAreaM2: round(g.sheetAreaM2, 2),
+  }));
+  const socks = project ? sockTakeoff(project, results, { ...emptyTakeoffFilters(), ...filters }) : null;
+
   return {
     generatedAt: Date.now(),
+    systems,
+    socks,
     filters: { ...emptyTakeoffFilters(), ...filters },
     rows,
     circular: [...circular.values()].map(roundGroup),
@@ -8154,6 +9358,15 @@ function procurementCsv(takeoff) {
   for (const g of takeoff.supports || []) {
     lines.push(["Support (estimate)", g.label, "", g.qty, "", "", "Approximate"].join(","));
   }
+  const sk = takeoff.socks;
+  for (const g of sk?.bodies || []) {
+    lines.push(["Air sock", csvCell(`${g.fabric} - ${g.discharge}`), g.size, g.qty, g.lengthM, "", csvCell(g.refs.join(" "))].join(","));
+  }
+  for (const g of sk?.suspension || []) {
+    lines.push(["Air sock suspension", g.label, "", "", g.lengthM, "", ""].join(","));
+  }
+  if (sk?.drops) lines.push(["Air sock suspension", "Drop rods / hangers", "", sk.drops, "", "", `Estimate at ${sk.dropSpacingM} m centres`].join(","));
+  if (sk?.inlets) lines.push(["Air sock", "Inlet connector to duct", "", sk.inlets, "", "", ""].join(","));
   for (const g of takeoff.insulation || []) {
     lines.push(["Insulation", `${g.thicknessMm} mm ${g.type}`, "", 1, "", g.areaM2, g.cladding ? `${g.cladding} ${g.claddingAreaM2} m2` : ""].join(","));
   }
@@ -8219,6 +9432,9 @@ function takeoffNarrative(takeoff) {
   for (const g of takeoff.rectangular || []) {
     bits.push(`${g.size} rectangular\nStraight: ${g.lengthM} m\nSheet area: ${g.sheetAreaM2} m²\nSections: ${g.sections}`);
   }
+  for (const g of takeoff.socks?.bodies || []) {
+    bits.push(`Air sock ${g.size} ${g.fabric}\n${g.qty} no., ${g.lengthM} m`);
+  }
   return bits.join("\n\n");
 }
 return { takeoffCsv, procurementCsv, fabricationCsv, takeoffExcelXml, downloadText, takeoffNarrative };
@@ -8232,6 +9448,7 @@ const { buildTakeoff, emptyTakeoffFilters, uniqueFilterValues } = __m["src/fab/t
 const { takeoffCsv, procurementCsv, fabricationCsv, takeoffExcelXml, downloadText, takeoffNarrative } = __m["src/fab/export.js"];
 const { generatePhysicalModel } = __m["src/fab/generator.js"];
 const { reviewPhysicalChanges } = __m["src/fab/change.js"];
+const { systemTitle } = __m["src/systems.js"];
 
 function h(strings, ...vals) {
   return strings.reduce((a, s, i) => a + s + (vals[i] ?? ""), "");
@@ -8255,9 +9472,20 @@ function renderTakeoff(store, results, el) {
 
   const review = reviewPhysicalChanges(p, results);
   const filters = { ...emptyTakeoffFilters(), ...(store.takeoffFilters || {}) };
-  const takeoff = buildTakeoff(p.physical, filters, p);
+  const takeoff = buildTakeoff(p.physical, filters, p, results);
   const vals = uniqueFilterValues(p.physical.pieces || []);
-  const opt = (arr, cur) => [`<option value="">All</option>`, ...arr.map((v) => `<option value="${v}" ${v === cur ? "selected" : ""}>${v}</option>`)].join("");
+  const opt = (arr, cur, label = (v) => v) => [`<option value="">All</option>`, ...arr.map((v) => `<option value="${v}" ${v === cur ? "selected" : ""}>${label(v)}</option>`)].join("");
+  // the AHU filter by tag and name, not the internal id — every unit on the
+  // job, so a system with only socks on it can still be picked
+  const plants = p.components.filter((c) => c.tag || c.color);
+  const ahuIds = [...new Set([...plants.map((c) => c.id), ...vals.ahu])];
+  const plantTitle = (id) => systemTitle(p.components.find((c) => c.id === id), id);
+  const sysRows = (takeoff.systems || []).map((g) => `<tr><td>${g.title}</td><td>${g.straightM}</td><td>${g.fittings}</td><td>${g.sheetAreaM2}</td></tr>`).join("");
+  const sk = takeoff.socks;
+  const sockRows = (sk?.bodies || []).map((g) => `<tr><td>Air sock ${g.size} — ${g.fabric}</td><td>${g.lengthM} m</td><td>${g.qty}</td></tr>`).join("")
+    + (sk?.suspension || []).map((g) => `<tr><td>${g.label}</td><td>${g.lengthM} m</td><td></td></tr>`).join("")
+    + (sk?.drops ? `<tr><td>Drop rods / hangers (est. ${sk.dropSpacingM} m centres)</td><td></td><td>${sk.drops}</td></tr>` : "")
+    + (sk?.inlets ? `<tr><td>Inlet connectors to duct</td><td></td><td>${sk.inlets}</td></tr>` : "");
 
   const circ = takeoff.circular.map((g) => `
     <div class="rcard">
@@ -8289,7 +9517,7 @@ function renderTakeoff(store, results, el) {
     ${review.stale ? `<div class="change-banner">Engineering has changed since the model was last accepted. Review changes on the Fabrication tab before procuring.</div>` : ""}
     <div class="section-title">Filters</div>
     <div class="field"><label>System</label><select data-tf="system">${opt(vals.system, filters.system)}</select></div>
-    <div class="field"><label>AHU / plant</label><select data-tf="ahu">${opt(vals.ahu, filters.ahu)}</select></div>
+    <div class="field"><label>System (unit)</label><select data-tf="ahu">${opt(ahuIds, filters.ahu, plantTitle)}</select></div>
     <div class="field"><label>Floor</label><select data-tf="floor">${opt(vals.floor, filters.floor)}</select></div>
     <div class="field"><label>Zone</label><select data-tf="zone">${opt(vals.zone, filters.zone)}</select></div>
     <div class="field"><label>Area</label><select data-tf="area">${opt(vals.area, filters.area)}</select></div>
@@ -8297,6 +9525,8 @@ function renderTakeoff(store, results, el) {
     <div class="field"><label>Size</label><select data-tf="size">${opt(vals.size, filters.size)}</select></div>
     <div class="field"><label>Duct type</label><select data-tf="type">${opt(vals.type, filters.type)}</select></div>
 
+    ${sysRows ? `<div class="section-title">By system</div>
+    <table class="schedule"><thead><tr><th>System</th><th>Straight m</th><th>Fittings</th><th>Sheet m²</th></tr></thead><tbody>${sysRows}</tbody></table>` : ""}
     <div class="section-title">Circular</div>
     ${circ || `<p class="small-note">No circular straight duct in this filter.</p>`}
     <div class="section-title">Rectangular</div>
@@ -8312,6 +9542,9 @@ function renderTakeoff(store, results, el) {
     <table class="schedule"><thead><tr><th>Item</th><th>Size</th><th>Qty</th></tr></thead><tbody>${ancRows || `<tr><td colspan="3">None</td></tr>`}</tbody></table>
     <div class="section-title">Supports (estimate)</div>
     <table class="schedule"><thead><tr><th>Item</th><th></th><th>Qty</th></tr></thead><tbody>${supRows || `<tr><td colspan="3">None</td></tr>`}</tbody></table>
+    ${sockRows ? `<div class="section-title">Air socks (fabric ductwork)</div>
+    <table class="schedule"><thead><tr><th>Item</th><th>Length</th><th>Qty</th></tr></thead><tbody>${sockRows}</tbody></table>
+    <p class="small-note">Sock bodies by diameter and fabric; suspension and drops from each sock's suspension type. Confirm with the sock manufacturer's selection.</p>` : ""}
     <div class="section-title">Insulation &amp; cladding</div>
     ${ins || `<p class="small-note">No insulation assigned. Set it on Settings, a system, or a section.</p>`}
 
@@ -8372,12 +9605,16 @@ const { allComputedSystems, findSegResult } = __m["src/calc/network.js"];
 const { polygonArea, pointInPolygon, routeLengthM, isVerticalRiser, dist } = __m["src/geom.js"];
 const { showPrompt } = __m["src/ui/modal.js"];
 const { pxPerMeterOf } = __m["src/layout.js"];
+const { roomAreaM2, roomTerminals, roomSystems, roomMismatch } = __m["src/rooms.js"];
+const { levelsOf, levelName, activeLevelId, levelIdOf, multiLevel } = __m["src/levels.js"];
+const { listPresets, presetFromSock, savePreset, deletePreset, applyPreset } = __m["src/sockPresets.js"];
 const { parseLengthM, formatLengthM, hasLengthOverride } = __m["src/fab/lengths.js"];
 const { renderFabrication } = __m["src/ui/fab-panel.js"];
 const { renderTakeoff } = __m["src/ui/takeoff-panel.js"];
 const { FITTINGS: FAB_FITTINGS } = __m["src/standards/fittings.js"];
 const { setPieceOverride } = __m["src/fab/change.js"];
-const { SYSTEMS, SYSTEM_KEYS } = __m["src/systems.js"];
+const { SYSTEMS, SYSTEM_KEYS, COLOUR_MODES, SYSTEM_PALETTE, systemTitle } = __m["src/systems.js"];
+const { isAirSock, sockFigures, sockFlowLs, sockBasis, sockSchedule, SOCK_DISCHARGE, SOCK_BASIS, SOCK_DIAMETERS_MM, SOCK_SUSPENSION } = __m["src/standards/airsock.js"];
 const { PROJECT_CONSTRUCTIONS, SECTION_CONSTRUCTIONS, projectConstructionLabel, sectionConstructionKey } = __m["src/construction.js"];
 
 const FLOW_PROP_KEYS = new Set(["designFlow_ls", "extractFlow_ls", "supplyFlow_ls"]);
@@ -8450,6 +9687,7 @@ class Panels {
     if (!sel || !selected) {
       el.innerHTML = this.propertiesEmpty();
       this.bindProjectConstruction(el);
+      this.bindSystemsList(el);
       return;
     }
     if (sel.type === "segment") el.innerHTML = this.propSegment(selected);
@@ -8607,6 +9845,7 @@ class Panels {
       <p class="small-note">This is the project ideal. Select a duct to change one length or a whole branch without rewriting the rest of the system.</p>
       <div class="field"><label>Nodes / ducts</label><span class="badge">${p.nodes.length} / ${p.segments.length}</span></div>
       <div class="field"><label>Components / rooms</label><span class="badge">${p.components.length} / ${p.rooms.length}</span></div>
+      ${this.systemsList()}
       ${rooms ? `<div class="section-title">Rooms</div>${rooms}` : ""}
     `;
   }
@@ -8780,6 +10019,86 @@ class Panels {
     `;
   }
 
+  // A unit or fan is a system: its tag, name and colour carry to every duct
+  // and terminal joined to it, the status strip, 3D and the report.
+  systemIdentityFields(c, def) {
+    const swatches = SYSTEM_PALETTE.map((col) => `<button class="swatch${(c.color || "").toLowerCase() === col.toLowerCase() ? " on" : ""}" data-swatch="${col}" style="background:${col}" title="${col}"></button>`).join("");
+    return h`
+      <div class="section-title">System</div>
+      <div class="field"><label>Tag / number</label><input type="text" data-k="tag" value="${c.tag || ""}" placeholder="${def.tagPrefix || "SYS"}-01"/></div>
+      <div class="field"><label>Colour</label><span class="swatch-row"><input type="color" data-k="color" value="${c.color || def.color}"/>${swatches}</span></div>
+      <p class="small-note">Shows as <b>${systemTitle(c, def.label)}</b>. Name it with <b>Custom label</b> above (e.g. "Level 2 East offices"). Every duct and terminal joined to this unit takes its colour when Duct &amp; basis colours by system.</p>
+    `;
+  }
+
+  // Air sock: total airflow and "ventilated throughout", the nominal size
+  // and pressure for concept / design, then the manufacturer's selection.
+  sockFields(c) {
+    const p = this.store.project;
+    const unit = unitOf(this.store);
+    const ul = flowUnitLabel(unit);
+    const pr = c.props || {};
+    const flowLs = sockFlowLs(c, this.results);
+    const fig = sockFigures(c, flowLs, p.settings);
+    const b = sockBasis(p.settings);
+    const shared = !(Number(pr.designFlow_ls) > 0);
+    const dias = [`<option value="0" ${fig.autoDia ? "selected" : ""}>Auto — ø${fig.autoDia ? fig.diameterMm : "…"} at ${b.inletVelocity} m/s</option>`]
+      .concat(SOCK_DIAMETERS_MM.map((d) => `<option value="${d}" ${!fig.autoDia && fig.diameterMm === d ? "selected" : ""}>ø${d}</option>`)).join("");
+    const opts = (map, cur) => Object.entries(map).map(([k, v]) => `<option value="${k}" ${cur === k ? "selected" : ""}>${v}</option>`).join("");
+    const perM = unit === "m3/h" ? `${num(fig.m3hPerM, 1)} m³/h per m` : `${num(fig.flowPerM_ls, 1)} l/s per m`;
+    const row = sockSchedule(p, this.results).find((r) => r.id === c.id);
+    const roomLine = row?.room
+      ? `<dt>Room ${row.room} — ${num(row.roomAreaM2, 1)} m²</dt><dd>${num(row.roomRateLsM2, 2)} l/s/m² from its socks</dd>`
+      : `<dt>Room</dt><dd>not inside a room outline</dd>`;
+    return h`
+      <div class="section-title">Air sock</div>
+      <div class="field"><label>Total airflow (${ul})</label>
+        <input type="number" step="any" data-flow-prop="designFlow_ls" value="${shared ? "" : lsToDisplay(pr.designFlow_ls, unit)}" placeholder="share of unit supply duty"/></div>
+      <div class="field"><label>Discharge</label>
+        <select data-prop-bool="ventilatedThroughout">
+          <option value="true" ${pr.ventilatedThroughout !== false ? "selected" : ""}>Ventilated throughout — whole length</option>
+          <option value="false" ${pr.ventilatedThroughout === false ? "selected" : ""}>Part length — vented length below</option>
+        </select></div>
+      ${pr.ventilatedThroughout === false ? `<div class="field"><label>Vented length (m)</label><input type="number" step="0.1" data-prop-num="ventedLengthM" value="${pr.ventedLengthM || ""}"/></div>` : ""}
+      <div class="field"><label>Pattern</label><select data-prop-text="discharge">${opts(SOCK_DISCHARGE, pr.discharge)}</select></div>
+      <div class="field"><label>Suspension</label><select data-prop-text="suspension">${Object.entries(SOCK_SUSPENSION).map(([k, v]) => `<option value="${k}" ${(pr.suspension || "cable1") === k ? "selected" : ""}>${v.label}</option>`).join("")}</select></div>
+      <div class="field"><label>Length (m)</label><input type="number" step="0.1" data-k="widthM" value="${num(fig.lengthM, 2)}"/></div>
+      <div class="field"><label>Diameter</label><select data-prop-num="diameterMm">${dias}</select></div>
+      <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-k="rot" value="${c.rot || 0}"/></div>
+      <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
+      <div class="hrv-box"><dl>
+        <dt>Airflow${shared ? " (shared by length)" : ""}</dt><dd>${lsToDisplay(flowLs, unit)} ${ul}</dd>
+        <dt>Vented length</dt><dd>${num(fig.ventedLengthM, 1)} m</dd>
+        <dt>Discharge</dt><dd>${perM}</dd>
+        <dt>Inlet velocity at ø${fig.diameterMm}</dt><dd>${num(fig.inletVelocity, 2)} m/s</dd>
+        <dt>Inlet static in the index run</dt><dd>${num(fig.staticPa, 0)} Pa — ${fig.confirmed ? "manufacturer" : "nominal"}</dd>
+        ${roomLine}
+      </dl></div>
+      ${fig.warnings.length ? `<ul class="warn-list">${fig.warnings.map((w) => `<li>${w}</li>`).join("")}</ul>` : ""}
+      <p class="small-note">The duct joins at the square end. Leave the airflow blank when you only have the system total: every blank sock on the unit shares its supply duty (set on the unit) in proportion to vented length — or room floor area, in Duct &amp; basis. Drag the handles or type the length; the diameter follows the airflow unless you pick one.</p>
+
+      <div class="section-title">Preset</div>
+      <div class="field"><label>Typical figures</label>
+        <select data-sock-preset="1"><option value="">${pr.preset ? `${pr.preset} (applied)` : "— apply a preset —"}</option>${listPresets(p).map((x) => `<option value="${x.name.replace(/"/g, "&quot;")}">${x.name}${x.staticPa ? ` · ${x.staticPa} Pa` : ""}</option>`).join("")}</select></div>
+      ${Number(pr.typThrow_m) > 0 || Number(pr.typNR) > 0 ? `<div class="field"><label>Typical (preset)</label><span class="badge">${Number(pr.typThrow_m) > 0 ? `throw ${num(pr.typThrow_m, 1)} m` : ""}${Number(pr.typThrow_m) > 0 && Number(pr.typNR) > 0 ? " · " : ""}${Number(pr.typNR) > 0 ? `NR ${pr.typNR}` : ""}</span></div>` : ""}
+      <div class="row-actions"><button class="btn ghost tiny" data-act="savePreset">Save this sock as a preset…</button></div>
+      <p class="small-note">A preset fills manufacturer, product, pattern and suspension, and its static becomes this sock's nominal figure. Build them up from the selections that come back; they are kept in this browser and in the job file.</p>
+
+      <div class="section-title">Manufacturer selection</div>
+      <div class="field"><label>Basis</label><select data-prop-text="basis">${opts(SOCK_BASIS, pr.basis || "nominal")}</select></div>
+      ${pr.basis === "manufacturer" ? "" : `<div class="field"><label>Nominal inlet static (Pa)</label><input type="number" step="5" data-prop-num="nominalStaticPa" value="${Number(pr.nominalStaticPa) > 0 ? pr.nominalStaticPa : ""}" placeholder="${b.nominalStaticPa} (project)"/></div>`}
+      <div class="field"><label>Manufacturer</label><input type="text" data-prop-text="manufacturer" value="${pr.manufacturer || ""}"/></div>
+      <div class="field"><label>Product / fabric</label><input type="text" data-prop-text="product" value="${pr.product || ""}"/></div>
+      <div class="field"><label>Selection ref (EPC)</label><input type="text" data-prop-text="selectionRef" value="${pr.selectionRef || ""}"/></div>
+      <div class="field"><label>Inlet static (Pa)</label><input type="number" step="any" data-prop-num="mfrStaticPa" value="${Number(pr.mfrStaticPa) > 0 ? pr.mfrStaticPa : ""}"/></div>
+      <div class="field"><label>Throw (m)</label><input type="number" step="any" data-prop-num="mfrThrow_m" value="${Number(pr.mfrThrow_m) > 0 ? pr.mfrThrow_m : ""}"/></div>
+      <div class="field"><label>Noise (NR)</label><input type="number" step="1" data-prop-num="mfrNR" value="${Number(pr.mfrNR) > 0 ? pr.mfrNR : ""}"/></div>
+      <p class="small-note">${fig.confirmed
+        ? "The manufacturer's inlet static is in the index run."
+        : "Still on nominal figures. When the selection comes back, type the inlet static and set the basis to <b>Manufacturer selection</b> — it then replaces the nominal figure in the index run and the report."}</p>
+    `;
+  }
+
   terminalResult(c) {
     for (const sys of allComputedSystems(this.results)) {
       const t = (sys.terminals || []).find((x) => x.nodeId === c.nodeId);
@@ -8896,7 +10215,8 @@ class Panels {
     const isPlant = def.role === "plant";
     const props = Object.entries(c.props || {})
       .filter(([k]) => !(isPlant && SKIP_GENERIC.has(k)) && !(c.kind === "hrv" && HRV_KEYS.has(k))
-        && !(def.outside && (k === "freeAreaPct" || k === "designVelocity")) && !(def.openEnd && k === "bellMouth"))
+        && !(def.outside && (k === "freeAreaPct" || k === "designVelocity")) && !(def.openEnd && k === "bellMouth")
+        && !(def.airSock && k !== "note"))
       .map(([k, v]) => {
         const label = PROP_LABELS[k] || k;
         if (k === "note") {
@@ -8949,13 +10269,14 @@ class Panels {
         <select data-k="kind">
           ${Object.values(COMPONENTS).filter((d) => d.category === def.category).map((d) => `<option value="${d.kind}" ${d.kind === c.kind ? "selected" : ""}>${d.label}</option>`).join("")}
         </select></div>
-      <div class="section-title">Size &amp; height</div>
+      ${isPlant ? this.systemIdentityFields(c, def) : ""}
+      ${def.airSock ? this.sockFields(c) : `<div class="section-title">Size &amp; height</div>
       <div class="field"><label>Width × depth (m)</label>
         <span><input type="number" step="0.05" style="width:64px" data-k="widthM" value="${c.widthM ?? ""}"/>
         <input type="number" step="0.05" style="width:64px" data-k="depthM" value="${c.depthM ?? ""}"/></span></div>
       <div class="field"><label>Rotation (°)</label><input type="number" step="1" data-k="rot" value="${c.rot || 0}"/></div>
       <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="heightM" value="${c.heightM ?? 0}"/></div>
-      <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>
+      <p class="small-note">Drag the corner handles on the plan to resize. The rotate handle sits above the box. Width and depth are real metres.</p>`}
       ${isPlant ? this.plantFields(c, def) : ""}
       ${def.outside ? this.louvreFields(c) : ""}
       ${def.openEnd ? this.openEndFields(c) : ""}
@@ -8974,33 +10295,46 @@ class Panels {
     const p = this.store.project;
     const unit = unitOf(this.store);
     const ul = flowUnitLabel(unit);
-    const pxm = p.scale.pxPerMeter || p.settings.conceptPxPerMeter || 50;
-    const areaM2 = polygonArea(r.points) / (pxm * pxm);
+    const areaM2 = roomAreaM2(p, r);
+    // terminals on this room's level, inside its outline; an air sock counts
+    // by the airflow it actually gets, so a shared sock is not read as 0
     let assignedS = 0, assignedE = 0;
-    for (const c of p.components) {
-      const def = componentDef(c.kind);
-      if (!def || def.role !== "terminal") continue;
-      const n = p.nodes.find((x) => x.id === c.nodeId) || c;
-      if (pointInPolygon(n, r.points)) {
-        if (c.system === "supply") assignedS += Number(c.props?.designFlow_ls) || 0;
-        else assignedE += Number(c.props?.designFlow_ls) || 0;
-      }
+    for (const c of roomTerminals(p, r)) {
+      const q = isAirSock(c) ? sockFlowLs(c, this.results) : Number(c.props?.designFlow_ls) || 0;
+      if (c.system === "supply") assignedS += q;
+      else if (c.system === "extract") assignedE += q;
     }
     const bal = (target, assigned) => {
       const diff = assigned - target;
       const cls = target === 0 ? "" : Math.abs(diff) < 1e-6 ? "ok" : "warn";
       return `<span class="pill ${cls}">${lsToDisplay(assigned, unit)} / ${lsToDisplay(target || 0, unit)} ${ul}</span>`;
     };
+    const plants = p.components.filter((c) => componentDef(c.kind)?.role === "plant");
+    const fed = roomSystems(p, r, this.results);
+    const fedTxt = [...fed.entries()].map(([id, n]) => {
+      const c = p.components.find((x) => x.id === id);
+      return `<span class="pill" style="border-color:${c?.color || "#999"};color:${c?.color || "inherit"}">${systemTitle(c, "Unit")} · ${n}</span>`;
+    }).join(" ") || `<span class="badge">no terminals joined yet</span>`;
+    const wrong = roomMismatch(p, r, this.results);
+    const rate = (ls) => areaM2 > 0 ? `${num(ls / areaM2, 2)} l/s/m²` : "—";
     return h`
       <div class="section-title">Room</div>
       <div class="field"><label>Name</label><input type="text" data-k="name" value="${r.name}"/></div>
+      <div class="field"><label>System</label>
+        <select data-k="plantId">
+          <option value="" ${!r.plantId ? "selected" : ""}>— follow its terminals —</option>
+          ${plants.map((c) => `<option value="${c.id}" ${r.plantId === c.id ? "selected" : ""}>${systemTitle(c, componentDef(c.kind)?.label)}</option>`).join("")}
+        </select></div>
+      <div class="field"><label>Terminals joined to</label><span>${fedTxt}</span></div>
+      ${wrong.length ? `<ul class="warn-list"><li>Assigned to ${systemTitle(p.components.find((c) => c.id === r.plantId))} but has terminals on ${wrong.map((id) => systemTitle(p.components.find((c) => c.id === id))).join(", ")}.</li></ul>` : ""}
       <div class="field"><label>Supply target (${ul})</label><input type="number" step="any" data-flow-k="supplyFlow_ls" value="${lsToDisplay(r.supplyFlow_ls, unit)}"/></div>
       <div class="field"><label>Extract target (${ul})</label><input type="number" step="any" data-flow-k="extractFlow_ls" value="${lsToDisplay(r.extractFlow_ls, unit)}"/></div>
       <div class="section-title">Balance</div>
       <div class="field"><label>Floor area</label><span class="badge">${num(areaM2, 1)} m²</span></div>
       <div class="field"><label>Supply assigned</label>${bal(r.supplyFlow_ls, assignedS)}</div>
       <div class="field"><label>Extract assigned</label>${bal(r.extractFlow_ls, assignedE)}</div>
-      <p class="small-note">Assigned = design flow of terminals located inside this room outline.</p>
+      <div class="field"><label>Supply / extract rate</label><span class="badge">${rate(assignedS)} · ${rate(assignedE)}</span></div>
+      <p class="small-note">Assigned = design flow of terminals inside this room outline on this level; an air sock counts by its middle. The system colours the outline and puts the room under that system in the report.</p>
       <div class="row-actions"><button class="btn ghost tiny" data-act="delete">Delete room</button></div>
     `;
   }
@@ -9014,6 +10348,8 @@ class Panels {
       <div class="field"><label>Height (m AFFL)</label><input type="number" step="0.05" data-k="z" value="${num(n.z, 2)}"/></div>
       <div class="field"><label>Connected ducts</label><span class="badge">${segs}</span></div>
       <p class="small-note">Drag to move. To branch off a run, arm <b>Trace</b>, hover the run and click the dot that appears on it. Changing height here is a riser if the other end stays put on plan.</p>
+      ${multiLevel(p) ? `<div class="field"><label>Riser to</label><span>${levelsOf(p).filter((l) => l.id !== levelIdOf(p, n)).map((l) => `<button class="btn tiny" data-riser-to="${l.id}">${levelName(p, l.id)}</button>`).join(" ")}</span></div>
+      <p class="small-note">A riser from this point to the same point on another floor; the plan then moves to that floor so you can trace on from the top (or bottom) of it.</p>` : ""}
       <div class="row-actions">
         <button class="btn tiny" data-act="levelRun">Level connected run to this height</button>
         <button class="btn ghost tiny" data-act="delete">Delete node &amp; ducts</button>
@@ -9141,6 +10477,40 @@ class Panels {
         commit();
       });
     });
+    el.querySelectorAll("[data-prop-num]").forEach((input) => {
+      input.addEventListener("change", () => {
+        store.snapshot();
+        obj.props[input.dataset.propNum] = input.value === "" ? 0 : Number(input.value) || 0;
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-sock-preset]").forEach((sel) => {
+      sel.addEventListener("change", () => {
+        const preset = listPresets(store.project).find((x) => x.name === sel.value);
+        if (!preset) return;
+        store.snapshot();
+        applyPreset(obj, preset);
+        commit();
+      });
+    });
+    el.querySelectorAll("[data-riser-to]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        store.snapshot();
+        const made = store.riserToLevel(obj, btn.dataset.riserTo);
+        store.commit();
+        if (made) {
+          store.onSwitchLevel?.(btn.dataset.riserTo);
+          store.select("node", made.node.id);
+        }
+      });
+    });
+    el.querySelectorAll("[data-swatch]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        store.snapshot();
+        obj.color = btn.dataset.swatch;
+        commit();
+      });
+    });
     el.querySelectorAll("[data-prop-text]").forEach((input) => {
       input.addEventListener("change", () => {
         store.snapshot();
@@ -9223,6 +10593,10 @@ class Panels {
           obj[act] = !obj[act];
           store.syncComponentPorts(obj);
           commit();
+        } else if (act === "savePreset") {
+          const def = [obj.props?.manufacturer, obj.props?.product, SOCK_DISCHARGE[obj.props?.discharge]?.split(" — ")[0]].filter(Boolean).join(" ");
+          const name = await showPrompt({ title: "Save as an air sock preset", label: "Preset name", value: def || "", note: "Saved with this sock's manufacturer, product, pattern, suspension, static (the manufacturer's if confirmed, else the nominal), throw and NR." });
+          if (name) { store.snapshot(); savePreset(store.project, presetFromSock(obj, name)); commit(); }
         } else if (act === "levelRun") {
           store.snapshot();
           store.levelRunFrom(obj.id, obj.z);
@@ -9230,6 +10604,118 @@ class Panels {
         }
       });
     });
+  }
+
+  // Every unit and fan on the job as a system: colour, tag, name, its
+  // airflow and a show / hide — for a floor with several systems on it.
+  systemsList() {
+    const p = this.store.project;
+    const unit = unitOf(this.store);
+    const plants = p.components.filter((c) => componentDef(c.kind)?.role === "plant");
+    if (!plants.length) return "";
+    const systems = this.results ? allComputedSystems(this.results) : [];
+    const hidden = this.store.hiddenPlants || new Set();
+    const rows = plants.map((c) => {
+      const def = componentDef(c.kind);
+      const sup = systems.find((x) => x.plant?.id === c.id && x.systemType === "supply");
+      const ext = systems.find((x) => x.plant?.id === c.id && x.systemType === "extract");
+      const flow = [sup && `S ${formatFlow(sup.totalFlowM3s, unit)}`, ext && `E ${formatFlow(ext.totalFlowM3s, unit)}`].filter(Boolean).join(" · ") || "no ducts yet";
+      return `<div class="sys-row${hidden.has(c.id) ? " off" : ""}">
+        <input type="color" data-sys-color="${c.id}" value="${c.color || def.color}" title="System colour"/>
+        <input type="text" class="sys-tag" data-sys-tag="${c.id}" value="${c.tag || ""}" placeholder="${def.tagPrefix || "SYS"}-01" title="Tag / number"/>
+        <input type="text" class="sys-name" data-sys-name="${c.id}" value="${c.label || ""}" placeholder="${def.label}" title="System name"/>
+        <button class="btn ghost tiny" data-sys-hide="${c.id}" title="${hidden.has(c.id) ? "Show" : "Hide"} this system on the plan">${hidden.has(c.id) ? "Show" : "Hide"}</button>
+        <button class="link-btn" data-sys-pick="${c.id}" title="Select the unit">${flow}</button>
+      </div>`;
+    }).join("");
+    return h`
+      <div class="section-title">Systems</div>
+      ${rows}
+      <p class="small-note">One row per unit or fan. Colour, tag (AHU-01) and name carry to its ducts and terminals, the status strip, 3D and the report. Hide the others to work on one system at a time.${(p.settings.colourBy || "system") !== "system" ? " Ducts are coloured by airstream at the moment — switch to <b>by system</b> in Duct &amp; basis." : ""}</p>
+    `;
+  }
+
+  // Floors: name and floor level of each, which is in view, the sheet
+  // offset of the one in view, and add / delete.
+  levelsList() {
+    const p = this.store.project;
+    const cur = activeLevelId(p);
+    const px = pxPerMeterOf(p);
+    const rows = levelsOf(p).map((l) => `<div class="lvl-row${l.id === cur ? " on" : ""}">
+        <input type="text" data-lvl-name="${l.id}" value="${(l.name || "").replace(/"/g, "&quot;")}" placeholder="${levelName(p, l.id)}" title="Level name"/>
+        <input type="number" step="0.05" data-lvl-elev="${l.id}" value="${Number(l.elevationM) || 0}" title="Finished floor level (m)"/>
+        ${l.id === cur ? `<span class="badge">in view</span>` : `<button class="btn ghost tiny" data-lvl-go="${l.id}">View</button>`}
+        ${levelsOf(p).length > 1 && this.store.levelIsEmpty(l.id) ? `<button class="link-btn" data-lvl-del="${l.id}" title="Delete this empty level">✕</button>` : "<span></span>"}
+      </div>`).join("");
+    const bg = p.background;
+    return h`
+      <div class="section-title">Levels</div>
+      <div class="field"><label>Name · finished floor level (m)</label></div>
+      ${rows}
+      <div class="row-actions"><button class="btn tiny" data-lvl-add="1">+ Add a level</button></div>
+      ${multiLevel(p) && bg ? `<div class="field"><label>This level's sheet offset X / Y (m)</label>
+        <span><input type="number" step="0.05" style="width:70px" data-sheet="x" value="${round((bg.x || 0) / px, 2)}"/>
+        <input type="number" step="0.05" style="width:70px" data-sheet="y" value="${round((bg.y || 0) / px, 2)}"/></span></div>` : ""}
+      <p class="small-note">Each level has its own drawing (Open drawing loads onto the level in view) and shows the others faintly. Heights are typed above each level's own floor; the FFL stacks the floors for risers, 3D and installed lengths. To go up or down, pick the end of a run and use <b>Riser to</b> a level. A second level's sheet is scaled to the project — set its offset so its grid sits over the floor below, before tracing on it.</p>
+    `;
+  }
+
+  presetList() {
+    const list = listPresets(this.store.project);
+    if (!list.length) return "";
+    return h`
+      <div class="section-title">Air sock presets</div>
+      <table class="schedule"><thead><tr><th>Preset</th><th>Pa</th><th>Throw</th><th>NR</th><th></th></tr></thead><tbody>
+      ${list.map((x) => `<tr><td>${x.name}${x.manufacturer ? `<br><span class="small-note" style="margin:0">${[x.manufacturer, x.product].filter(Boolean).join(" ")}</span>` : ""}</td><td>${x.staticPa || "-"}</td><td>${x.throwM || "-"}</td><td>${x.nr || "-"}</td><td><button class="link-btn" data-preset-del="${x.name.replace(/"/g, "&quot;")}" title="Delete preset">✕</button></td></tr>`).join("")}
+      </tbody></table>
+    `;
+  }
+
+  bindLevelsList(el) {
+    el.querySelectorAll("[data-preset-del]").forEach((b) => b.addEventListener("click", () => {
+      this.store.snapshot();
+      deletePreset(this.store.project, b.dataset.presetDel);
+      this.store.commit();
+    }));
+    const store = this.store;
+    const p = store.project;
+    const lvl = (id) => p.levels.find((l) => l.id === id);
+    el.querySelectorAll("[data-lvl-name]").forEach((i) => i.addEventListener("change", () => { store.snapshot(); lvl(i.dataset.lvlName).name = i.value.trim(); store.commit(); }));
+    el.querySelectorAll("[data-lvl-elev]").forEach((i) => i.addEventListener("change", () => { store.snapshot(); lvl(i.dataset.lvlElev).elevationM = Number(i.value) || 0; store.commit(); }));
+    el.querySelectorAll("[data-lvl-go]").forEach((b) => b.addEventListener("click", () => store.onSwitchLevel?.(b.dataset.lvlGo)));
+    el.querySelectorAll("[data-lvl-add]").forEach((b) => b.addEventListener("click", () => store.onAddLevel?.()));
+    el.querySelectorAll("[data-lvl-del]").forEach((b) => b.addEventListener("click", () => { store.snapshot(); store.deleteLevel(b.dataset.lvlDel); store.commit(); }));
+    el.querySelectorAll("[data-sheet]").forEach((i) => i.addEventListener("change", () => {
+      const bg = store.project.background;
+      if (!bg) return;
+      store.snapshot();
+      bg[i.dataset.sheet] = (Number(i.value) || 0) * pxPerMeterOf(store.project);
+      store.commit();
+    }));
+  }
+
+  bindSystemsList(el) {
+    const store = this.store;
+    const find = (id) => store.project.components.find((c) => c.id === id);
+    const edit = (attr, key) => el.querySelectorAll(`[${attr}]`).forEach((input) => {
+      input.addEventListener("change", () => {
+        const c = find(input.getAttribute(attr));
+        if (!c) return;
+        store.snapshot();
+        c[key] = input.value.trim();
+        store.commit();
+      });
+    });
+    edit("data-sys-color", "color");
+    edit("data-sys-tag", "tag");
+    edit("data-sys-name", "label");
+    el.querySelectorAll("[data-sys-hide]").forEach((b) => b.addEventListener("click", () => {
+      const id = b.dataset.sysHide;
+      if (store.hiddenPlants.has(id)) store.hiddenPlants.delete(id);
+      else store.hiddenPlants.add(id);
+      store.emit();
+    }));
+    el.querySelectorAll("[data-sys-pick]").forEach((b) => b.addEventListener("click", () => store.select("component", b.dataset.sysPick)));
   }
 
   bindProjectConstruction(el) {
@@ -9362,6 +10848,15 @@ class Panels {
       <div class="field"><label>Job name</label><input type="text" data-meta="name" value="${(p.meta.name || "").replace(/"/g, "&quot;")}"/></div>
       <div class="field"><label>Engineer reference</label><input type="text" data-meta="engineerRef" value="${(p.meta.engineerRef || "").replace(/"/g, "&quot;")}" placeholder="e.g. ADI-2026-041 / MS"/></div>
       <p class="small-note">On the cover and every page of the PDF report and the take-off, with the adi Climate Systems logo, and on the saved file name.</p>
+      ${this.levelsList()}
+      ${this.systemsList()}
+      <div class="section-title">Systems on the plan</div>
+      <div class="field"><label>Colour ducts</label>
+        <select data-s="colourBy">
+          ${Object.entries(COLOUR_MODES).map(([k, v]) => `<option value="${k}" ${(s.colourBy || "system") === k ? "selected" : ""}>${v}</option>`).join("")}
+        </select></div>
+      <p class="small-note">By system, every unit and fan has its own colour (set it on the unit or in the Systems list above) and the airstream shows as a stripe down the duct. By airstream is the EN 16798-3 convention — supply blue, extract orange, fresh air green, exhaust brown.</p>
+
       <div class="section-title">Sizing method</div>
       <div class="field"><label>Method</label>
         <select data-s="sizingMethod">
@@ -9415,6 +10910,20 @@ class Panels {
         </select></div>
       <p class="small-note">Snap only pulls to a terminal, unit or existing corner when you are already nearby, so a close parallel supply and extract are not yanked together. To branch, hover a run while tracing and click the dot on it — only runs of the system you are tracing show one.</p>
 
+      <div class="section-title">Air socks — nominal basis</div>
+      <div class="field"><label>Target inlet velocity (m/s)</label><input type="number" step="0.5" data-s="sockInletVelocity" value="${s.sockInletVelocity ?? 6}"/></div>
+      <div class="field"><label>Warn above inlet velocity (m/s)</label><input type="number" step="0.5" data-s="sockMaxInletVelocity" value="${s.sockMaxInletVelocity ?? 8}"/></div>
+      <div class="field"><label>Nominal inlet static (Pa)</label><input type="number" step="5" data-s="sockNominalStaticPa" value="${s.sockNominalStaticPa ?? 100}"/></div>
+      <div class="field"><label>Warn below inlet static (Pa)</label><input type="number" step="5" data-s="sockMinStaticPa" value="${s.sockMinStaticPa ?? 50}"/></div>
+      <div class="field"><label>Blank socks share the unit's duty</label>
+        <select data-s="sockShareBy">
+          <option value="length" ${s.sockShareBy !== "area" ? "selected" : ""}>By vented length</option>
+          <option value="area" ${s.sockShareBy === "area" ? "selected" : ""}>By room floor area</option>
+        </select></div>
+      <div class="field"><label>Suspension drops every (m)</label><input type="number" step="0.1" data-s="sockDropSpacingM" value="${s.sockDropSpacingM ?? 1.5}"/></div>
+      <p class="small-note">By room floor area: each room's area is split between the blank socks inside its outline by vented length, so a room gets air in proportion to its size; a sock outside every room puts the system back on length. Concept and design figures until the sock manufacturer's selection is in. A sock's own manufacturer static replaces the nominal figure in the index run once its basis is set to <b>Manufacturer selection</b>.</p>
+
+      ${this.presetList()}
       <div class="section-title">Commissioning tolerances</div>
       <div class="field"><label>Each terminal within ± (% of design)</label><input type="number" step="1" data-s="commTerminalTolPct" value="${s.commTerminalTolPct ?? 10}"/></div>
       <div class="field"><label>System total — lowest / highest (% of design)</label>
@@ -9480,6 +10989,8 @@ class Panels {
       <p class="small-note">Use the <b>Scale</b> tool to calibrate from an uploaded drawing. In concept mode the concept scale sets duct lengths. Risers are recovered from the heights, not from the plan.</p>
     `;
     this.bindSettings(el);
+    this.bindSystemsList(el);
+    this.bindLevelsList(el);
   }
 
   bindSettings(el) {
@@ -9564,6 +11075,9 @@ __m["src/export/commissioning.js"] = (() => {
 // design, the system total between 100% and 110%) and are set per project
 // in Duct & basis, because the specification governs, not this tool.
 
+const { systemTitle } = __m["src/systems.js"];
+const { roomOfComponent, roomTerminals } = __m["src/rooms.js"];
+const { isAirSock, sockFlowLs } = __m["src/standards/airsock.js"];
 const { componentDef } = __m["src/standards/components.js"];
 const { LEAKAGE_FACTORS, PRESSURE_CLASSES } = __m["src/standards/dw144.js"];
 const { allComputedSystems } = __m["src/calc/network.js"];
@@ -9604,7 +11118,9 @@ function sizeText(section) {
   return `dia ${section.diameterMm}`;
 }
 
-function roomOf(project, pt) {
+// the room a terminal is in, on its own level
+function roomOf(project, pt, c = null) {
+  if (c) return roomOfComponent(project, c)?.name || "";
   if (!pt) return "";
   const r = (project.rooms || []).find((room) => room.points?.length >= 3 && pointInPolygon(pt, room.points));
   return r ? r.name : "";
@@ -9634,7 +11150,7 @@ function buildCommissioning(project, results) {
         name: t.name || def?.label || "Terminal",
         kind: def?.label || "",
         bellMouth: !!(def?.openEnd && c?.props?.bellMouth),
-        room: roomOf(project, t.point),
+        room: roomOf(project, t.point, c),
         size: sizeText(t.runoutSection),
         velocity: t.runoutVelocity || 0,
         designLs,
@@ -9680,7 +11196,8 @@ function buildCommissioning(project, results) {
       systemType: sys.systemType,
       code: info.en,
       side: info.code,
-      plantLabel: sys.plant ? (sys.plant.label || componentDef(sys.plant.kind)?.label || "Unit") : "",
+      plantId: sys.plant?.id || null,
+      plantLabel: sys.plant ? (systemTitle(sys.plant) || componentDef(sys.plant.kind)?.label || "Unit") : "",
       totalLs,
       totalMinLs: totalLs * tol.systemMinPct / 100,
       totalMaxLs: totalLs * tol.systemMaxPct / 100,
@@ -9697,13 +11214,9 @@ function buildCommissioning(project, results) {
   }
 
   const rooms = (project.rooms || []).map((r) => {
-    const sum = (system) => (project.components || [])
-      .filter((c) => componentDef(c.kind)?.role === "terminal" && c.system === system)
-      .filter((c) => {
-        const n = project.nodes.find((x) => x.id === c.nodeId) || c;
-        return pointInPolygon(n, r.points);
-      })
-      .reduce((a, c) => a + (Number(c.props?.designFlow_ls) || 0), 0);
+    const sum = (system) => roomTerminals(project, r)
+      .filter((c) => c.system === system)
+      .reduce((a, c) => a + (isAirSock(c) ? sockFlowLs(c, results) : Number(c.props?.designFlow_ls) || 0), 0);
     return { name: r.name, supplyTarget: Number(r.supplyFlow_ls) || 0, supplyTerminals: sum("supply"), extractTarget: Number(r.extractFlow_ls) || 0, extractTerminals: sum("extract") };
   });
 
@@ -9737,6 +11250,9 @@ const { allComputedSystems } = __m["src/calc/network.js"];
 const { formatFlow, formatFlowLs, flowUnitLabel, plantDutyLs, plantStaticPa, round } = __m["src/units.js"];
 const { roleLabel, sectionSizeLabel, sectionShapeLabel } = __m["src/format.js"];
 const { buildCommissioning } = __m["src/export/commissioning.js"];
+const { sockSchedule, sockBasis } = __m["src/standards/airsock.js"];
+const { systemTitle } = __m["src/systems.js"];
+const { roomPlantId, roomAirflow } = __m["src/rooms.js"];
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -10118,7 +11634,34 @@ function plantOn(sys, c) {
   return sys.plant && c.id === sys.plant.id;
 }
 
-function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg = null }) {
+// The project, or one system of it: with `plantId` the report covers just
+// that unit — its airstreams, the ducts and terminals joined to it, its rooms
+// and its air socks.
+function scopeToSystem(project, results, plantId) {
+  const plant = (project.components || []).find((c) => c.id === plantId);
+  if (!plant) return { project, results };
+  const comp = results?.plantOf?.comp || new Map();
+  const seg = results?.plantOf?.seg || new Map();
+  const systems = allComputedSystems(results).filter((s) => s.plant?.id === plantId);
+  const title = systemTitle(plant, "");
+  const scoped = {
+    ...project,
+    components: project.components.filter((c) => c.id === plantId || comp.get(c.id) === plantId),
+    segments: project.segments.filter((s) => seg.get(s.id) === plantId),
+    rooms: (project.rooms || []).filter((r) => roomPlantId(project, r, results) === plantId),
+  };
+  const keep = (w) => !title || w.includes(title) || w.includes(plant.label || "\u0000");
+  return {
+    project: scoped,
+    results: { ...results, systems, projectWarnings: (results.projectWarnings || []).filter(keep) },
+    title,
+  };
+}
+
+function buildProjectPdf({ project: fullProject, results: fullResults, planJpeg, isoJpeg, logoJpeg = null, plantId = null, plans = null }) {
+  const scope = plantId ? scopeToSystem(fullProject, fullResults, plantId) : { project: fullProject, results: fullResults, title: "" };
+  const project = scope.project;
+  const results = scope.results;
   const unit = project.settings?.flowUnit || "l/s";
   const unitLabel = flowUnitLabel(unit);
   const systems = allComputedSystems(results);
@@ -10127,7 +11670,7 @@ function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg = null 
   const w = new PageWriter(doc, job.job, { logo: logoJpeg, job });
   w.pageNo = 1;
 
-  w.cover("Ductwork design report", "adi Climate Systems  -  ductwork sizing to DW144 / BESA and CIBSE Guide B");
+  w.cover(scope.title ? `Ductwork design report  -  ${scope.title}` : "Ductwork design report", "adi Climate Systems  -  ductwork sizing to DW144 / BESA and CIBSE Guide B");
   w.kv([
     ["Mode", project.mode === "drawing" ? "Drawing" : "Concept"],
     ["Flow unit", unitLabel],
@@ -10171,28 +11714,39 @@ function buildProjectPdf({ project, results, planJpeg, isoJpeg, logoJpeg = null 
   if (!project.rooms?.length) w.para("No rooms outlined.");
   else {
     w.table(
-      ["Room", `Supply (${unitLabel})`, `Extract (${unitLabel})`],
-      project.rooms.map((r) => [
-        r.name,
-        formatFlowLs(r.supplyFlow_ls, unit).replace(` ${unitLabel}`, ""),
-        formatFlowLs(r.extractFlow_ls, unit).replace(` ${unitLabel}`, ""),
-      ]),
-      [220, 120, 120]
+      ["Room", "System", "Area m2", `Supply (${unitLabel})`, `Extract (${unitLabel})`, "Sup l/s/m2"],
+      project.rooms.map((r) => {
+        const pid = roomPlantId(project, r, results);
+        const air = roomAirflow(project, r, results);
+        return [
+          r.name.slice(0, 26),
+          pid ? systemTitle(project.components.find((c) => c.id === pid), "").slice(0, 22) : "-",
+          r1(air.areaM2),
+          formatFlowLs(r.supplyFlow_ls, unit).replace(` ${unitLabel}`, ""),
+          formatFlowLs(r.extractFlow_ls, unit).replace(` ${unitLabel}`, ""),
+          air.areaM2 > 0 ? r2(air.supplyLsM2) : "-",
+        ];
+      }),
+      [130, 110, 50, 70, 70, 60]
     );
   }
 
   writeLouvres(w, project, results, unit, unitLabel);
+  writeAirSocks(w, project, results, unit, unitLabel);
   writeCommissioning(w, project, results, unit, unitLabel);
 
-  if (planJpeg) {
-    w.heading("Plan layout", 14);
-    w.para("Traced ductwork, plant and terminals as shown on the plan. Risers appear as markers only.");
-    w.image(planJpeg, "Figure 1  -  Plan");
+  // one plan per level when the job has several floors
+  const planList = plans?.length ? plans : planJpeg ? [{ jpeg: planJpeg, name: "" }] : [];
+  let fig = 1;
+  for (const pl of planList) {
+    w.heading(pl.name ? `Plan layout  -  ${pl.name}` : "Plan layout", 14);
+    w.para(`Traced ductwork, plant and terminals as shown on the plan${scope.title ? `, ${scope.title} only` : ""}. Risers appear as markers only.`);
+    w.image(pl.jpeg, `Figure ${fig++}  -  Plan${pl.name ? ` ${pl.name}` : ""}`);
   }
   if (isoJpeg) {
     w.heading("3D layout", 14);
-    w.para("Isometric review of the same network, including vertical risers and component heights (m AFFL).");
-    w.image(isoJpeg, "Figure 2  -  3D");
+    w.para("Isometric review of the same network, including vertical risers and component heights (m AFFL; levels at their elevation).");
+    w.image(isoJpeg, `Figure ${fig}  -  3D`);
   }
 
   w.para("Calculations use Darcy-Weisbach with Colebrook-White (Swamee-Jain) and Huebscher equivalent diameter for rectangular / square ducts. Verify against manufacturer data before construction.", 8);
@@ -10227,6 +11781,41 @@ function writeLouvres(w, project, results, unit, unitLabel) {
     ]);
     w.table(["Shape", "Size mm", "Face m2", "Free m2", "Free m/s", "Face m/s"], rows, [80, 100, 70, 70, 80, 80]);
   }
+}
+
+// Air socks: nominal sizing and pressure at concept / design, replaced by the
+// manufacturer's selection when it is in. The Basis column says which.
+function writeAirSocks(w, project, results, unit, unitLabel) {
+  const rows = sockSchedule(project, results);
+  if (!rows.length) return;
+  const b = sockBasis(project.settings);
+  w.heading("Air socks  -  fabric ductwork", 13);
+  w.para(`Socks marked Nominal are sized for a ${b.inletVelocity} m/s inlet velocity and carry a nominal ${b.nominalStaticPa} Pa inlet static in the index run. Replace with the manufacturer's selection (inlet static, throw, NR, reference) before the design is issued for construction. A sock with no flow typed shares the unit's supply duty in proportion to its vented length ("ventilated throughout").`, 8.5);
+  w.table(
+    ["Ref", "System", `Flow ${unitLabel}`, "Len m", "Vented m", "Dia mm", "Inlet m/s", `${unitLabel}/m`, "Pa", "Basis"],
+    rows.map((r) => [
+      r.ref.slice(0, 18),
+      (r.system || "-").slice(0, 14),
+      formatFlowLs(r.flowLs, unit).replace(` ${unitLabel}`, "") + (r.shared ? "*" : ""),
+      r1(r.lengthM),
+      r1(r.ventedLengthM),
+      r.diameterMm + (r.autoDia ? "" : "!"),
+      r2(r.inletVelocity),
+      unit === "m3/h" ? r0(r.m3hPerM) : r1(r.flowPerM_ls),
+      r0(r.staticPa),
+      r.basisLabel,
+    ]),
+    [62, 70, 50, 38, 44, 42, 46, 44, 32, 66]
+  );
+  w.para("* flow shared from the unit's supply duty by vented length.  ! diameter typed rather than auto-sized.", 7.5);
+  const mfr = rows.filter((r) => r.manufacturer || r.product || r.selectionRef || r.throwM || r.nr);
+  if (mfr.length) {
+    w.table(["Ref", "Manufacturer", "Product", "Selection ref", "Discharge", "Throw m", "NR"],
+      mfr.map((r) => [r.ref.slice(0, 18), r.manufacturer.slice(0, 18), r.product.slice(0, 18), r.selectionRef.slice(0, 16), r.discharge.split(" — ")[0], r.throwM ? r1(r.throwM) : "-", r.nr || "-"]),
+      [62, 80, 80, 70, 70, 50, 32]);
+  }
+  const warn = rows.flatMap((r) => r.warnings.map((x) => `${r.ref}: ${x}`));
+  w.warnList(warn);
 }
 
 // Commissioning: what the balancing engineer sets to and records against,
@@ -10291,7 +11880,7 @@ function writeCommissioning(w, project, results, unit, unitLabel) {
     w.heading("Unit test record", 12);
     for (const p of plants) {
       const def = componentDef(p.kind);
-      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantLabel === (p.label || def?.label))?.totalLs || 0;
+      const flow = (type) => data.systems.find((x) => x.systemType === type && x.plantId === p.id)?.totalLs || 0;
       const rows = [
         [`Supply air volume (${unitLabel})`, formatFlowLs(flow("supply"), unit)],
         [`Extract air volume (${unitLabel})`, formatFlowLs(flow("extract"), unit)],
@@ -10304,7 +11893,7 @@ function writeCommissioning(w, project, results, unit, unitLabel) {
         ["Filter pressure drops (clean)", "-"],
       ];
       if (p.kind === "hrv") rows.push(["Heat recovery temperature efficiency (%)", r0(Number(p.props?.recoveryEfficiencyPct) || 0)], ["Summer bypass operation", p.props?.summerBypass === false ? "none fitted" : "check"]);
-      w.heading(p.label || def?.label || "Unit", 10);
+      w.heading(systemTitle(p, def?.label || "Unit"), 10);
       w.table(["Item", "Design", "Measured", "Init"], rows.map((r) => [r[0], String(r[1]), "", ""]), [220, 120, 120, 50]);
     }
   }
@@ -10466,6 +12055,20 @@ function buildTakeoffPdf({ project, takeoff, logoJpeg = null }) {
   const joints = (takeoff.joints || []).map((g) => [g.label, g.size, g.qty]);
   if (joints.length) w.table(["Joint", "Size", "Qty"], joints, [220, 120, 40]);
   else w.para("None.");
+  if ((takeoff.systems || []).length > 1) {
+    w.heading("By system", 12);
+    w.table(["System", "Straight m", "Fittings", "Sheet m2"], takeoff.systems.map((g) => [g.title, g.straightM, g.fittings, g.sheetAreaM2]), [200, 80, 70, 80]);
+  }
+  const sk = takeoff.socks;
+  if (sk?.bodies?.length) {
+    w.heading("Air socks  -  fabric ductwork", 12);
+    w.table(["Item", "Size", "Qty", "Length m", "Refs"], [
+      ...sk.bodies.map((g) => [`Air sock ${g.fabric}`.slice(0, 40), g.size, g.qty, g.lengthM, g.refs.join(" ").slice(0, 40)]),
+      ...sk.suspension.map((g) => [g.label, "", "", g.lengthM, ""]),
+      ...(sk.drops ? [[`Drop rods / hangers (est. ${sk.dropSpacingM} m centres)`, "", sk.drops, "", ""]] : []),
+      ...(sk.inlets ? [["Inlet connector to duct", "", sk.inlets, "", ""]] : []),
+    ], [190, 60, 36, 56, 130]);
+  }
   w.heading("Insulation", 12);
   const ins = (takeoff.insulation || []).map((g) => [`${g.thicknessMm} mm ${g.type}`, g.areaM2, g.cladding || "", g.claddingAreaM2 || ""]);
   if (ins.length) w.table(["Insulation", "Area m2", "Cladding", "Clad m2"], ins, [180, 70, 100, 70]);
@@ -10489,7 +12092,7 @@ function downloadBlob(blob, filename) {
   // revoked a moment later: revoking at once can lose the file name
   setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 }
-return { jobInfo, buildProjectPdf, buildTakeoffPdf, downloadBlob };
+return { jobInfo, scopeToSystem, buildProjectPdf, buildTakeoffPdf, downloadBlob };
 })();
 
 // ---- src/ui/help.js ----
@@ -10522,6 +12125,26 @@ const HELP = [
   { sec: "start", tools: ["room"], t: "I want the room airflows to balance",
     b: "<b>Room</b> <kbd>R</kbd>: click the corners, then set supply and extract targets in the inspector. Terminals inside the outline are added up against those targets." },
 
+  { sec: "place", tools: ["terminal", "select"], t: "I want an air sock (fabric duct)",
+    b: "<b>Terminal</b> <kbd>G</kbd> → <b>Air sock (fabric duct)</b>, then click where the duct will join it: that is the inlet, and the sock runs off to the right. Drag the end handle to stretch it, the round handle to point it — it turns about the inlet. Trace onto the square end. The diameter follows the airflow at the nominal inlet velocity in Duct &amp; basis unless you pick one." },
+  { sec: "place", tools: ["terminal", "select", "ahu"], t: "I only have the total air — \u201cventilated throughout\u201d",
+    b: "Set the total as the unit's <b>supply flow</b> and leave each sock's airflow <b>blank</b>. The blank socks share whatever the other terminals do not take, in proportion to their vented length, so a 16 m and an 8 m sock on 1500 l/s get 1000 and 500. Type a figure on a sock to fix it." },
+  { sec: "place", tools: ["select"], t: "I have the sock manufacturer's selection",
+    b: "Pick the sock, set <b>Basis</b> to <b>Manufacturer selection</b> and type their inlet static, throw, NR and selection reference. Their static replaces the nominal figure in the index run and the report. Until then the sock is drawn dashed, marked <i>nom</i>, and Check lists it." },
+  { sec: "place", tools: ["select", "ahu", "hrv", "fan"], t: "There are several systems on this floor",
+    b: "Each AHU, HRV and fan is a system with a <b>tag</b> (AHU-01, numbered for you), a <b>name</b> and a <b>colour</b>. Change them on the unit or in <b>Duct &amp; basis → Systems</b>, where <b>Hide</b> clears the others off the plan while you work on one. Every duct and terminal joined to a unit takes its colour; the airstream shows as a stripe. <b>Colour ducts → By airstream</b> goes back to supply blue, extract orange." },
+  { sec: "start", tools: ["select"], t: "The job runs over several floors",
+    b: "The <b>level</b> box by the zoom switches floors and <b>+ Add a level…</b> makes one, with its finished floor level. Each level has its own drawing — <b>Open drawing</b> loads onto the level in view; a second level's sheet is scaled to the project with two points, and <b>Duct &amp; basis → Levels</b> offsets it to sit over the floor below. The other floors show faintly. Heights stay above each level's own floor." },
+  { sec: "trace", tools: ["select", "duct"], t: "I need a riser up (or down) to another floor",
+    b: "Trace to where the riser goes, pick that end, and in the inspector press <b>Riser to</b> the level. The plan moves to that floor with the riser marked; trace on from it. The riser is sized and costed floor to floor, and 3D shows the floors stacked." },
+  { sec: "place", tools: ["select", "room"], t: "Which system serves this room?",
+    b: "Pick the room and set <b>System</b>, or leave it to follow its terminals. The outline takes the system's colour, the room goes under that system in the report, and Check flags a room whose terminals are joined to a different unit. The room shows its l/s per m² too." },
+  { sec: "place", tools: ["select", "terminal"], t: "I want the socks to share the air by floor area",
+    b: "<b>Duct &amp; basis → Air socks → Blank socks share the unit's duty → By room floor area</b>. Each room's area is split between the blank socks inside its outline, so a room gets air in proportion to its size. Draw the room outlines first." },
+  { sec: "place", tools: ["select"], t: "I keep using the same sock fabric",
+    b: "Pick a sock with the figures you trust and press <b>Save this sock as a preset…</b>. On the next sock, <b>Preset</b> fills manufacturer, product, pattern, suspension and the static as its nominal figure. Presets stay in this browser and travel in the job file." },
+  { sec: "size", tools: ["select"], t: "I want a report for just one system",
+    b: "<b>PDF</b> asks which: the whole project or one system. One system gets its own airstreams, ducts, terminals, rooms, air socks and commissioning sheets, with the others left off every plan. The take-off splits by system and filters to one." },
   { sec: "place", tools: ["ahu", "hrv"], t: "I want to put the AHU or heat recovery unit down",
     b: "<b>AHU</b> <kbd>A</kbd> or <b>HRV</b> <kbd>E</kbd>, then click. Two connections on each face: <b>IN</b> (internal) on the right — supply and extract to the building; <b>EX</b> (external) on the left — fresh air in and exhaust out. Turn it with the handle above the box." },
   { sec: "place", tools: ["ahu", "hrv", "duct"], t: "I need fresh air in and stale air out, not just supply and extract",
@@ -10679,7 +12302,7 @@ const { View3D, VISUAL_MODES } = __m["src/ui/view3d.js"];
 const { Panels } = __m["src/ui/panels.js"];
 const { componentDef, COMPONENTS, isDualPort } = __m["src/standards/components.js"];
 const { computeAll, allComputedSystems } = __m["src/calc/network.js"];
-const { showConfirm, showModal, closeModal, modalOpen, toast } = __m["src/ui/modal.js"];
+const { showConfirm, showModal, showPrompt, closeModal, modalOpen, toast } = __m["src/ui/modal.js"];
 const { formatFlow, normalizeFlowUnit, round } = __m["src/units.js"];
 const { buildProjectPdf, buildTakeoffPdf, downloadBlob } = __m["src/export/pdf.js"];
 const { generatePhysicalModel } = __m["src/fab/generator.js"];
@@ -10687,7 +12310,10 @@ const { buildTakeoff } = __m["src/fab/takeoff.js"];
 const { dist, routeLengthM, isVerticalRiser } = __m["src/geom.js"];
 const { pxPerMeterOf } = __m["src/layout.js"];
 const { HELP, HELP_SECTIONS, STEPS, helpMatches } = __m["src/ui/help.js"];
-const { SYSTEMS, isOutsideSystem } = __m["src/systems.js"];
+const { SYSTEMS, isOutsideSystem, systemTitle } = __m["src/systems.js"];
+const { isAirSock, sockFigures, sockFlowLs, sockSchedule } = __m["src/standards/airsock.js"];
+const { roomMismatch } = __m["src/rooms.js"];
+const { levelsOf, levelName, levelById, activeLevelId, firstLevelId, levelView, multiLevel, resolveLevels } = __m["src/levels.js"];
 const { rotatedSize, normDeg, turnTakeoff, turnPoint } = __m["src/rotate.js"];
 const { uid } = __m["src/state.js"];
 
@@ -10748,8 +12374,44 @@ let railTool = "select"; // the rail button that is lit
 
 function scaleNeeded() {
   const p = store.project;
-  return !!p.background && p.mode !== "concept" && !(p.scale.pxPerMeter > 0);
+  // a sheet on a second level is scaled to match the project's scale
+  return !!p.background && p.mode !== "concept" && (!(p.scale.pxPerMeter > 0) || !!p.background.needsScale);
 }
+
+/* ---------- levels ---------- */
+function renderFloors() {
+  const p = store.project;
+  const sel = $("#zFloor");
+  if (!sel) return;
+  const cur = activeLevelId(p);
+  sel.innerHTML = levelsOf(p).map((l) => `<option value="${esc(l.id)}" ${l.id === cur ? "selected" : ""}>${esc(levelName(p, l.id))}${multiLevel(p) ? ` · ${round(Number(l.elevationM) || 0, 2)} m` : ""}</option>`).join("")
+    + `<option value="__add">+ Add a level…</option>`;
+}
+function switchLevel(id) {
+  if (!store.setActiveLevel(id)) return;
+  canvas.endDraft();
+  store.persist();
+  canvas.loadBackground();
+  canvas.fit();
+  store.emit();
+  toast(`${levelName(store.project, id)}${store.project.background ? "" : " — no drawing on this level yet"}`);
+  scaleGate();
+}
+async function addLevelDialog() {
+  const p = store.project;
+  const name = await showPrompt({ title: "Add a level", label: "Name", value: `Level ${levelsOf(p).length}`, okText: "Next" });
+  if (!name) return;
+  const top = levelsOf(p).reduce((m, l) => Math.max(m, Number(l.elevationM) || 0), 0);
+  const elev = await showPrompt({ title: `${name} — floor level`, label: "Finished floor level above the ground floor (m)", type: "number", value: String(round(top + 4, 2)), okText: "Add level",
+    note: "Heights on this level are typed above its own floor, as on every level; this figure stacks the floors for risers, 3D and lengths." });
+  if (elev == null || elev === "") return;
+  store.snapshot();
+  const id = store.addLevel(name, Number(elev));
+  store.commit();
+  switchLevel(id);
+}
+store.onSwitchLevel = (id) => switchLevel(id);
+store.onAddLevel = () => addLevelDialog();
 
 function renderRail() {
   const rail = $("#rail");
@@ -11013,9 +12675,14 @@ async function loadDrawingFile(file) {
     if (!img) { toast("That image could not be read"); return; }
   }
   const p = store.project;
-  const replacing = !!p.background || p.nodes.length > 0;
+  const here = levelView(p);
+  const replacing = !!p.background || here.nodes.length > 0;
   let keepScale = false;
-  if (replacing && p.scale.pxPerMeter > 0) {
+  // a first sheet on another level of a scaled job: keep the project's scale
+  // and scale this sheet to it, once two points on it are given
+  const otherLevelScale = p.scale.pxPerMeter > 0 && !p.background && (p.scale.levelId || firstLevelId(p)) !== activeLevelId(p);
+  if (otherLevelScale) keepScale = true;
+  else if (replacing && p.scale.pxPerMeter > 0) {
     keepScale = await showConfirm({
       title: "Does the scale still hold?",
       message: "There is already a take-off on this project. If the new sheet is a revision at the same scale and position, keep the scale and the trace stays where it is. Otherwise set the scale again.",
@@ -11023,7 +12690,7 @@ async function loadDrawingFile(file) {
     });
   }
   store.snapshot();
-  p.background = { dataUrl: img.dataUrl, width: img.w, height: img.h, x: 0, y: 0, opacity: 0.9, label: img.label, rotDeg: 0, token: uid("dwg") };
+  p.background = { dataUrl: img.dataUrl, width: img.w, height: img.h, x: 0, y: 0, opacity: 0.9, label: img.label, rotDeg: 0, token: uid("dwg"), ...(otherLevelScale ? { needsScale: true } : {}) };
   bgOriginal = null;
   p.mode = "drawing";
   if (!keepScale) p.scale = { pxPerMeter: null, calib: null };
@@ -11110,7 +12777,7 @@ async function rotateDrawing(targetDeg) {
     const to = { x: bg.x + world.w / 2, y: bg.y + world.h / 2 };
 
     store.snapshot();
-    turnTakeoff(p, delta, from, to);
+    turnTakeoff(levelView(p), delta, from, to); // this level's trace turns with its sheet
     for (const c of p.components) store.syncComponentPorts(c);
     bg.dataUrl = dataUrl;
     bg.width = world.w;
@@ -11324,37 +12991,84 @@ $("#three2d").addEventListener("click", () => open3d(false));
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
-async function captureViews() {
-  const savedView = { ...store.project.view };
+// The plan of each level (one, on a single-floor job) and the 3D view, for
+// the report. With a system picked, every other system is hidden first.
+async function captureViews(plantId = null) {
+  const p = store.project;
+  const savedView = { ...p.view };
   const was3d = store.viewMode === "3d";
   const selWas = store.selection;
+  const hiddenWas = new Set(store.hiddenPlants);
+  const startLevel = activeLevelId(p);
   store.selection = null;
-  canvas.fit();
-  canvas.draw();
-  await nextFrame();
-  const planJpeg = canvas.canvas.toDataURL("image/jpeg", 0.92);
-  $("#three").classList.add("on");
-  view3d.resize();
-  view3d.setView("fit");
-  view3d.draw();
-  await nextFrame();
-  const isoJpeg = view3d.canvas.toDataURL("image/jpeg", 0.92);
-  if (!was3d) $("#three").classList.remove("on");
-  Object.assign(store.project.view, savedView);
-  store.selection = selWas;
-  canvas.resize();
-  return { planJpeg, isoJpeg };
+  if (plantId) {
+    store.hiddenPlants = new Set(p.components.filter((c) => componentDef(c.kind)?.role === "plant" && c.id !== plantId).map((c) => c.id));
+  }
+  const on = (id) => (it) => (it.levelId || firstLevelId(p)) === id;
+  const levels = multiLevel(p)
+    ? levelsOf(p).filter((l) => p.nodes.some(on(l.id)) || p.components.some(on(l.id)) || store.levelBackground(l.id))
+    : [levelsOf(p)[0]];
+  const plans = [];
+  try {
+    for (const l of levels) {
+      if (l.id !== activeLevelId(p)) store.setActiveLevel(l.id);
+      await canvas.loadBackgroundAsync();
+      canvas.fit();
+      canvas.draw();
+      await nextFrame();
+      plans.push({ jpeg: canvas.canvas.toDataURL("image/jpeg", 0.92), name: multiLevel(p) ? levelName(p, l.id) : "" });
+    }
+    if (activeLevelId(p) !== startLevel) store.setActiveLevel(startLevel);
+    await canvas.loadBackgroundAsync();
+    $("#three").classList.add("on");
+    view3d.resize();
+    view3d.setView("fit");
+    view3d.draw();
+    await nextFrame();
+    const isoJpeg = view3d.canvas.toDataURL("image/jpeg", 0.92);
+    return { plans, isoJpeg };
+  } finally {
+    if (activeLevelId(p) !== startLevel) store.setActiveLevel(startLevel);
+    if (!was3d) $("#three").classList.remove("on");
+    store.hiddenPlants = hiddenWas;
+    Object.assign(p.view, savedView);
+    store.selection = selWas;
+    canvas.resize();
+  }
+}
+
+// One system or the whole job: asked only when there is more than one.
+function pickReportScope() {
+  const p = store.project;
+  const plants = p.components.filter((c) => componentDef(c.kind)?.role === "plant");
+  if (plants.length < 2) return Promise.resolve({ plantId: null });
+  return new Promise((resolve) => {
+    const body = showModal("PDF report — which systems?", `
+      <p>The whole job, or one system on its own — its ducts, terminals, rooms, air socks and commissioning sheets, with the others left off the plans.</p>
+      <div class="row-actions" style="flex-wrap:wrap;gap:6px">
+        <button class="btn go" data-scope="">Whole project</button>
+        ${plants.map((c) => `<button class="btn" data-scope="${esc(c.id)}"><i class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;background:${esc(c.color || "#888")}"></i>${esc(systemTitle(c, componentDef(c.kind)?.label))}</button>`).join("")}
+      </div>
+      <div class="modal-actions"><button class="btn ghost" data-scope="__cancel">Cancel</button></div>`);
+    body.querySelectorAll("[data-scope]").forEach((b) => b.addEventListener("click", () => {
+      closeModal(true);
+      resolve(b.dataset.scope === "__cancel" ? null : { plantId: b.dataset.scope || null });
+    }));
+  });
 }
 async function exportPdfReport() {
+  const scope = await pickReportScope();
+  if (!scope) return;
   const btn = $("#bPdf");
   btn.disabled = true;
   const prev = btn.textContent;
   btn.textContent = "PDF…";
   try {
     const results = computeAll(store.project);
-    const { planJpeg, isoJpeg } = await captureViews();
-    const blob = buildProjectPdf({ project: store.project, results, planJpeg, isoJpeg, logoJpeg: await logoJpeg() });
-    downloadBlob(blob, `Duct Trace report - ${fileStem()}.pdf`);
+    const { plans, isoJpeg } = await captureViews(scope.plantId);
+    const blob = buildProjectPdf({ project: store.project, results, plans, isoJpeg, logoJpeg: await logoJpeg(), plantId: scope.plantId });
+    const plant = scope.plantId ? store.project.components.find((c) => c.id === scope.plantId) : null;
+    downloadBlob(blob, `Duct Trace report - ${fileStem()}${plant ? ` - ${systemTitle(plant, "system")}` : ""}.pdf`);
     toast("PDF report downloaded");
   } catch (err) {
     console.error(err);
@@ -11388,7 +13102,7 @@ async function logoJpeg() {
 }
 
 async function exportTakeoffPdf(takeoff) {
-  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project), logoJpeg: await logoJpeg() });
+  const blob = buildTakeoffPdf({ project: store.project, takeoff: takeoff || buildTakeoff(store.project.physical, store.takeoffFilters, store.project, lastResults), logoJpeg: await logoJpeg() });
   downloadBlob(blob, `Duct Trace take-off - ${fileStem()}.pdf`);
 }
 $("#bPdf").addEventListener("click", exportPdfReport);
@@ -11414,7 +13128,7 @@ function checkIssues(results) {
     }
     const joined = [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].filter(Boolean).reduce((a, id) => a + touching(id).length, 0);
     if (!joined) out.push({ lvl: def.role === "plant" ? "warn" : "bad", msg: `${name} is not connected to any duct.`, sel: ["component", c.id] });
-    if (def.role === "terminal" && !(Number(c.props?.designFlow_ls) > 0)) out.push({ lvl: "warn", msg: `${name} has no design flow.`, sel: ["component", c.id] });
+    if (def.role === "terminal" && !(Number(c.props?.designFlow_ls) > 0) && !(isAirSock(c) && sockFlowLs(c, results) > 0)) out.push({ lvl: "warn", msg: `${name} has no design flow${isAirSock(c) ? " — type its total, or set the unit's supply duty for blank socks to share" : ""}.`, sel: ["component", c.id] });
   }
   for (const n of p.nodes) {
     if (p.components.some((c) => [c.nodeId, c.returnNodeId, c.outdoorNodeId, c.exhaustNodeId].includes(n.id))) continue;
@@ -11437,6 +13151,17 @@ function checkIssues(results) {
     if (sys.plant && sys.marginPa < 0 && !["outdoor", "exhaust"].includes(sys.systemType)) out.push({ lvl: "bad", msg: `${sys.name}: the fan needs ${round(sys.fanStaticPa ?? sys.indexStaticPa, 0)} Pa and the unit has ${round(sys.availableStaticPa, 0)} Pa.` });
   }
   for (const w of results?.projectWarnings || []) out.push({ lvl: "bad", msg: w });
+  for (const r of p.rooms || []) {
+    const wrong = roomMismatch(p, r, results);
+    if (wrong.length) {
+      const t = (id) => systemTitle(p.components.find((c) => c.id === id), "a unit");
+      out.push({ lvl: "warn", msg: `${r.name} is on ${t(r.plantId)} but has terminals joined to ${wrong.map(t).join(", ")}.`, sel: ["room", r.id] });
+    }
+  }
+  const socks = sockSchedule(p, results);
+  for (const r of socks) for (const w of r.warnings) out.push({ lvl: "warn", msg: `${r.ref}: ${w}`, sel: ["component", r.id] });
+  const nominal = socks.filter((r) => !r.confirmed);
+  if (nominal.length) out.push({ lvl: "warn", msg: `${nominal.length} air sock${nominal.length > 1 ? "s are" : " is"} on nominal sizing and pressure (${nominal.map((r) => r.ref).join(", ")}) — replace with the manufacturer's selection before issue.`, sel: ["component", nominal[0].id] });
   const seen = new Set();
   return out.filter((i) => { const k = i.msg + (i.sel ? i.sel.join() : ""); if (seen.has(k)) return false; seen.add(k); return true; });
 }
@@ -11525,8 +13250,9 @@ function renderStatus(results) {
   const cell = (k, v, cls = "", attrs = "") => `<div class="st ${cls}" ${attrs}><b>${k}</b><span>${v}</span></div>`;
   const terms = p.components.filter((c) => componentDef(c.kind)?.role === "terminal");
   let plan = 0, installed = 0;
-  for (const s of p.segments) {
-    const a = p.nodes.find((n) => n.id === s.a), b = p.nodes.find((n) => n.id === s.b);
+  const rp = resolveLevels(p);
+  for (const s of rp.segments) {
+    const a = rp.nodes.find((n) => n.id === s.a), b = rp.nodes.find((n) => n.id === s.b);
     if (!a || !b) continue;
     plan += dist(a, b) / px;
     installed += Number(s.engineeringLengthM) > 0 ? Number(s.engineeringLengthM) : routeLengthM(a, b, px);
@@ -11536,12 +13262,16 @@ function renderStatus(results) {
   const issues = results ? checkIssues(results) : [];
   const bad = issues.filter((i) => i.lvl === "bad").length;
   let html = cell(p.mode === "concept" ? "Concept" : "Scale", p.mode === "concept" && !p.background ? "schematic" : (p.scale.pxPerMeter > 0 ? `${round(p.scale.pxPerMeter, 1)} px/m` : "not set"), scaleNeeded() ? "bad" : "")
+    + (multiLevel(p) ? cell("Level", esc(levelName(p, activeLevelId(p))), "click", 'id="stLevel" title="Levels — Duct & basis"') : "")
     + cell("Terminals", String(terms.length))
     + cell("Flow unit", unit === "m3/h" ? "m³/h" : "l/s", "click", 'id="stUnit" title="Click to switch l/s and m³/h"');
   for (const sys of systems) {
     const cls = { supply: "sup", extract: "ext", outdoor: "oda", exhaust: "eha" }[sys.systemType] || "sup";
     const oneUnit = systems.filter((x) => x.systemType === sys.systemType).length === 1;
-    html += cell(oneUnit ? `${SYSTEMS[sys.systemType]?.label || sys.systemType} ${SYSTEMS[sys.systemType]?.code || ""}` : (sys.name || sys.systemType), `${formatFlow(sys.totalFlowM3s, unit)} · ${round(sys.indexStaticPa, 0)} Pa`, sys.plant && sys.marginPa < 0 ? "bad" : cls);
+    const onePlant = new Set(systems.map((x) => x.plant?.id).filter(Boolean)).size <= 1;
+    const sw = sys.color && (p.settings.colourBy || "system") === "system" ? `<i class="sw" style="background:${sys.color}"></i>` : "";
+    const title = oneUnit && onePlant ? `${SYSTEMS[sys.systemType]?.label || sys.systemType} ${SYSTEMS[sys.systemType]?.code || ""}` : (sys.tag ? `${sys.tag} ${SYSTEMS[sys.systemType]?.en || ""}` : (sys.name || sys.systemType));
+    html += cell(sw + esc(title), `${formatFlow(sys.totalFlowM3s, unit)} · ${round(sys.indexStaticPa, 0)} Pa`, sys.plant && sys.marginPa < 0 ? "bad" : cls, `title="${esc(sys.name || "")}"`);
   }
   html += cell("Duct on plan", `${round(plan, 1)} m`)
     + cell("Installed", `${round(installed, 1)} m`)
@@ -11549,6 +13279,7 @@ function renderStatus(results) {
     + (p.background && Number(p.background.rotDeg) ? cell("Sheet turned", `${round(Number(p.background.rotDeg), 1)}°`) : "")
     + (p.meta.rev ? cell("File", `rev ${p.meta.rev}`) : "");
   st.innerHTML = html;
+  $("#stLevel")?.addEventListener("click", () => $("#bBasis")?.click());
   $("#stUnit")?.addEventListener("click", () => setFlowUnit(unit === "m3/h" ? "l/s" : "m3/h"));
   $("#stCheck")?.addEventListener("click", runCheck);
 }
@@ -11675,6 +13406,7 @@ store.subscribe(() => {
     scheduled = false;
     const results = computeAll(store.project);
     lastResults = results;
+    syncSocks(results);
     canvas.setResults(results);
     view3d.setResults(results);
     panels.setResults(results);
@@ -11682,18 +13414,33 @@ store.subscribe(() => {
     renderInspector();
     renderStatus(results);
     renderLegend();
+    renderFloors();
     if (store.viewMode === "3d") view3d.draw();
   });
 });
 
+// An air sock is drawn at the diameter its airflow needs.
+function syncSocks(results) {
+  const settings = store.project.settings;
+  store.syncSockSizes((c) => sockFigures(c, sockFlowLs(c, results), settings).diameterMm);
+}
+
 function renderLegend() {
-  $("#threeLegend").innerHTML = Object.values(SYSTEMS).map((x) => `<div class="ln"><span class="sw" style="background:${x.color}"></span>${x.label} <span style="color:var(--muted)">${x.code}</span></div>`).join("")
+  const p = store.project;
+  const plants = p.components.filter((c) => componentDef(c.kind)?.role === "plant" && c.color);
+  const bySystem = (p.settings.colourBy || "system") === "system" && plants.length;
+  const rows = bySystem
+    ? plants.map((c) => `<div class="ln"><span class="sw" style="background:${c.color}"></span>${esc(systemTitle(c, componentDef(c.kind)?.label))}</div>`).join("")
+      + `<div class="ln" style="color:var(--muted);font-size:11px">Airstream: stripe down the duct</div>`
+    : "";
+  $("#threeLegend").innerHTML = rows + Object.values(SYSTEMS).map((x) => `<div class="ln"><span class="sw" style="background:${x.color}${bySystem ? ";height:3px" : ""}"></span>${x.label} <span style="color:var(--muted)">${x.code}</span></div>`).join("")
     + `<div class="ln" style="color:var(--muted);font-size:11px">Heights above finished floor</div>`;
 }
 
 // initial paint
 const initial = computeAll(store.project);
 lastResults = initial;
+syncSocks(initial);
 canvas.setResults(initial);
 view3d.setResults(initial);
 panels.setResults(initial);
@@ -11703,6 +13450,11 @@ renderRail();
 renderChrome();
 renderStatus(initial);
 renderLegend();
+renderFloors();
+$("#zFloor")?.addEventListener("change", (e) => {
+  const v = e.target.value;
+  if (v === "__add") { renderFloors(); addLevelDialog(); } else switchLevel(v);
+});
 canvas.resize();
 if (started) {
   canvas.fit();
