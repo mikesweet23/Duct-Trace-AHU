@@ -14,7 +14,7 @@
 
 import { systemTitle } from "../systems.js";
 import { roomOfComponent, roomTerminals } from "../rooms.js";
-import { isAirSock, sockFlowLs } from "../standards/airsock.js";
+import { sockAirByRoom } from "../standards/airsock.js";
 import { componentDef } from "../standards/components.js";
 import { LEAKAGE_FACTORS, PRESSURE_CLASSES } from "../standards/dw144.js";
 import { allComputedSystems } from "../calc/network.js";
@@ -150,10 +150,11 @@ export function buildCommissioning(project, results) {
     });
   }
 
+  const sockAir = sockAirByRoom(project, results);
   const rooms = (project.rooms || []).map((r) => {
     const sum = (system) => roomTerminals(project, r)
       .filter((c) => c.system === system)
-      .reduce((a, c) => a + (isAirSock(c) ? sockFlowLs(c, results) : Number(c.props?.designFlow_ls) || 0), 0);
+      .reduce((a, c) => a + (Number(c.props?.designFlow_ls) || 0), 0) + (system === "supply" ? sockAir.get(r) || 0 : 0);
     return { name: r.name, supplyTarget: Number(r.supplyFlow_ls) || 0, supplyTerminals: sum("supply"), extractTarget: Number(r.extractFlow_ls) || 0, extractTerminals: sum("extract") };
   });
 

@@ -235,7 +235,16 @@ export class View3D {
         ctx.setLineDash(it.dash ? [4, 4] : []);
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
+        if (it.fabric) ctx.globalAlpha = 0.3; // an air sock: a light fabric tube…
         ctx.stroke();
+        if (it.fabric) {
+          // …with a dashed line down its middle
+          ctx.globalAlpha = alpha;
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([6, 4]);
+          ctx.lineCap = "butt";
+          ctx.stroke();
+        }
         ctx.setLineDash([]);
         ctx.globalAlpha = 1;
       } else if (it.t === "poly") {
@@ -285,7 +294,8 @@ export class View3D {
       poly.push(this.toXYZ(W, b, zb));
       const mm = res?.section?.diameterMm || res?.section?.widthMm || 200;
       const simple = mode === "simple3d";
-      items.push({ t: "line", pts: poly, c: col, w: simple ? Math.max(5, Math.min(22, mm / 24)) : Math.max(3.5, Math.min(16, mm / 36)), riser: isVerticalRiser(a, b, W.s) });
+      // an air sock reads as fabric: dashed, along its route
+      items.push({ t: "line", pts: poly, c: col, w: simple ? Math.max(5, Math.min(22, mm / 24)) : Math.max(3.5, Math.min(16, mm / 36)), riser: isVerticalRiser(a, b, W.s), fabric: !!s.fabric });
       const mid = this.toXYZ(W, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, (za + zb) / 2);
       const scr = this.project(mid);
       this.hitList.push({ type: "segment", id: s.id, x: scr.x, y: scr.y });

@@ -64,11 +64,13 @@ export function procurementCsv(takeoff) {
   for (const g of sk?.bodies || []) {
     lines.push(["Air sock", csvCell(`${g.fabric} - ${g.discharge}`), g.size, g.qty, g.lengthM, "", csvCell(g.refs.join(" "))].join(","));
   }
+  for (const g of sk?.fittings || []) {
+    lines.push(["Air sock fitting", g.label, g.size, g.qty, "", "", ""].join(","));
+  }
   for (const g of sk?.suspension || []) {
     lines.push(["Air sock suspension", g.label, "", "", g.lengthM, "", ""].join(","));
   }
   if (sk?.drops) lines.push(["Air sock suspension", "Drop rods / hangers", "", sk.drops, "", "", `Estimate at ${sk.dropSpacingM} m centres`].join(","));
-  if (sk?.inlets) lines.push(["Air sock", "Inlet connector to duct", "", sk.inlets, "", "", ""].join(","));
   for (const g of takeoff.insulation || []) {
     lines.push(["Insulation", `${g.thicknessMm} mm ${g.type}`, "", 1, "", g.areaM2, g.cladding ? `${g.cladding} ${g.claddingAreaM2} m2` : ""].join(","));
   }

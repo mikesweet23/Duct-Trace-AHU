@@ -16,10 +16,8 @@ export function roomAt(p, pt, levelId) {
   return (p.rooms || []).find((r) => levelIdOf(p, r) === levelId && (r.points || []).length >= 3 && pointInPolygon(pt, r.points)) || null;
 }
 
-// Where a terminal is for room purposes: an air sock by its middle (it is
-// long — its inlet may be in the corridor), anything else by its connection.
+// Where a terminal is for room purposes: its connection point.
 export function terminalPoint(p, c) {
-  if (componentDef(c.kind)?.airSock) return { x: c.x, y: c.y };
   return p.nodes.find((n) => n.id === c.nodeId) || { x: c.x, y: c.y };
 }
 
@@ -41,6 +39,20 @@ export function roomSystems(p, r, results) {
   for (const c of roomTerminals(p, r)) {
     const pid = results?.plantOf?.comp?.get(c.id);
     if (pid) out.set(pid, (out.get(pid) || 0) + 1);
+  }
+  // an air sock counts once for each room its lengths run through
+  const lv = levelIdOf(p, r);
+  const nodes = new Map(p.nodes.map((n) => [n.id, n]));
+  const seen = new Set();
+  for (const s of p.segments || []) {
+    if (!s.fabric || seen.has(s.sockId)) continue;
+    const a = nodes.get(s.a), b = nodes.get(s.b);
+    if (!a || !b || levelIdOf(p, a) !== lv) continue;
+    if (!pointInPolygon({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, r.points || [])) continue;
+    const pid = results?.plantOf?.seg?.get(s.id);
+    if (!pid) continue;
+    seen.add(s.sockId);
+    out.set(pid, (out.get(pid) || 0) + 1);
   }
   return out;
 }

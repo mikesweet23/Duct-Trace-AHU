@@ -7,7 +7,8 @@ import { connPoint, defaultFootprint, defaultHeightM, portOffset, unitPortOffset
 import { heightAlong } from "./snap.js";
 import { normalizeFlowUnit } from "./units.js";
 import { RECOMMENDED_VELOCITY } from "./standards/dw144.js";
-import { applyConstruction, setSegmentConstruction } from "./construction.js";
+import { applyConstruction, setSegmentConstruction, downstreamSegments } from "./construction.js";
+import { defaultSockProps } from "./standards/airsock.js";
 import { nextSystemColor, nextSystemTag } from "./systems.js";
 import { ensureLevels, stampLevels, activeLevelId, levelIdOf, levelView, levelById, firstLevelId, multiLevel, FIRST_LEVEL_ID } from "./levels.js";
 
@@ -97,6 +98,7 @@ export function newProject(name = "Untitled project") {
     levels: [{ id: FIRST_LEVEL_ID, name: "Ground floor", elevationM: 0, background: null }],
     activeLevel: FIRST_LEVEL_ID,
     sockPresets: [], // air sock presets carried with the job (also kept in this browser)
+    socks: [], // air socks: { id, label, props } — their fabric lengths are traced segments with fabric: true, sockId
     physical: null,
     engineeringLocked: false,
   };
@@ -168,7 +170,35 @@ export function migrateProject(raw) {
     for (const it of list || []) if (!it.levelId || !levelById(p, it.levelId)) it.levelId = first;
   }
   if (!Array.isArray(p.sockPresets)) p.sockPresets = [];
+  if (!Array.isArray(p.socks)) p.socks = [];
+  for (const k of p.socks) k.props = { ...defaultSockProps(), ...(k.props || {}) };
+  convertSockTerminals(p);
   return p;
+}
+
+// A sock made as a one-piece terminal (before socks were traced) becomes a
+// traced fabric length: from its inlet, its length along its rotation, with
+// its figures moved onto a sock record. The terminal goes.
+function convertSockTerminals(p) {
+  const old = (p.components || []).filter((c) => componentDef(c.kind)?.airSock);
+  if (!old.length) return;
+  const px = pxPerMeterOf(p);
+  for (const c of old) {
+    const inlet = p.nodes.find((n) => n.id === c.nodeId);
+    const L = Number(c.widthM) || 0;
+    if (!inlet || !(L > 0)) continue;
+    const r = ((Number(c.rot) || 0) * Math.PI) / 180;
+    const end = { id: uid("n"), x: inlet.x + Math.cos(r) * L * px, y: inlet.y + Math.sin(r) * L * px, z: inlet.z, levelId: inlet.levelId };
+    p.nodes.push(end);
+    const { terminalLossPa, ...props } = c.props || {};
+    const sock = { id: uid("k"), label: c.label || `Air sock ${p.socks.length + 1}`, props: { ...defaultSockProps(), ...props } };
+    p.socks.push(sock);
+    p.segments.push({ id: uid("s"), a: inlet.id, b: end.id, system: "supply", fabric: true, sockId: sock.id, fittings: [], floor: "", zone: "", area: "",
+      shapeOverride: null, sizeOverride: null, flowOverride: null, roleOverride: null, engineeringLengthM: null, constructionType: null,
+      insulationOverride: null, standardLengthM: null, aOff: null, bOff: null });
+  }
+  const gone = new Set(old.map((c) => c.id));
+  p.components = p.components.filter((c) => !gone.has(c.id));
 }
 
 // Every unit and fan is a system with a tag (AHU-01) and a colour. A unit
@@ -237,7 +267,60 @@ export class Store {
   emit() {
     // anything just made (a node, a unit, a room…) is on the level in view
     stampLevels(this.project);
+    this.pruneSocks();
     for (const fn of this.listeners) fn(this);
+  }
+
+  // ------------------------------------------------------------- air socks
+  // A sock is its traced fabric lengths plus one record of what is true of
+  // the whole sock. The record goes when its last length does.
+  newSock(props = {}) {
+    const p = this.project;
+    if (!Array.isArray(p.socks)) p.socks = [];
+    const used = new Set(p.socks.map((k) => k.label));
+    let n = p.socks.length + 1;
+    while (used.has(`Air sock ${n}`)) n++;
+    const sock = { id: uid("k"), label: `Air sock ${n}`, props: { ...defaultSockProps(), ...props } };
+    p.socks.push(sock);
+    return sock;
+  }
+
+  pruneSocks() {
+    const p = this.project;
+    if (!p.socks?.length) return;
+    const used = new Set(p.segments.filter((s) => s.fabric).map((s) => s.sockId));
+    p.socks = p.socks.filter((k) => used.has(k.id));
+  }
+
+  // The sock a fabric length joining these nodes would belong to.
+  sockAt(nodeIds) {
+    const ids = new Set(nodeIds);
+    return this.project.segments.find((s) => s.fabric && s.sockId && (ids.has(s.a) || ids.has(s.b)))?.sockId || null;
+  }
+
+  // Turn ducts into fabric (or back to galvanised). Lengths that touch an
+  // existing sock join it; otherwise they make one new sock between them.
+  setFabric(segs, on) {
+    const list = (segs || []).filter(Boolean);
+    if (!list.length) return null;
+    if (!on) {
+      for (const s of list) { s.fabric = false; s.sockId = null; }
+      this.pruneSocks();
+      return null;
+    }
+    const nodes = list.flatMap((s) => [s.a, s.b]);
+    const sockId = this.sockAt(nodes) || this.newSock().id;
+    for (const s of list) {
+      s.fabric = true;
+      s.sockId = sockId;
+      s.system = "supply";
+      s.sizeOverride = null;
+      s.shapeOverride = null;
+      s.constructionType = null;
+      s.flowOverride = null;
+      s.fittings = [];
+    }
+    return sockId;
   }
 
   // ------------------------------------------------------------- levels
@@ -567,9 +650,11 @@ export class Store {
       }
       if (touched) { this.syncComponentPorts(c); n++; }
     }
+    // picked lengths all turned to fabric become one sock between them
+    if (fields.construction === "airsock") { this.setFabric(sel.segments, true); n += sel.segments.length; }
     for (const s of sel.segments) {
       let touched = false;
-      if ("construction" in fields) { this.setSegmentConstruction(s, fields.construction || null); touched = true; }
+      if ("construction" in fields && fields.construction !== "airsock") { this.setSegmentConstruction(s, fields.construction || null); touched = true; }
       for (const k of ["floor", "zone"]) if (k in fields) { s[k] = fields[k]; touched = true; }
       if (fields.clearSize) { s.sizeOverride = null; touched = true; }
       if (touched) n++;
@@ -613,9 +698,19 @@ export class Store {
       this.syncComponentPorts(copy);
       items.push({ type: "component", id: copy.id });
     }
+    const sockCopy = new Map();
     for (const s of sel.segments) {
       const copy = JSON.parse(JSON.stringify(s));
       copy.id = uid("s");
+      if (copy.fabric && copy.sockId) {
+        if (!sockCopy.has(copy.sockId)) {
+          const src = (p.socks || []).find((k) => k.id === copy.sockId);
+          const made = this.newSock(JSON.parse(JSON.stringify(src?.props || {})));
+          if (src?.label) made.label = `${src.label} copy`;
+          sockCopy.set(copy.sockId, made.id);
+        }
+        copy.sockId = sockCopy.get(copy.sockId);
+      }
       copy.a = copyNode(s.a);
       copy.b = copyNode(s.b);
       if (!copy.a || !copy.b) continue;
@@ -690,7 +785,8 @@ export class Store {
       area: extra.area ?? "",
       aOff: extra.aOff ?? null,
       bOff: extra.bOff ?? null,
-      fittings,
+      fittings: extra.fabric ? [] : fittings,
+      ...(extra.fabric ? { fabric: true, sockId: extra.sockId || null } : {}),
     };
     this.project.segments.push(seg);
     return seg;
@@ -765,16 +861,6 @@ export class Store {
       c.y = inlet.y + after.y;
     }
     this.syncComponentPorts(c);
-  }
-
-  // An air sock's drawn diameter follows the airflow it carries, unless a
-  // diameter is typed. Called after each solve; nothing is persisted here.
-  syncSockSizes(flowOf) {
-    for (const c of this.project.components) {
-      if (!componentDef(c.kind)?.airSock) continue;
-      const d = flowOf(c);
-      if (d > 0 && Math.abs((Number(c.depthM) || 0) - d / 1000) > 1e-6) c.depthM = d / 1000;
-    }
   }
 
   setComponentSystem(c, system) {
@@ -899,12 +985,13 @@ export class Store {
       aOff: null,
       bOff: seg.bOff || null,
       fittings: (seg.fittings || []).filter((f) => f.type !== "tee_branch").map((f) => ({ ...f })),
+      ...(seg.fabric ? { fabric: true, sockId: seg.sockId } : {}),
     };
-    other.fittings.push({ type: "tee_straight", qty: 1 });
+    if (!seg.fabric) other.fittings.push({ type: "tee_straight", qty: 1 });
     seg.b = j.id;
     seg.bOff = null;
     seg.fittings = (seg.fittings || []).filter((f) => f.type !== "tee_branch");
-    seg.fittings.push({ type: "tee_straight", qty: 1 });
+    if (!seg.fabric) seg.fittings.push({ type: "tee_straight", qty: 1 });
     this.project.segments.push(other);
     return j;
   }
@@ -1051,11 +1138,22 @@ export class Store {
     seg.engineeringLengthM = Number.isFinite(v) && v > 0 ? v : null;
   }
 
+  // "airsock" turns a length to fabric; any other construction turns a
+  // fabric length back to galvanised first.
   setSegmentConstruction(seg, constructionKey) {
+    if (constructionKey === "airsock") { this.setFabric([seg], true); return; }
+    if (seg.fabric) this.setFabric([seg], false);
     setSegmentConstruction(seg, constructionKey, this.project.settings);
   }
 
   applyConstruction(seg, constructionKey, scope = "section") {
+    if (constructionKey === "airsock") {
+      const targets = scope === "branch" ? downstreamSegments(this.project, seg) : [seg];
+      this.setFabric(targets, true);
+      return targets;
+    }
+    const targets = scope === "branch" ? downstreamSegments(this.project, seg) : [seg];
+    if (targets.some((t) => t.fabric)) this.setFabric(targets.filter((t) => t.fabric), false);
     return applyConstruction(this.project, seg, constructionKey, scope);
   }
 

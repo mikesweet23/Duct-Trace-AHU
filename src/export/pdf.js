@@ -8,7 +8,7 @@ import { allComputedSystems } from "../calc/network.js";
 import { formatFlow, formatFlowLs, flowUnitLabel, plantDutyLs, plantStaticPa, round } from "../units.js";
 import { roleLabel, sectionSizeLabel, sectionShapeLabel } from "../format.js";
 import { buildCommissioning } from "./commissioning.js";
-import { sockSchedule, sockBasis } from "../standards/airsock.js";
+import { sockSchedule, sockBasis, sockAirByRoom } from "../standards/airsock.js";
 import { systemTitle } from "../systems.js";
 import { roomPlantId, roomAirflow } from "../rooms.js";
 
@@ -406,6 +406,7 @@ export function scopeToSystem(project, results, plantId) {
     ...project,
     components: project.components.filter((c) => c.id === plantId || comp.get(c.id) === plantId),
     segments: project.segments.filter((s) => seg.get(s.id) === plantId),
+    socks: (project.socks || []).filter((k) => results?.plantOf?.sock?.get(k.id) === plantId),
     rooms: (project.rooms || []).filter((r) => roomPlantId(project, r, results) === plantId),
   };
   const keep = (w) => !title || w.includes(title) || w.includes(plant.label || "\u0000");
@@ -471,11 +472,14 @@ export function buildProjectPdf({ project: fullProject, results: fullResults, pl
   w.heading("Rooms", 12);
   if (!project.rooms?.length) w.para("No rooms outlined.");
   else {
+    const sockAir = sockAirByRoom(project, results);
     w.table(
       ["Room", "System", "Area m2", `Supply (${unitLabel})`, `Extract (${unitLabel})`, "Sup l/s/m2"],
       project.rooms.map((r) => {
         const pid = roomPlantId(project, r, results);
         const air = roomAirflow(project, r, results);
+        const sockLs = sockAir.get(r) || 0;
+        if (sockLs > 0) { air.supplyLs += sockLs; air.supplyLsM2 = air.areaM2 > 0 ? air.supplyLs / air.areaM2 : 0; }
         return [
           r.name.slice(0, 26),
           pid ? systemTitle(project.components.find((c) => c.id === pid), "").slice(0, 22) : "-",
@@ -821,10 +825,10 @@ export function buildTakeoffPdf({ project, takeoff, logoJpeg = null }) {
   if (sk?.bodies?.length) {
     w.heading("Air socks  -  fabric ductwork", 12);
     w.table(["Item", "Size", "Qty", "Length m", "Refs"], [
-      ...sk.bodies.map((g) => [`Air sock ${g.fabric}`.slice(0, 40), g.size, g.qty, g.lengthM, g.refs.join(" ").slice(0, 40)]),
+      ...sk.bodies.map((g) => [`Air sock fabric ${g.fabric}`.slice(0, 40), g.size, `${g.qty} leg${g.qty > 1 ? "s" : ""}`, g.lengthM, g.refs.join(" ").slice(0, 40)]),
+      ...(sk.fittings || []).map((g) => [g.label, g.size, g.qty, "", ""]),
       ...sk.suspension.map((g) => [g.label, "", "", g.lengthM, ""]),
       ...(sk.drops ? [[`Drop rods / hangers (est. ${sk.dropSpacingM} m centres)`, "", sk.drops, "", ""]] : []),
-      ...(sk.inlets ? [["Inlet connector to duct", "", sk.inlets, "", ""]] : []),
     ], [190, 60, 36, 56, 130]);
   }
   w.heading("Insulation", 12);
